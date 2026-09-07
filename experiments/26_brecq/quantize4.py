@@ -23,7 +23,7 @@ import forward, ggufwrite, recipe as RP, brecq
 
 # MODEL 環境変数で元モデルの場所を差し替えられる（SSD が不安定なとき内蔵ディスクの退避コピーで回すため）
 MODEL = os.environ.get("MODEL") or (
-        "/Volumes/Mac Windows/LocalAI/ollama-models/blobs/"
+        "/path/to/localai/ollama-models/blobs/"
         "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 NAME = os.environ.get("NAME", "brecq")
 CKPT = os.path.join(ROOT, "data", "ckpt", NAME)

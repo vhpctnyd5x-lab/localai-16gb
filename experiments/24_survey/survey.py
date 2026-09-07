@@ -18,7 +18,7 @@
 """
 import json, os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+sys.path.insert(0, "/path/to/localai/kernel")
 import nvidia
 
 OUT = os.path.join(HERE, "results")

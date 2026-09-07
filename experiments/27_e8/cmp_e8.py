@@ -8,10 +8,10 @@ import os, sys, time
 import numpy as np
 S = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(S)), "lib"))
-ROOT = "/Volumes/Mac Windows/LocalAI改良"
+ROOT = "/path/to/localai-16gb"
 import forward, recipe as RP, e8
 
-MODEL = ("/Volumes/Mac Windows/LocalAI/ollama-models/blobs/"
+MODEL = ("/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 m = forward.Model(MODEL, in_memory=False)
 
