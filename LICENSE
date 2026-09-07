@@ -19,3 +19,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+--------------------------------------------------------------------------
+このライセンスが及ぶ範囲について / Scope note
+
+  MIT が及ぶのは、このリポジトリに入っている **コードと記録** だけです。
+
+  ・モデルの重みは **含まれていません**。
+  ・記録の中で扱っている Qwen3 系のモデルは Apache License 2.0 です。
+    その重み、およびそれを改変したもの（専門家を削ったもの等）を配る場合は、
+    **Apache-2.0 の条件（帰属表示・変更点の明示など）に従ってください。**
+    MIT はそれを上書きしません。
+  ・ベンチマークの問題文は Python が自動生成したもので、著作物の引用ではありません。
+
+  MIT covers only the code and notes in this repository.
+  Model weights are NOT included. Qwen3 weights are Apache-2.0; if you
+  redistribute them or derivatives (e.g. expert-pruned variants), follow
+  Apache-2.0 (attribution and statement of changes). MIT does not override it.
