@@ -31,12 +31,20 @@
     python3 kensa.py モデル.gguf
     python3 kensa.py モデル.gguf --moto unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q2_K.gguf
 """
-import argparse, collections, hashlib, math, os, struct, subprocess, sys
+import argparse, collections, hashlib, math, os, shutil, struct, subprocess, sys
+import urllib.request
 
 # GGUF の型ごとの (1ブロックのバイト数, 1ブロックの要素数)
+# GGUF の型ごとの (1ブロックのバイト数, 1ブロックの要素数)
+#   ★ ここに無い型が出ると サイズが 0 と計算され、①の帳尻が大外れする。
+#     IQ 系や BF16 を落としていたので足した。それでも知らない型は出うるので、
+#     下で「知らない型があった」と必ず知らせる。
 GG = {0:(4,1), 1:(2,1), 2:(18,32), 3:(20,32), 6:(22,32), 7:(24,32), 8:(34,32),
-      10:(84,256), 11:(110,256), 12:(144,256), 13:(176,256), 14:(210,256),
-      15:(292,256), 16:(66,256), 17:(74,256), 18:(98,256)}
+      9:(36,32), 10:(84,256), 11:(110,256), 12:(144,256), 13:(176,256),
+      14:(210,256), 15:(292,256), 16:(66,256), 17:(74,256), 18:(98,256),
+      19:(50,256), 20:(66,256), 21:(74,256), 22:(98,256), 23:(110,256),
+      24:(50,32), 25:(66,256), 26:(38,256), 27:(46,256), 28:(56,256),
+      29:(50,256), 30:(2,1), 31:(4,1), 32:(4,1), 33:(1,1), 34:(1,1)}
 _T = {0:"B",1:"b",2:"H",3:"h",4:"I",5:"i",6:"f",7:"?",10:"Q",11:"q",12:"d"}
 _S = {0:1,1:1,2:2,3:2,4:4,5:4,6:4,7:1,10:8,11:8,12:8}
 
@@ -51,7 +59,11 @@ def yomu(f):
     nk = struct.unpack("<Q", f.read(8))[0]
 
     def rs():
+        # ★ 長さをそのまま信じて read すると、壊れた／細工されたヘッダで
+        #   メモリを食い尽くして落ちる。ありえない長さは断る。
         n = struct.unpack("<Q", f.read(8))[0]
+        if n > (1 << 24):
+            raise SystemExit("ヘッダが壊れています（文字列長 %d）" % n)
         return f.read(n).decode("utf-8", "replace")
 
     kv = {}
@@ -62,8 +74,15 @@ def yomu(f):
         elif t == 9:
             et = struct.unpack("<I", f.read(4))[0]
             ln = struct.unpack("<Q", f.read(8))[0]
-            kv[k] = [rs() for _ in range(ln)] if et == 8 else (
-                f.read(_S.get(et, 4) * ln) and "[%d]" % ln)
+            if et == 8:
+                kv[k] = [rs() for _ in range(ln)]
+            elif et in _S:
+                f.read(_S[et] * ln)
+                kv[k] = "[%d]" % ln
+            else:
+                # ★ 知らない要素型を 4バイトと決めつけて読み飛ばすと、
+                #   以降のヘッダ解析が全部ずれる。分からないなら止める。
+                raise SystemExit("知らない配列の型 %d（読み進められません）" % et)
         else:
             kv[k] = struct.unpack("<" + _T[t], f.read(_S[t]))[0]
 
@@ -88,6 +107,16 @@ def shirushi(ok):
     return "○" if ok else "×"
 
 
+def hanbun_toru(url, a, b):
+    """URL の a〜b バイト目だけを取る。curl があれば curl、無ければ標準で。"""
+    if shutil.which("curl"):
+        return subprocess.run(["curl", "-s", "-r", "%d-%d" % (a, b), "-L", url],
+                              capture_output=True).stdout
+    req = urllib.request.Request(url, headers={"Range": "bytes=%d-%d" % (a, b)})
+    with urllib.request.urlopen(req, timeout=120) as f:
+        return f.read()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gguf")
@@ -106,13 +135,27 @@ def main():
     print()
 
     # ── ① 帳尻 ────────────────────────────────────────────
+    # ★ テンソルは境界に揃えて置かれるので、あいだに詰め物が入る。
+    #   それを数えないと、正常なファイルでも「合わない」と出てしまう。
+    ali = kv.get("general.alignment", 32)
+    naka = sorted(ts.values(), key=lambda t: t["位置"])
+    tsumemono = 0
+    for i, t in enumerate(naka[:-1]):
+        owari = t["位置"] + t["バイト"]
+        tsumemono += naka[i + 1]["位置"] - owari
     goukei = sum(t["バイト"] for t in ts.values())
-    sa = size - ds - goukei
+    shiranai = [n for n, t in ts.items() if t["型"] not in GG]
+    sa = size - ds - goukei - tsumemono
     print("① 帳尻")
     print("   テンソル %d 個 = %.3f GiB ／ ヘッダ %.1f MiB"
           % (len(ts), goukei / 1024**3, ds / 1024**2))
-    print("   %s ヘッダ+重み と ファイルの差: %.1f MiB %s"
-          % (shirushi(abs(sa) < 1024**2), sa / 1024**2,
+    if tsumemono:
+        print("   すきま（境界合わせの詰め物）: %.1f MiB" % (tsumemono / 1024**2))
+    if shiranai:
+        print("   ！ 知らない量子化の型が %d 本あります。帳尻はあてになりません: %s"
+              % (len(shiranai), shiranai[:3]))
+    print("   %s ヘッダ+重み+すきま と ファイルの差: %.1f MiB %s"
+          % (shirushi(abs(sa) < 1024**2 and not shiranai), sa / 1024**2,
              "" if abs(sa) < 1024**2 else "← 水増しか欠けがある"))
 
     # ── ② 層ごとに別物か ──────────────────────────────────
@@ -170,16 +213,30 @@ def main():
         print("   --moto を渡すと確かめられます。例:")
         print("     --moto unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q2_K.gguf")
         return
+    if not shutil.which("curl"):
+        print("   ！ curl が無いので、標準ライブラリで取りに行きます")
     repo, fn = a.moto.rsplit("/", 1)
     U = "https://huggingface.co/%s/resolve/main/%s" % (repo, fn)
     print("   くらべる先: %s" % U)
-    atama = subprocess.run(["curl", "-s", "-r", "0-6291455", "-L", U],
-                           capture_output=True).stdout
-    if len(atama) < 1 << 20:
-        print("   × ヘッダを取れませんでした（%d バイト）" % len(atama))
-        return
+    # ★ 6MB 固定にしていたが、Qwen3 のヘッダは 5.66MB で **余裕が 0.34MB しか無かった**。
+    #   語彙の多いモデルなら確実に足りない。足りなければ倍にして取り直す。
     import io
-    kv_o, ts_o, ds_o = yomu(io.BytesIO(atama))
+    kv_o = ts_o = ds_o = None
+    tore = 8 << 20
+    for _ in range(5):
+        atama = hanbun_toru(U, 0, tore - 1)
+        if len(atama) < 1 << 20:
+            print("   × ヘッダを取れませんでした（%d バイト）" % len(atama))
+            return
+        try:
+            kv_o, ts_o, ds_o = yomu(io.BytesIO(atama))
+            break
+        except Exception:
+            tore *= 2                      # 足りなかった。倍にして取り直す
+    if ts_o is None:
+        print("   × ヘッダが %d MB でも読み切れませんでした" % (tore >> 20))
+        return
+    print("   ヘッダ %.2f MB を取得（必要なぶんだけ）" % (ds_o / 1024**2))
     print("   %s テンソルの名前が完全一致 (%d 個)"
           % (shirushi(set(ts_o) == set(ts)), len(ts_o)))
     print("   %s 語彙が一字一句一致"
@@ -200,8 +257,7 @@ def main():
     for na in erabu:
         n = min(ts[na]["バイト"], 2 << 20)
         aa = ds_o + ts_o[na]["位置"]
-        kou = subprocess.run(["curl", "-s", "-r", "%d-%d" % (aa, aa + n - 1), "-L", U],
-                             capture_output=True).stdout
+        kou = hanbun_toru(U, aa, aa + n - 1)
         f.seek(ds + ts[na]["位置"])
         ok = len(kou) == n and hashlib.sha256(kou).digest() == hashlib.sha256(f.read(n)).digest()
         zen &= ok

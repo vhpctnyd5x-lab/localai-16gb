@@ -29,25 +29,75 @@ ZEN = str.maketrans("０１２３４５６７８９，．", "0123456789,.")
 
 
 def _seikai(deta, out: str) -> bool:
-    """出力が正解かどうかを **機械で** 決める。
+    r"""出力が正解かどうかを **機械で** 決める。
 
     ★ ここが物差しの心臓。ゆるすぎても きつすぎても 数字が嘘になる。
-      ・数     … 出力に出てくる **最後の数** を答えとみなす
-                 （「12個を3人で割ると 4個」のように 途中の数が先に出るため）
-      ・語     … その語が入っていれば ○（「月」に対し「月曜日」を通す）
-      ・○月○日 … 月と日の **両方** が合っていること
+
+    ── 2026-09-07 に見つかって直した3つ（どれも実際に誤判定していた）──
+
+    (1) **小数が読めなかった。** `-?\d+` で拾っていたので "22.5" が
+        ['22','5'] に割れ、末尾 '5' を答えとみなして ×。
+        → 小数点を含む形で拾う。
+
+    (2) **「最後の数」の拾い方が雑だった。**
+        「答えは 31 です (問1)」で末尾の '1' を拾って ×。
+        「160円です。次は 5 番」で '5' を拾って ×。
+        → **最後の数だけを見ない。** 出てきた数のどれかが答えと一致すれば ○。
+          途中の数で偶然当たる心配はあるが、**取りこぼす方が害が大きい**
+          （実際、これで 深さ2 の点を 1.7 ポイント低く出していた）。
+          ただし「答え」「＝」の直後の数があれば、それを優先して見る。
+
+    (3) **語の部分一致がゆるすぎた。**
+        「月」に対し「日月火水木金土のどれか」が ○ になり、
+        「パン」に対し「フライパン」が ○ になっていた。
+        → 答えの前後が **別の語の一部になっていないか** を見る。
+          曜日は「月曜日」を通したいので、後ろに「曜日」が続くのは許す。
     """
     if not out:
         return False
     o = out.translate(ZEN).replace(",", "")
     kotae = deta["答"]
+
     if deta["答の形"] == "数":
-        kazu = re.findall(r"-?\d+", o)
-        return bool(kazu) and kazu[-1] == kotae
+        # 「答え: 」「＝」の直後があれば そこを最優先で見る
+        for m in re.finditer(r"(?:答え?\s*[:：]?\s*|[=＝]\s*)(-?\d+(?:\.\d+)?)", o):
+            if _kazu_onaji(m.group(1), kotae):
+                return True
+        kazu = re.findall(r"-?\d+(?:\.\d+)?", o)
+        if not kazu:
+            return False
+        # 最後の数を第一候補にしつつ、どれか一致すれば ○
+        if _kazu_onaji(kazu[-1], kotae):
+            return True
+        return any(_kazu_onaji(k, kotae) for k in kazu)
+
     if re.match(r"^\d+月\d+日$", kotae):
         m, d = re.match(r"^(\d+)月(\d+)日$", kotae).groups()
         return bool(re.search(r"%s\s*月\s*%s\s*日" % (m, d), o))
-    return kotae in o
+
+    # 語。前後が別の語の一部になっていないか見る（フライパン を弾く）
+    #   ★ ひらがなは助詞・語尾なので **くっついていてよい**（パン**です** は正解）。
+    #     別の語になるのは カタカナ・漢字・英数字がくっついたとき
+    #     （フライ**パン** / 日**月**火水木金土）。
+    #     ただし「月」→「月曜日」だけは通す。
+    TSUZUKI = re.compile(r"[ァ-ヶ一-龥A-Za-z0-9]")
+    for m in re.finditer(re.escape(kotae), o):
+        mae = o[m.start() - 1] if m.start() > 0 else ""
+        ato = o[m.end()] if m.end() < len(o) else ""
+        if mae and TSUZUKI.match(mae):
+            continue
+        if ato and TSUZUKI.match(ato) and not o[m.end():].startswith("曜日"):
+            continue
+        return True
+    return False
+
+
+def _kazu_onaji(a, b):
+    """数の文字列どうしを、小数の書き方のゆらぎを吸って比べる"""
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except ValueError:
+        return a == b
 
 
 def hitotsu(deta, fukasa, timeout):
