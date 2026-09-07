@@ -268,6 +268,7 @@ kensa.py             GGUF が本物か自分で確かめる（公式とバイト
 MODEL.md             使ったモデルの素性と、安全性についてのことわり
 monosashi/           物差し（問題集を作る・測る・疑う）
 lib/                 圧縮の部品（GGUF読み書き／誤差補償／トレリス符号化／回転…）
+EXPERIMENTS.md       experiments/ と lib/ の状態と、受けた指摘91件の仕分け
 experiments/         実験ごとのコードと結果（01〜52）
 RESULTS.md           全実験の生の記録
 ```

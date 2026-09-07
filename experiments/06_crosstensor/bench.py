@@ -1,3 +1,4 @@
+import os
 """実験06: 回転はどこで効くのか、そして結論は他の層でも成り立つのか。
 
 実験04で回転は逆効果だった。仮説:
@@ -14,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 TENSORS = ["v.blk.0.mlp.linear_fc1.weight",   # 視覚側 F16 (真の全精度)
            "blk.0.attn_qkv.weight",           # LLM本体 Q4_K

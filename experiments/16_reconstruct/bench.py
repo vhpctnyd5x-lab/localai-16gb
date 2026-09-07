@@ -1,3 +1,4 @@
+import os
 """実験16: 出力再構成の効果。
 
 これまで: min‖W−Ŵ‖（重み誤差）
@@ -11,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate, reconstruct as RC
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 acts = np.load(os.path.join(ROOT, "data/calib/acts256.npz"))
 r_ = gguf.Reader(MODEL)

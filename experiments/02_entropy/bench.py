@@ -1,3 +1,4 @@
+import os
 """実験02: コード番号列をさらに圧縮する。
 
 積量子化の「名目ビット数」は log2(コード数)/k。だがコード番号の使われ方は
@@ -10,7 +11,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, entropy as E
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 TENSOR = sys.argv[1] if len(sys.argv) > 1 else "v.blk.0.mlp.linear_fc1.weight"
 

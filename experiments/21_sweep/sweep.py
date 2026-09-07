@@ -38,7 +38,9 @@ def ppl(model):
     for line in (p.stdout + p.stderr).replace("\r", "\n").split("\n"):
         if "Final estimate" in line:
             return float(line.split("PPL =")[1].split("+/-")[0].strip())
-    return None
+    # ★ 2026-09-07: None を返すと あとで並べ替えるときに落ちる。
+    #   読めなかったことが分かる形（無限大）で返す。
+    return float("inf")
 
 
 done = load()

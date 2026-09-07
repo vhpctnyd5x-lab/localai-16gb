@@ -1,3 +1,4 @@
+import os
 """誤差補償あり/なしの比較。較正用と評価用の活性化は必ず分ける。"""
 import json, os, sys, time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -5,7 +6,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, errcomp as E
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 TENSOR = sys.argv[1] if len(sys.argv) > 1 else "v.blk.0.mlp.linear_fc1.weight"
 

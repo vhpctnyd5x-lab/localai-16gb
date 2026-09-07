@@ -1,3 +1,4 @@
+import os
 """実験05: 低ランク分解 + 残差の超低ビット量子化。
 
 評議会の第1推奨。ただし委員のビット計算は誤っていたので自分で数え直す。
@@ -12,13 +13,25 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 TENSOR = "v.blk.0.mlp.linear_fc1.weight"
 
 
-def lowrank_cost(out, inn, r, bits):
-    return r * (out + inn) * bits / (out * inn)
+def lowrank_cost(out, inn, r, bits, G=128):
+    """低ランク側の 1重みあたりビット数。
+
+    ★ 2026-09-07 直し: **スケールの取り分を数えていなかった。**
+      A も B も C.rtn でグループごとに量子化しているので、
+      グループ1つにつき 16bit のスケールが要る。それが式に無かった。
+      実測の影響: 低ランク側だけ見ると 1.6〜7.0% 少なく出ていた。
+      ただし全体の bpw は 残差(PVQ)側が支配的なので **合計では +0.5〜0.6%**。
+      → **結論はひっくり返らない。** results/ の JSON は直す前の値。
+    """
+    ga = out * max(1, (r + min(G, r) - 1) // max(1, min(G, r)))
+    gb = r * max(1, inn // min(G, inn))
+    ovh = 16.0 * (ga + gb) / (out * inn)
+    return r * (out + inn) * bits / (out * inn) + ovh
 
 
 def run(W, r, lr_bits, k, cb_bits, G, rot=False, seed=0):

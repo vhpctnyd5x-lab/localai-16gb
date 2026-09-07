@@ -1,3 +1,4 @@
+import os
 """実験23-C: **層ごとに違う設定**でモデル全体を量子化する。
 
 quantize2.py（全層一律）との違いは1点だけ: 各層の k/cb/G/rank を
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, ggufwrite, forward, recipe as RP
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 NAME = os.environ.get("NAME", "alloc")
 CKPT = os.path.join(ROOT, "data", "ckpt", NAME)

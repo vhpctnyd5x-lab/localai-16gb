@@ -43,7 +43,10 @@ def tune_scales(W, Wh, X, G=256, rounds=8, tol=1e-4, lo=0.5, hi=2.0):
                 R -= (a - 1.0) * P                 # 残りを更新（再計算せず差分で）
         e = float(np.linalg.norm(R) / ny)
         hist.append(round(e, 5))
-        if it >= 1 and hist[-2] - e < tol:
+        # ★ 2026-09-07 直し: 前は hist[-2] - e < tol だけを見ていた。
+        #   誤差が **増えた** ときも この式は負になり、tol 未満なので
+        #   「収束した」と誤って打ち切っていた。減ったときだけ見る。
+        if it >= 1 and 0 <= hist[-2] - e < tol:
             break
     return Wh.astype(np.float32), hist
 

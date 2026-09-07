@@ -22,6 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 R = os.path.join(HERE, "results")
 import numpy as np
 
+# λ が負で捨てた層の数（0 のままなら 全層が使えている）
+SUTETA = [0]
+
 # --- 候補設定。bpwは recipe.fit と同じ式で閉形式に出せる（フィット不要） ---
 CANDS = [(k, cb, G, rank) for k in (32, 16, 8, 4, 2)
          for cb in (8, 12) for G in (256,) for rank in (32,)]
@@ -61,6 +64,10 @@ for n, d in hi.items():
     if b1 <= b0 or e1 <= 0 or e0 <= 0:
         continue
     l = math.log2(e0 / e1) / (b1 - b0)      # 誤差(振幅)の指数。D=err^2 なので指数は2λ
+    # ★ 2026-09-07 注記: ビットを下げても誤差が増えない層では l <= 0 になる。
+    #   その層はここで黙って捨てられ、既定値へ落ちていた。捨てた数を数えて出す。
+    if l <= 0:
+        SUTETA[0] += 1
     if 0.01 < l < 4:
         lam[n] = l
         bykind.setdefault(d["kind"], []).append(l)

@@ -1,3 +1,4 @@
+import os
 """実験17: 誤差補償(GPTQ)の決着。本物の活性化で再評価する。
 
 序盤に合成活性化で全敗した件。実装は厳密OBQと15桁一致することを検証済みで、
@@ -11,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 acts = np.load(os.path.join(ROOT, "data/calib/acts_big.npz"))
 r_ = gguf.Reader(MODEL)
@@ -26,7 +27,27 @@ def hess(X, damp):
 def gptq(W, X, bits, G, damp):
     """列を1本ずつ丸め、誤差をヘッセ行列に基づいて右側へ流す。"""
     n = W.shape[1]
-    U = np.linalg.cholesky((lambda A:(A+A.T)/2)(np.linalg.inv(hess(X, damp)))).T
+    # ★ 2026-09-07: 数値誤差で ほんの少し非正定値になると cholesky が落ちる。
+
+    # 落ちたら 対角に少しずつ足して 正定値に押し戻す。
+
+    _M = (lambda A:(A+A.T)/2)(np.linalg.inv(hess(X, damp)))
+
+    for _t in range(6):
+
+        try:
+
+            U = np.linalg.cholesky(_M).T
+
+            break
+
+        except np.linalg.LinAlgError:
+
+            _M = _M + np.eye(_M.shape[0]) * (10.0 ** (-10 + _t)) * np.trace(_M) / _M.shape[0]
+
+    else:
+
+        raise np.linalg.LinAlgError("対角を足しても正定値にできませんでした")
     Wq = W.astype(np.float64).copy(); qmax = 2**(bits-1)-1
     for st in range(0, n, G):
         en = min(st+G, n)

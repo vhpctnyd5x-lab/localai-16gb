@@ -1,3 +1,4 @@
+import os
 """実験19: 統合レシピをモデル全体に適用する（逐次方式）。
 
 順伝播を1回流しながら、各層に到達した時点でその層の本物の入力を使って量子化する。
@@ -10,7 +11,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, ggufwrite, forward, recipe as RP, wcodec as C
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 OUT = sys.argv[1]
 NTOK = int(os.environ.get("NTOK", "1024"))

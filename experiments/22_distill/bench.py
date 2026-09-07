@@ -1,3 +1,4 @@
+import os
 """実験22: 目盛りの繰り返し調整（層ごとの蒸留）の効果。
 
 統合レシピで量子化したあと、目盛りだけを先生の出力に合わせ込む。
@@ -9,7 +10,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, recipe as RP, distill
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 acts = np.load(os.path.join(ROOT, "data/calib/acts_big.npz"))
 r_ = gguf.Reader(MODEL)

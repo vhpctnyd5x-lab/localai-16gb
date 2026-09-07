@@ -1,3 +1,4 @@
+import os
 """実験10: ビット数をさらに押し下げる。
 
 これまでの最良は 0.79bit で誤差0.45。ここから「もっと薄く」を攻める。
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate, entropy as E
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 
 

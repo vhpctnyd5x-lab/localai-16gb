@@ -37,6 +37,12 @@ def rotate_rows(A, d, inverse=False):
     """A の最終軸に Q = H·diag(d)/√n を掛ける。inverse=True で Qᵀ。"""
     n = A.shape[-1]
     s = 1.0 / np.sqrt(n)
+    # ★ 2026-09-07 訂正: ここの説明が逆だった。実測で確かめた事実は:
+    #     inverse=False  →  A @ Qᵀ
+    #     inverse=True   →  A @ Q      （Q = H·diag(d)/√n）
+    #   上の docstring は逆に書いてあった。**直したのは説明であって計算ではない。**
+    #   往復（False→True）で元に戻ることは確認済みなので、
+    #   これまでの実験結果は1ビットも変わらない。
     if not inverse:
         return fwht(A * d) * s          # A Q^T 相当（Hは対称）
     return fwht(A) * d * s

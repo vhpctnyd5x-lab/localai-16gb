@@ -1,3 +1,4 @@
+import os
 """実験24: NVIDIA の複数モデルに、圧縮技術を一斉に聞いて突き合わせる。
 
 【この調査の限界。読む前に必ず理解すること】
@@ -18,7 +19,7 @@
 """
 import json, os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "/path/to/localai/kernel")
+sys.path.insert(0, os.environ.get("KERNEL_DIR", "/path/to/localai/kernel"))
 import nvidia
 
 OUT = os.path.join(HERE, "results")

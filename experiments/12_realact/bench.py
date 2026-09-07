@@ -1,3 +1,4 @@
+import os
 """実験12: 本物の活性化で、全敗した手法を再評価する。
 
 これまでの実験は「重みは qwen3.5、活性化は合成」というちぐはぐな条件だった。
@@ -17,7 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 CAL = os.path.join(ROOT, "data", "calib")
 
@@ -89,6 +90,8 @@ for TENSOR in ["blk.0.ffn_gate.weight", "blk.10.attn_q.weight", "blk.20.ffn_up.w
         base = None
         for alpha in (0.0, 0.25, 0.5, 0.75, 1.0):
             s = imat_tr ** (alpha/2)              # 重要度の平方根を α 乗
+            # ★ 2026-09-07: imat に 0 があると log(0) が -inf になり、以降すべて NaN。
+            s = np.maximum(s, 1e-12)
             s = s/np.exp(np.log(s).mean())
             W = W0 * s[None, :]
             Wh, bpw = recipe(W, r, 4, k, cb, 128)

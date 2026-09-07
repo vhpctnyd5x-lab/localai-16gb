@@ -1,3 +1,4 @@
+import os
 """実モデルの重み行列で、1ビット未満まで含む各コーデックを比較する。
 
 使い方:
@@ -11,15 +12,15 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 
 
 def build_codecs():
     return [
-        ("基準", lambda W: C.rtn(W, 8, 128)),
-        ("基準", lambda W: C.rtn(W, 4, 128)),
-        ("基準", lambda W: C.rtn(W, 2, 128)),
+        ("基準8bit", lambda W: C.rtn(W, 8, 128)),
+        ("基準4bit", lambda W: C.rtn(W, 4, 128)),
+        ("基準2bit", lambda W: C.rtn(W, 2, 128)),
         ("1bit級", lambda W: C.ternary(W, 128)),
         ("1bit未満", lambda W: C.pvq(W, k=4, cb_bits=4, G=128)),   # 1.0bit
         ("1bit未満", lambda W: C.pvq(W, k=8, cb_bits=6, G=128)),   # 0.75bit

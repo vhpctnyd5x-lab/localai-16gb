@@ -26,6 +26,7 @@ X_生徒 は「前の層まで量子化済みで流れてきた活性化」な�
 W* は「生徒の入力のもとで、先生の出力を出すための理想の重み」。
 これを **W の代わりに量子化する**。層ごとに閉じているので GPU は要らない。
 """
+import sys
 import numpy as np
 
 
@@ -53,7 +54,11 @@ def target_weight(W, Xs, Xt, damp=0.1, maxd=0.30, mindrift=0.15):
     B = (W.astype(np.float64) @ Xt) @ Xs.T / n        # (out,in)
     try:
         Wt = np.linalg.solve(A.T, B.T).T
-    except np.linalg.LinAlgError:
+    except np.linalg.LinAlgError as _e:
+        # ★ 2026-09-07: 前は黙って元の重みを返していた。補正が効かなかったのに
+        #   効いたように見えるので、必ず知らせる。
+        sys.stderr.write("brecq: 連立方程式が解けませんでした（%s）。"
+                         "補正せずに元の重みを返します\n" % _e)
         return W.astype(np.float32)                   # 解けなければ元のまま
     # 暴走の歯止め。先生の出力に合わせるためとはいえ、
     # 元の重みから離れすぎたものは、別の区間で必ず破綻する。

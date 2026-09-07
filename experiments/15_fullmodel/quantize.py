@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, ggufwrite, wcodec as C, rotate
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 CAL = os.path.join(ROOT, "data", "calib")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "data/models/ours.gguf")

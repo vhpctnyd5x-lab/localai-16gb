@@ -1,3 +1,4 @@
+import os
 """実験09: 低ランクと残差を交互に精錬する（活性化に依存しない路線）。
 
 いまは SVD で低ランクを決め、その残差を1回だけ量子化して終わり。
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 
 

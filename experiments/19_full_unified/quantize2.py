@@ -1,3 +1,4 @@
+import os
 """統合レシピをモデル全体に適用する（堅牢版）。
 
 前版の失敗から直したこと:
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, ggufwrite, forward, recipe as RP
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 NAME = os.environ.get("NAME", "unified")
 CKPT = os.path.join(ROOT, "data", "ckpt", NAME)

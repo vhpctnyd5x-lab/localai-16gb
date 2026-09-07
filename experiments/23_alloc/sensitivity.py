@@ -1,3 +1,4 @@
+import os
 """実験23-A: 層ごとの「痛み」を測る。再量子化なし・順伝播なし。
 
 引き継ぎ書6-1「層ごとのビット配分」の第一歩。
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import forward
 
-MODEL = ("/path/to/localai/ollama-models/blobs/"
+MODEL = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
          "sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba")
 CKPT = os.path.join(ROOT, "data", "ckpt", os.environ.get("NAME", "unified"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),

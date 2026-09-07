@@ -1,3 +1,4 @@
+import os
 """実験11: ノイズの床を測る。
 
 k-means は初期値によって結果が変わる。同じ設定でも実行ごとに誤差が揺れる。
@@ -11,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 import numpy as np
 import gguf, wcodec as C, rotate
 
-BLOB = ("/path/to/localai/ollama-models/blobs/"
+BLOB = (os.environ.get("MODEL_BLOB") or "/path/to/localai/ollama-models/blobs/"
         "sha256-81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490")
 
 

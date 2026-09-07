@@ -37,10 +37,20 @@ def huffman_bits(idx, ncode):
     return total / counts.sum()
 
 
+# ★ 2026-09-07 の注記: この関数は idx を1本の列とみなして隣どうしの遷移を数える。
+#   グループ（テンソルや行）を並べて渡すと、**あるグループの最後と次の先頭**を
+#   つながっているものとして数えてしまう。グループ数が多いほど薄まるが、
+#   短いグループを大量に渡すときは 別々に呼ぶこと。
 def conditional_entropy(idx, ncode):
     """直前のコードで条件づけたエントロピー（文脈モデル＝専用圧縮器の肝）。"""
     a = idx[:-1].astype(np.int64)
     b = idx[1:].astype(np.int64)
+    # ★ 2026-09-07 追加: ncode が大きいと ncode×ncode の表がメモリを食い尽くす。
+    #   ncode=2**16 なら 42.9億要素＝数十GB。黙って落ちる前に断る。
+    if ncode > 4096:
+        raise ValueError(
+            "ncode=%d は大きすぎます（%d×%d の表を作ろうとしています）。"
+            "疎な数え方に替えるか、ncode を下げてください。" % (ncode, ncode, ncode))
     joint = np.bincount(a * ncode + b, minlength=ncode * ncode).reshape(ncode, ncode)
     tot = joint.sum()
     if tot == 0:
