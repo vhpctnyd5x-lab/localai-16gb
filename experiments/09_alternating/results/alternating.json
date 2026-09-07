@@ -1,0 +1,194 @@
+[
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 1,
+    "bpw": 0.7979,
+    "出力誤差": 0.4515
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 2,
+    "bpw": 0.7979,
+    "出力誤差": 0.45869
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 3,
+    "bpw": 0.7979,
+    "出力誤差": 0.44626
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 1,
+    "bpw": 0.9551,
+    "出力誤差": 0.40072
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 2,
+    "bpw": 0.9551,
+    "出力誤差": 0.41768
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 3,
+    "bpw": 0.9551,
+    "出力誤差": 0.41465
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 1,
+    "bpw": 1.4551,
+    "出力誤差": 0.32544
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 2,
+    "bpw": 1.4551,
+    "出力誤差": 0.32821
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 3,
+    "bpw": 1.4551,
+    "出力誤差": 0.3265
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 1,
+    "bpw": 1.2695,
+    "出力誤差": 0.35853
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 2,
+    "bpw": 1.2695,
+    "出力誤差": 0.35737
+  },
+  {
+    "tensor": "v.blk.0.mlp.linear_fc1.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 3,
+    "bpw": 1.2695,
+    "出力誤差": 0.35469
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 1,
+    "bpw": 0.7114,
+    "出力誤差": 0.666
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 2,
+    "bpw": 0.7114,
+    "出力誤差": 0.6642
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 32,
+    "cb_bits": 4,
+    "rounds": 3,
+    "bpw": 0.7114,
+    "出力誤差": 0.66442
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 1,
+    "bpw": 0.79,
+    "出力誤差": 0.64607
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 2,
+    "bpw": 0.79,
+    "出力誤差": 0.64077
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 4,
+    "rounds": 3,
+    "bpw": 0.79,
+    "出力誤差": 0.63981
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 1,
+    "bpw": 1.29,
+    "出力誤差": 0.47468
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 2,
+    "bpw": 1.29,
+    "出力誤差": 0.47106
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 64,
+    "cb_bits": 8,
+    "rounds": 3,
+    "bpw": 1.29,
+    "出力誤差": 0.46905
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 1,
+    "bpw": 0.9473,
+    "出力誤差": 0.59539
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 2,
+    "bpw": 0.9473,
+    "出力誤差": 0.58634
+  },
+  {
+    "tensor": "blk.0.attn_qkv.weight",
+    "rank": 128,
+    "cb_bits": 8,
+    "rounds": 3,
+    "bpw": 0.9473,
+    "出力誤差": 0.58366
+  }
+]

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.bak
+*.bak_*
+*.gguf
+*.safetensors
+*.npz
+*.npy
+data/
+tools/
+kekka/
+*.log
+.DS_Store
+._*
