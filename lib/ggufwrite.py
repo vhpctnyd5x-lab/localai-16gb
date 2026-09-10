@@ -67,41 +67,47 @@ class Copier:
         src.seek(24)
         kv_blob = src.read(kv_end - 24)
 
-        # --- 新しいテンソル情報を組み立てる ---
+        # --- 新しいテンソル情報を組み立てる（★1回目: 大きさと位置だけ）---
+        # ★ 2026-09-11 直し: 前は blobs[name] に **全テンソルの中身を抱えていた**。
+        #   11GB の GGUF なら ほぼ同量を Python のヒープに積むことになり、
+        #   16GB の機械では落ちる（このプロジェクトの前提そのものと矛盾する）。
+        #   → 大きさだけ先に決めて、**中身は書き出しながら1本ずつ流す**。
         names = list(r.tensors.keys())
-        infos, blobs = [], {}
+        infos = []
         align = r.meta.get("general.alignment", 32)
         offset = 0
         for name in names:
             dims, ttype, off = r.tensors[name]
+            n = 1
+            for d in dims:
+                n *= d
             if name in replace:
-                arr = np.ascontiguousarray(replace[name].astype(np.float16))
-                data = arr.tobytes()
-                new_type = 1                      # F16
+                arr = replace[name]
+                # ★ 形を確かめずに書くと、ヘッダの言う大きさと 実データがずれる。
+                if int(getattr(arr, "size", 0)) != n:
+                    raise ValueError(
+                        "差し替えの要素数が合わない: %s ヘッダ %s(=%d) ↔ もらった %s(=%d)"
+                        % (name, tuple(dims), n, getattr(arr, "shape", "?"),
+                           int(getattr(arr, "size", 0))))
+                nbytes = n * 2                     # F16
+                new_type = 1
             else:
-                _, _, blk_b = G.TYPES.get(ttype, (None, None, None))
-                n = 1
-                for d in dims:
-                    n *= d
-                if ttype in G.TYPES:
-                    blk_n, blk_b = G.TYPES[ttype][1], G.TYPES[ttype][2]
-                    nbytes = n // blk_n * blk_b
-                else:
+                if ttype not in G.TYPES:
                     raise ValueError(f"未対応の型のテンソルがある: {name} type={ttype}")
-                src.seek(r.data_start + off)
-                data = src.read(nbytes)
+                blk_n, blk_b = G.TYPES[ttype][1], G.TYPES[ttype][2]
+                nbytes = n // blk_n * blk_b
                 new_type = ttype
-            pad = (-len(data)) % align
-            blobs[name] = data + b"\x00" * pad
-            infos.append((name, dims, new_type, offset))
-            offset += len(data) + pad
+            pad = (-nbytes) % align
+            infos.append((name, dims, new_type, offset, nbytes, pad, off))
+            offset += nbytes + pad
 
-        # --- 書き出し ---
+        # --- 書き出し（★2回目: 1本ずつ読んで そのまま流す）---
+        CHUNK = 8 << 20
         with open(out_path, "wb") as f:
             f.write(magic_ver)
             f.write(struct.pack("<QQ", n_tensors, n_kv))
             f.write(kv_blob)
-            for name, dims, ttype, off in infos:
+            for name, dims, ttype, off, nbytes, pad, _src_off in infos:
                 _w_str(f, name)
                 f.write(struct.pack("<I", len(dims)))
                 f.write(struct.pack(f"<{len(dims)}Q", *dims))
@@ -109,7 +115,23 @@ class Copier:
                 f.write(struct.pack("<Q", off))
             pos = f.tell()
             f.write(b"\x00" * ((-pos) % align))
-            for name, _, _, _ in infos:
-                f.write(blobs[name])
+            for name, dims, ttype, off, nbytes, pad, src_off in infos:
+                if name in replace:
+                    arr = np.ascontiguousarray(replace[name].astype(np.float16))
+                    data = arr.tobytes()
+                    if len(data) != nbytes:
+                        raise ValueError("差し替えのバイト数が合わない: %s" % name)
+                    f.write(data)
+                    del arr, data
+                else:
+                    src.seek(r.data_start + src_off)
+                    nokori = nbytes
+                    while nokori > 0:
+                        buf = src.read(min(CHUNK, nokori))
+                        if not buf:
+                            raise IOError("元ファイルが途中で尽きた: %s" % name)
+                        f.write(buf)
+                        nokori -= len(buf)
+                f.write(b"\x00" * pad)
         src.close()
         return out_path

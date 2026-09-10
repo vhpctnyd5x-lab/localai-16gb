@@ -161,47 +161,76 @@ def kiku(prompt, system=None, fukasa=0, timeout=300, kotae_cap=700):
     """
     if fukasa == OMAKASE:          # おまかせ: 問いを見て こちらで決める
         fukasa = miru(prompt)
+    # ★ 知らない深さは **例外ではなく いつもの形** で返す。
+    #   ここだけ KeyError が素通りすると、呼ぶ側の作りが揃わない。
+    if fukasa not in FUKASA:
+        return {"text": "", "考えた字数": 0, "回数": 0, "ms": 0,
+                "深さ": fukasa, "深さの名": "?",
+                "error": "深さは %s のどれか。もらったのは %r"
+                         % (sorted(FUKASA) + [OMAKASE], fukasa)}
     s = FUKASA[fukasa]
     t0 = time.monotonic()
+    # ★ 締切は **最初に1回だけ** 決める。
+    #   前は「考える」と「答える」に同じ nokori を渡していたので、
+    #   timeout=300 が「全体300秒」を意味していなかった（深さ3なら最悪4倍）。
+    shimekiri = t0 + timeout
+
+    def nokori_byou():
+        """残り秒。**尽きていたら そこで止める。**
+        ★ 前は下限10秒を敷いていたので、timeout=6 でも 10秒待っていた。
+          下限は「尽きたら止める」に置きかえる。約束した時間は守る。"""
+        n = shimekiri - time.monotonic()
+        if n <= 0:
+            raise TimeoutError("決めた時間（%d秒）を使い切った" % timeout)
+        return n
+
     res = {"text": "", "考えた字数": 0, "回数": 0, "ms": 0, "error": None,
-           "深さ": fukasa, "深さの名": s["名"]}
+           "深さ": fukasa, "深さの名": s["名"],
+           "見直した": False, "見直しのしくじり": None}
 
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
 
-    def hitokuchi(m, nokori):
-        katachi = _katachi(m, s["思考"], min(20, max(5, int(nokori))))
+    def hitokuchi(m):
+        """1回ぶん（考える → 答える）。残り時間は **その都度** 計り直す。"""
+        katachi = _katachi(m, s["思考"], min(20, max(1, int(nokori_byou()))))
         kangae = ""
         if s["思考"]:
             # ★ <think> は こちらから開ける。開けないと「思考するかどうか」を
             #   モデルの気分に任せることになり、深さが効かない回が出る。
             katachi += "<think>\n"
-            r = _tsuzuki(katachi, s["考える上限"], max(10, int(nokori)),
+            r = _tsuzuki(katachi, s["考える上限"], max(1, int(nokori_byou())),
                          stop=["</think>"])
             kangae = r.get("content") or ""
             if (r.get("stop_type") or "") != "word":
                 kangae += SHIMEKIRI
             katachi += kangae + "\n</think>\n\n"
-        r2 = _tsuzuki(katachi, kotae_cap, max(10, int(nokori)))
+        r2 = _tsuzuki(katachi, kotae_cap, max(1, int(nokori_byou())))
         return (r2.get("content") or ""), len(kangae)
 
     try:
-        out, k = hitokuchi(msgs, timeout)
+        out, k = hitokuchi(msgs)
         res["回数"], res["考えた字数"] = 1, k
         if s["見直し"] and out.strip():
-            nokori = timeout - (time.monotonic() - t0)
-            if nokori > 8:
+            if nokori_byou() > 8:
                 m2 = msgs + [{"role": "assistant", "content": out},
                              {"role": "user", "content": MINAOSHI}]
                 try:
-                    out2, k2 = hitokuchi(m2, nokori)
+                    out2, k2 = hitokuchi(m2)
                     if out2.strip():
                         out, res["回数"] = out2, 2
                         res["考えた字数"] += k2
-                except Exception:
-                    pass          # 見直しに失敗しても 下書きは返す
+                        res["見直した"] = True
+                    else:
+                        res["見直しのしくじり"] = "見直しが空だった"
+                except Exception as e:
+                    # ★ 黙って捨てない。深さ3のつもりが 深さ2 で終わっていた、
+                    #   というのが 集計から見えなくなる。
+                    res["見直しのしくじり"] = "%s: %s" % (type(e).__name__, e)
+            else:
+                res["見直しのしくじり"] = "残り時間が足りず 見直しをしなかった"
         res["text"] = out.strip()
     except urllib.error.URLError as e:
         res["error"] = "llama-server（%s）につながりません: %s" % (URL, e)

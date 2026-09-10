@@ -15,15 +15,28 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))      # 上の kangaeru_fukasa.py を使う
-import kangaeru_fukasa as KF
-
-# ★ 答えの上限は **短く**。この問題集の答えはどれも一行なのに、
-#   上限を 3500 にすると たまに 4分ぶん 書き続ける問題が出る（実測）。
+# ★ 答えの上限を **短く** しておく。この問題集の答えはどれも一行なのに、
+#   既定の 3500 トークンだと、たまに 4分ぶん 書き続ける問題が出る（実測）。
 #   1件の外れ値が 全体の時間を決めてしまうので、ここで縛る。
 KOTAE_CAP = 700
+import kangaeru_fukasa as KF
 
+# ★ 2026-09-10 strict 化。ゆるい採点は **どこかに正解の数があれば ○** にできてしまう。
+#   採点器を賢くするのではなく、**採点器が単純でも誤判定できない形**にする。
 SYSTEM = ("あなたは 算数と なぞときの係です。"
-          "答えだけを short に書いてください。式や説明は書かないこと。")
+          "**最後の行に必ず `答え: <値>` とだけ書いてください。**"
+          "値は数字か語だけ。単位・式・説明を書かないこと。")
+
+# 「答え:」の直後だけを見る。**これが取れなければ 形式違反として数える。**
+_STRICT = re.compile(r"答え\s*[:：]\s*([^\n]{1,40})\s*$", re.M)
+
+
+def _strict_toru(out: str):
+    """出力から strict な答えを取り出す。取れなければ None。"""
+    if not out:
+        return None
+    m = _STRICT.findall(out)
+    return m[-1].strip() if m else None
 
 ZEN = str.maketrans("０１２３４５６７８９，．", "0123456789,.")
 
@@ -55,8 +68,21 @@ def _seikai(deta, out: str) -> bool:
     """
     if not out:
         return False
-    o = out.translate(ZEN).replace(",", "")
     kotae = deta["答"]
+
+    # ★ strict 経路。`答え: X` が取れたら **そこだけ**を見る。
+    #   途中の数を拾って偶然当たる、という穴がここで塞がる。
+    st = _strict_toru(out)
+    if st is not None:
+        o = st.translate(ZEN).replace(",", "").strip()
+        if deta["答の形"] == "数":
+            m = re.search(r"-?\d+(?:\.\d+)?", o)
+            return bool(m) and _kazu_onaji(m.group(0), kotae)
+        return _narabi_onaji(o, kotae)
+
+    # ここから下は **形式を守らなかったときの保険**。ゆるいので、使った回数を数える。
+    _YURUI[0] += 1
+    o = out.translate(ZEN).replace(",", "")
 
     if deta["答の形"] == "数":
         # 「答え: 」「＝」の直後があれば そこを最優先で見る
@@ -71,6 +97,13 @@ def _seikai(deta, out: str) -> bool:
             return True
         return any(_kazu_onaji(k, kotae) for k in kazu)
 
+    return _narabi_onaji(o, kotae)
+
+
+_YURUI = [0]          # ゆるい採点に落ちた回数
+
+
+def _narabi_onaji(o: str, kotae: str) -> bool:
     if re.match(r"^\d+月\d+日$", kotae):
         m, d = re.match(r"^(\d+)月(\d+)日$", kotae).groups()
         return bool(re.search(r"%s\s*月\s*%s\s*日" % (m, d), o))
@@ -101,9 +134,20 @@ def _kazu_onaji(a, b):
 
 
 def hitotsu(deta, fukasa, timeout):
+    """1問。★ モデルの読み込み中(503)なら 待って やり直す。
+
+    測定中に llama-server が入れ替わることがある（カーネルを開き直した等）。
+    前はそこで 全件 503 になり、**測れていないのに 0% と記録された。**
+    これは「数字が嘘になる」いちばん危ない形なので、ここで吸収する。
+    """
     t0 = time.time()
-    r = KF.kiku(deta["問"], system=SYSTEM, fukasa=fukasa, timeout=timeout,
-                kotae_cap=KOTAE_CAP)
+    for kai in range(6):
+        r = KF.kiku(deta["問"], system=SYSTEM, fukasa=fukasa, timeout=timeout,
+                    kotae_cap=KOTAE_CAP)
+        e = r.get("error") or ""
+        if not ("503" in e or "Loading model" in e or "つながりません" in e):
+            break
+        time.sleep(20)
     out = (r.get("text") or "").strip()
     return {"id": deta["id"], "段": deta["段"], "型": deta["型"],
             "問": deta["問"], "答": deta["答"], "出力": out[:400],
@@ -130,26 +174,51 @@ def main():
         a.fukasa, ("_" + a.nafuda) if a.nafuda else ""))
     os.makedirs(os.path.dirname(out), exist_ok=True)
 
+    # ★ 中断・再開ができるようにする。
+    #   手元のモデルは、カーネルを開き閉めするたびに入れ替わる（16GBなので1つずつ）。
+    #   1時間の測定が終盤で全部消えるのは割に合わないので、1件ずつ書き出す。
+    tochuu = out.replace(".json", ".tochuu.jsonl")
+    sumi_map = {}
+    if os.path.exists(tochuu):
+        for ln in open(tochuu, encoding="utf-8"):
+            ln = ln.strip()
+            if ln:
+                try:
+                    x = json.loads(ln)
+                    sumi_map[x["id"]] = x
+                except Exception:
+                    pass
+    nokori = [m for m in mondai if m["id"] not in sumi_map]
+    print("全%d件 / 済み%d件 / これから%d件"
+          % (len(mondai), len(sumi_map), len(nokori)), flush=True)
+
     t0 = time.time()
     sumi = [0]
     lock = threading.Lock()
+    tf = open(tochuu, "a", encoding="utf-8")
 
     def work(d):
         r = hitotsu(d, a.fukasa, a.timeout)
         with lock:
+            tf.write(json.dumps(r, ensure_ascii=False) + "\n")
+            tf.flush()
             sumi[0] += 1
-            if sumi[0] % 10 == 0:
-                print("  %d/%d  %.0f秒" % (sumi[0], len(mondai), time.time() - t0),
+            if sumi[0] % 5 == 0:
+                print("  %d/%d  %.0f秒" % (sumi[0], len(nokori), time.time() - t0),
                       flush=True)
         return r
 
     with ThreadPoolExecutor(max_workers=a.narabi) as ex:
-        kekka = list(ex.map(work, mondai))
+        atarashii = {r["id"]: r for r in ex.map(work, nokori)}
+    tf.close()
+    sumi_map.update(atarashii)
+    kekka = [sumi_map[m["id"]] for m in mondai if m["id"] in sumi_map]
 
     matome = {"深さ": a.fukasa, "深さの名": KF.FUKASA[a.fukasa]["名"],
               "名札": a.nafuda, "件数": len(kekka),
               "全体秒": round(time.time() - t0, 1)}
-    for dan in (1, 2, 3):
+    # ★ 段を決め打ちしない。6段・7段を渡したとき、まとめが黙って作られなかった。
+    for dan in sorted({k["段"] for k in kekka if k.get("段") is not None}):
         g = [k for k in kekka if k["段"] == dan]
         if g:
             matome["段%d" % dan] = {
@@ -160,6 +229,11 @@ def main():
     matome["平均秒"] = round(sum(k["秒"] for k in kekka) / len(kekka), 1)
     matome["平均考えた字数"] = round(sum(k["考えた字数"] for k in kekka) / len(kekka))
     matome["しくじり件数"] = sum(1 for k in kekka if k["しくじり"])
+    # ★ ゆるい採点に落ちた数＝「答え: X」を書かなかった数。**必ず表に出す。**
+    #   ここが多いと、正解率は「途中の数で偶然当たった分」を含む。
+    matome["形式違反(ゆるい採点)"] = _YURUI[0]
+    if len(kekka) and _YURUI[0] > len(kekka) * 0.1:
+        print("!!!! 形式違反が %d/%d 件。正解率はゆるい採点を含む" % (_YURUI[0], len(kekka)))
 
     json.dump({"まとめ": matome, "一件ずつ": kekka},
               open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

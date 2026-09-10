@@ -117,6 +117,21 @@ def hanbun_toru(url, a, b):
         return f.read()
 
 
+def hantei(namae_ok, goi_ok, kakera_ok, hon_kazu):
+    """出所の合否だけを決める。**模型もネットも要らない形にしておく**と、
+    「0本で合格になる」ような穴を 自動検査で捕まえられる。"""
+    if hon_kazu < 1:
+        return False, "照合0本（調べていないので判定不能）"
+    naze = []
+    if not namae_ok:
+        naze.append("テンソル名が不一致")
+    if not goi_ok:
+        naze.append("語彙が不一致")
+    if not kakera_ok:
+        naze.append("抜き取ったバイトが不一致")
+    return (not naze), (" / ".join(naze) if naze else "一致")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gguf")
@@ -237,10 +252,13 @@ def main():
         print("   × ヘッダが %d MB でも読み切れませんでした" % (tore >> 20))
         return
     print("   ヘッダ %.2f MB を取得（必要なぶんだけ）" % (ds_o / 1024**2))
-    print("   %s テンソルの名前が完全一致 (%d 個)"
-          % (shirushi(set(ts_o) == set(ts)), len(ts_o)))
-    print("   %s 語彙が一字一句一致"
-          % shirushi(kv_o.get("tokenizer.ggml.tokens") == kv.get("tokenizer.ggml.tokens")))
+    # ★ 合否は **別々に持って、最後に全部 AND する。**
+    #   前は最後の zen に「抜き取ったバイトが合ったか」しか入っておらず、
+    #   名前や語彙が食い違っていても「間違いありません」と出せた。
+    namae_ok = set(ts_o) == set(ts)
+    goi_ok = kv_o.get("tokenizer.ggml.tokens") == kv.get("tokenizer.ggml.tokens")
+    print("   %s テンソルの名前が完全一致 (%d 個)" % (shirushi(namae_ok), len(ts_o)))
+    print("   %s 語彙が一字一句一致" % shirushi(goi_ok))
     chigau = [n for n in ts_o if n in ts and ts_o[n]["形"] != ts[n]["形"]]
     if chigau:
         print("   ！ 形が違うテンソル %d 個 … 手を入れた部分:" % len(chigau))
@@ -251,20 +269,46 @@ def main():
     onaji = [n for n in ts_o if n in ts and ts_o[n]["形"] == ts[n]["形"]
              and ts[n]["バイト"] > 4096]
     onaji.sort(key=lambda n: -ts[n]["バイト"])
+    # ★ 0本だと ループが1度も回らず「全部合った」ことになってしまう。
+    #   **照合0本は「合格」ではなく「調べていない」。**
+    if a.kurabe < 1:
+        print("   × --kurabe は1以上。0本では 何も照合していないので判定できません。")
+        return
     erabu = onaji[:a.kurabe]
+    if not erabu:
+        print("   × 照合できるテンソルが1本もありません（判定不能）。")
+        return
     print("   手を入れていないテンソルを %d 本、実物で照合します:" % len(erabu))
-    zen = True
+    kakera_ok = True
     for na in erabu:
-        n = min(ts[na]["バイト"], 2 << 20)
-        aa = ds_o + ts_o[na]["位置"]
-        kou = hanbun_toru(U, aa, aa + n - 1)
-        f.seek(ds + ts[na]["位置"])
-        ok = len(kou) == n and hashlib.sha256(kou).digest() == hashlib.sha256(f.read(n)).digest()
-        zen &= ok
-        print("     %s %-32s %6.2f MB" % (shirushi(ok), na[:32], n / 1024**2))
+        zen_n = ts[na]["バイト"]
+        # ★ 先頭だけ見ると「先頭2MBだけ同じで あとは別物」を通してしまう。
+        #   **先頭・まん中・末尾** の3か所から抜く。
+        haba = min(zen_n, 2 << 20) // 3 // 64 * 64 or min(zen_n, 4096)
+        basho = [0, max(0, zen_n // 2 - haba // 2), max(0, zen_n - haba)]
+        ok = True
+        for b in sorted(set(basho)):
+            m = min(haba, zen_n - b)
+            if m <= 0:
+                continue
+            aa = ds_o + ts_o[na]["位置"] + b
+            kou = hanbun_toru(U, aa, aa + m - 1)
+            f.seek(ds + ts[na]["位置"] + b)
+            ok &= (len(kou) == m and
+                   hashlib.sha256(kou).digest() == hashlib.sha256(f.read(m)).digest())
+        kakera_ok &= ok
+        print("     %s %-32s 先頭/中/末 各 %.2f MB" % (shirushi(ok), na[:32], haba / 1024**2))
+    zen, _naze = hantei(namae_ok, goi_ok, kakera_ok, len(erabu))
     print()
-    print("   →", "★ この公式ファイルから作られたもので間違いありません。" if zen
-          else "★ 一致しませんでした。出所を疑ってください。")
+    if zen:
+        # ★ 「証明」とは言わない。抜き取り照合は **強い証拠** であって全数検査ではない。
+        print("   → ★ 名前・語彙が完全一致し、抜き取った %d 本も一致しました。"
+              % len(erabu))
+        print("     この公式ファイルから作られた、と考えてよい **強い証拠**です。")
+        print("     （全バイトを見たわけではありません。厳密には元ファイルの")
+        print("       SHA-256 と変換手順を固定するのが本筋です）")
+    else:
+        print("   → ★ 出所を疑ってください: " + _naze)
 
 
 if __name__ == "__main__":
