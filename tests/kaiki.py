@@ -130,7 +130,8 @@ def t_mondai():
 def t_gguf():
     print("[6] GGUF の書き出し（小さいモデルで往復）")
     import hashlib, resource, glob
-    ko = glob.glob(os.path.expanduser("~/LocalAI_mirror/models/*0.6B*.gguf"))
+    ko = (glob.glob(os.path.join(ROOT, "..", "data", "models", "*0.6B*.gguf"))
+          + glob.glob(os.path.expanduser("~/LocalAI_mirror/models/*0.6B*.gguf")))
     if not ko:
         print("  - 小さいGGUFが無いので飛ばす")
         return
