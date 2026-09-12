@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading, secrets, time
 
 MATSU_BYOU = 180
+JIDOU = False             # 試験専用。本人が「やっていい」と言った無人の試験だけ True にする（アプリからは絶対に立てない）
 TOIKAKE = None            # server が差し込む: TOIKAKE({"承認": {"id":…, "文":…}})
 _MACHI: dict[str, dict] = {}
 _LOCK = threading.Lock()
@@ -41,6 +42,9 @@ def kotaeru(ident: str, kotae: str) -> bool:
 
 def kiku(bun: str, iu=None) -> bool:
     """「bun をしていい？」と聞く。True=する。"""
+    if JIDOU:
+        if iu: iu("  ▶ %s（試験: 自動で許可）" % bun)
+        return True
     if getattr(_ZENBU, "ok", False):
         if iu: iu("  ▶ %s（全部許す、と言われている）" % bun)
         return True
