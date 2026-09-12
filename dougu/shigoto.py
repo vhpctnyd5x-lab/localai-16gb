@@ -15,7 +15,7 @@
     ・失敗したら エラーを見せて1回だけ書き直させる（考える→走らせる→結果を見る→直す の最小の輪）。
 """
 from __future__ import annotations
-import os, re, sys, time, shutil, json
+import os, re, sys, time, shutil, json, io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -71,16 +71,36 @@ def _anzen(src: str) -> str | None:
     return None
 
 
-def _kaku(toi: str, michi: list[str], out_dir: str, mae: str | None, error: str | None, timeout: int) -> tuple[str | None, str]:
+def _kaku(toi: str, michi: list[str], out_dir: str, mae: str | None, error: str | None, timeout: int,
+          betsu: bool = False, fukasa: int = 0) -> tuple[str | None, str]:
     import teachers as T
     p = ["仕事: " + toi.strip()]
+    if betsu:
+        p.append("（さっきとは **別の書き方** で。使う関数やループの組み方を変えること。答えは同じになるはず）")
     if michi:
         p.append("読んでよい道:\n" + "\n".join("  " + m for m in michi))
-    p.append("OUT = %r  # 作るものはこの中に" % out_dir)
+        # ★ 頭脳は中身を見ずにプログラムを書いていた（列の名前や型を知らないまま）。
+        #   「個数が3より多い行」を「列が3つより多い行」と読むような取り違えが 2/10 出た。
+        #   → 文字のファイルは 先頭5行 を見せる。列の名前と型が分かれば、取り違えは減る。
+        for m in michi:
+            try:
+                if os.path.isfile(m) and os.path.getsize(m) < 1_000_000:
+                    with io.open(m, encoding="utf-8", errors="replace") as f:
+                        atama = [next(f).rstrip("\n") for _ in range(5)]
+            except StopIteration:
+                pass
+            except Exception:
+                continue
+            else:
+                p.append("%s の先頭:\n" % os.path.basename(m) + "\n".join("  " + a[:200] for a in atama))
+    # ★ 「OUT はフォルダ」を明記。open(OUT, "w") と書いて IsADirectoryError で2回止まった課題があった（表 #3）。
+    p.append("OUT = %r  # フォルダ。作るものは os.path.join(OUT, \"名前\") に保存する。OUT そのものを open しない" % out_dir)
     if mae and error:
-        p.append("さっきのプログラムはこのエラーで止まった。直して書き直すこと:\n" + error[:600])
+        if "IsADirectoryError" in error:
+            error += "\n（OUT はフォルダです。open(OUT) ではなく open(os.path.join(OUT, \"ファイル名\"), \"w\") に直すこと）"
+        p.append("さっきのプログラムはこのエラーで止まった。直して書き直すこと:\n" + error[:700])
         p.append("さっきのプログラム:\n```python\n" + mae[:2500] + "\n```")
-    r = T.ask_one("local:main", "\n\n".join(p), system=SYSTEM, timeout=timeout, fukasa=0)
+    r = T.ask_one("local:main", "\n\n".join(p), system=SYSTEM, timeout=timeout, fukasa=fukasa)
     if r.get("error"):
         return None, "頭脳のエラー: " + r["error"]
     text = r.get("text") or ""
@@ -100,8 +120,60 @@ def _kaku(toi: str, michi: list[str], out_dir: str, mae: str | None, error: str 
     return src, ""
 
 
+_KAZU_TOI = re.compile(r"何行|何件|いくつ|何個|何通り|何人|何回|合計|平均|最大|最小|数えて|いくら")
+_KAZU = re.compile(r"(?<![\d.])-?\d+(?:\.\d+)?(?![\d.])")
+
+
+def _kazu_dake(text: str) -> list[str]:
+    """報告の中の数。ただし「3より多い」「5以上」のような条件の写しは数えない"""
+    t = re.sub(r"\d+(?:\.\d+)?(?:より|以上|以下|未満|桁|列目|行目|番目)", " ", text or "")
+    return _KAZU.findall(t)
+
+
 def suru(toi: str, iu=None, timeout: int = 150) -> dict:
-    """仕事をする。戻り: {"できた": bool, "報告": str, "成果物": [道], "経過": [..], "ミリ秒": int}"""
+    """仕事をする。戻り: {"できた": bool, "報告": str, "成果物": [道], "経過": [..], "ミリ秒": int, "確かめ": str}
+    ★ 数を答える仕事は、書き方を変えた2本目を走らせて **数が一致したときだけ「確かめた」**（kazoeru と同じ型）。
+      実測: 1本だけだと 表の課題で「7行」（正しくは3）「個数の合計→行数」のような取り違えが 10問中2問出た。"""
+    r1 = _ichido(toi, iu, timeout, betsu=False)
+    if not _KAZU_TOI.search(toi) or not r1["できた"]:
+        r1["確かめ"] = "" if not r1["できた"] else "作るだけ（確かめ無し）"
+        return r1
+    k1 = _kazu_dake(r1["報告"] + " " + _naka(r1["成果物"]))
+    if not k1:
+        r1["確かめ"] = "数が出ていない"
+        return r1
+    say = iu or (lambda s: None)
+    say("  仕事: 別の書き方でもう1本（数を確かめる）")
+    r2 = _ichido(toi, None, timeout, betsu=True)
+    k2 = _kazu_dake(r2["報告"] + " " + _naka(r2["成果物"])) if r2["できた"] else []
+    if k2 and (k1[-1] == k2[-1] or set(k1) & set(k2)):
+        r1["確かめ"] = "別の書き方の2本が一致"; r1["ミリ秒"] += r2["ミリ秒"]
+        return r1
+    say("  仕事: 食い違い（%s / %s）→ 深く考えて3本目" % (k1[-1:], k2[-1:]))
+    r3 = _ichido(toi, None, timeout, betsu=False, fukasa=2)
+    k3 = _kazu_dake(r3["報告"] + " " + _naka(r3["成果物"])) if r3["できた"] else []
+    for ra, ka, rb, kb in ((r1, k1, r3, k3), (r2, k2, r3, k3)):
+        if ka and kb and ka[-1] == kb[-1]:
+            ra["確かめ"] = "3本中2本が一致"; ra["ミリ秒"] = r1["ミリ秒"] + r2["ミリ秒"] + r3["ミリ秒"]
+            return ra
+    r1["できた"] = False
+    r1["確かめ"] = "3本とも食い違った（%s / %s / %s）。自信がない" % (k1[-1:], k2[-1:], k3[-1:])
+    r1["報告"] = "答えが定まりませんでした（%s）。問題の書き方を少し変えてもらえますか。" % r1["確かめ"]
+    r1["ミリ秒"] = r1["ミリ秒"] + r2["ミリ秒"] + r3["ミリ秒"]
+    return r1
+
+
+def _naka(paths):
+    s = ""
+    for p_ in paths or []:
+        try:
+            s += io.open(p_, encoding="utf-8").read()[:3000]
+        except Exception:
+            pass
+    return s
+
+
+def _ichido(toi: str, iu=None, timeout: int = 150, betsu: bool = False, fukasa: int = 0) -> dict:
     import coderun, tempfile
     t0 = time.time()
     say = iu or (lambda s: None)
@@ -111,7 +183,7 @@ def suru(toi: str, iu=None, timeout: int = 150) -> dict:
     keika, src, err = [], None, None
     for kai in (1, 2):
         say("  仕事: プログラムを書かせる（%d回目）" % kai)
-        src, ng = _kaku(toi, michi, out_dir, src, err, timeout)
+        src, ng = _kaku(toi, michi, out_dir, src, err, timeout, betsu=betsu, fukasa=fukasa)
         if not src:
             keika.append("%d回目: %s" % (kai, ng)); say("    " + ng)
             break
