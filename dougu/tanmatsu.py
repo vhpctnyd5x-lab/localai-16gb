@@ -22,6 +22,8 @@ YURUSU = {"ls", "cat", "head", "tail", "wc", "grep", "find", "du", "df", "date",
 GIT_YURUSU = {"status", "log", "diff", "show", "branch", "remote"}
 KINSHI = {"rm", "rmdir", "mv", "cp", "curl", "wget", "ssh", "scp", "sudo", "kill", "pkill", "open", "osascript", "python3", "python", "sh", "bash", "zsh", "chmod", "chown", "dd", "mkfs", "diskutil", "launchctl", "defaults", "npm", "pip", "brew"}
 _AIZU = re.compile(r"ターミナル|コマンド|シェル|実行して|走らせて|`[^`]+`")
+# 「ターミナルで」「コマンドで」と **名指し** されたら、道の名前が入っていてもこの道具に入る（通し試験で ~/Desktop の一覧が横取りされた）
+_TSUYOI = re.compile(r"ターミナル|コマンド|シェル|`[^`]+`")
 _KIGOU = re.compile(r"[|;&><`$]")
 
 SYSTEM = ("あなたは Mac のターミナルに詳しい係。頼まれたことを調べる **ターミナルの命令を1行だけ** 書いてください。"
@@ -31,6 +33,11 @@ SYSTEM = ("あなたは Mac のターミナルに詳しい係。頼まれたこ�
 
 def aizu(text: str) -> bool:
     return bool(_AIZU.search(text or ""))
+
+
+def aizu_tsuyoi(text: str) -> bool:
+    """名指し（ターミナル・コマンド・シェル・`命令`）。これがあれば、ファイルの道が書いてあってもターミナルの仕事"""
+    return bool(_TSUYOI.search(text or ""))
 
 
 def hantei(cmd: str) -> tuple[bool, str]:
