@@ -119,11 +119,23 @@ def front(app):
     # 埋め込むと、引用符を含む名前がスクリプト構文へ混ざる。アプリ名は
     # データとして扱い、AppleScript の文字列リテラル用にエスケープする。
     apple_app = app.replace("\\", "\\\\").replace('"', '\\"')
-    r = subprocess.run(["osascript", "-e",
-                        f'tell application "{apple_app}" to activate'],
-                       capture_output=True, text=True, timeout=15)
-    if r.returncode != 0:
-        raise Exception((r.stderr or "").strip()[:160] or f"{app} を前に出せません")
+    try:
+        r = subprocess.run(["osascript", "-e",
+                            f'tell application "{apple_app}" to activate'],
+                           capture_output=True, text=True, timeout=15)
+        shippai = (r.stderr or "").strip()[:160] if r.returncode != 0 else ""
+    except subprocess.TimeoutExpired:
+        # ★ 2026-09-13 の実測: メモ(Notes)が応答しなくなり、activate が 15秒で3回とも落ちた。
+        #   輪はそこで「同じ手を3回」と見なして止まる。**道を1本しか持っていなかったのが原因。**
+        #   AppleScript はアプリ本人に返事をさせるので、固まっていると届かない。
+        #   `open -a` は Launch Services に頼むだけなので、返事を待たない。
+        shippai = "activate が返ってこない"
+    if shippai:
+        r2 = subprocess.run(["open", "-a", app], capture_output=True, text=True, timeout=20)
+        if r2.returncode != 0:
+            raise Exception(shippai or (r2.stderr or "").strip()[:160] or f"{app} を前に出せません")
+        time.sleep(1.0)
+        return {"ok": True, "アプリ": app, "道": "open -a（activate が駄目だった）"}
     time.sleep(0.5)
     return {"ok": True, "アプリ": app}
 
