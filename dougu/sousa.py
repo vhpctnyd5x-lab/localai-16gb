@@ -186,6 +186,10 @@ def _gamen(nerai: str | None = None) -> dict:
             continue
         mita.add(t)
         moji.append({"文": t, "x": e["x"], "y": e["y"]})
+    # ★ 並びを固定する（上から下・左から右）。OCR の拾い順のままだと、同じ画面でも
+    #   毎回ちがう並びになり、**頼み文の前半が変わってモデルが読み直す**。
+    #   読み込みは 12.8 t/s（2026-09-14 実測）＝100トークンで 8秒。並びの安定は そのまま速さ。
+    moji.sort(key=lambda m: (m["y"] // 10, m["x"]))
     return {"アプリ": o.get("active_app") or "", "文字": moji, "枠": waku, "目当て": nerai,
             "窓の題": _mado_no_dai(nerai) if nerai else ""}
 

@@ -370,7 +370,18 @@ textarea{
   max-height:min(40vh, 380px);
 }
 textarea::placeholder{color:var(--faint)}
-.bar{display:flex;align-items:center;gap:10px;padding:6px 12px 9px}
+/* ★ 2026-09-14 の直し: 「うごき」の窓を開いて幅が狭くなると、バーの中の字が
+   **1文字ずつ縦に折り返されて**「本番モード」が 本/番/モ/ー/ド になっていた
+   （日本語はどこでも折り返せるので、幅が足りないと1文字ずつ折れる）。
+   ・字を折らない（nowrap）
+   ・つぶさない（flex-shrink:0）
+   ・入りきらないときは 潰さずに 横に流す（overflow-x:auto）*/
+.bar{display:flex;align-items:center;gap:10px;padding:6px 12px 9px;
+     flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.bar::-webkit-scrollbar{display:none}
+.bar>*{flex:0 0 auto}
+.bar *{white-space:nowrap}   /* ボタンの **中** の字も折らない（直下だけでは 本/番/モ/ー/ド が残った） */
+.bar .sp{flex:1 1 auto;min-width:0}
 .bar button{
   all:unset;display:flex;align-items:center;gap:6px;
   padding:4px 9px;border-radius:7px;font-size:12px;color:var(--dim);cursor:pointer;
