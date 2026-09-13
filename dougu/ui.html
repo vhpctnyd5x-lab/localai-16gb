@@ -1,0 +1,2007 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>カーネル</title>
+<style>
+:root{
+  --bg:#1c1c1b;
+  --side:#151514;
+  --panel:#232322;
+  --line:#31312f;
+  --fg:#e8e6e1;
+  --dim:#9c9890;
+  --faint:#6e6a63;
+  --accent:#d4744a;
+  --accent-dim:#8a4c30;
+  --ok:#7fb08a;
+  --warn:#d9a441;
+  --code:#1a1a19;
+  --sel:#2c2c2a;
+  --radius:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--fg);
+  font:14px/1.75 "Hiragino Sans","Yu Gothic",-apple-system,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  display:flex;overflow:hidden;
+}
+
+/* ================= サイドバー ================= */
+aside{
+  width:248px;flex:0 0 248px;background:var(--side);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.lights{display:flex;gap:8px;padding:14px 16px 10px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#ff5f57}
+.lights i:nth-child(2){background:#febc2e}
+.lights i:nth-child(3){background:#28c840}
+
+.tabs{display:flex;gap:6px;padding:4px 12px 12px}
+.tab{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:7px 10px;border-radius:8px;font-size:13px;color:var(--dim);
+  cursor:default;user-select:none;
+}
+.tab.on{background:var(--sel);color:var(--fg)}
+.tab svg{width:14px;height:14px;opacity:.8}
+
+.nav{padding:2px 8px;display:flex;flex-direction:column;gap:1px}
+.nav button{
+  all:unset;display:flex;align-items:center;gap:10px;
+  padding:7px 10px;border-radius:8px;font-size:13.5px;color:var(--fg);
+  cursor:pointer;white-space:nowrap;
+}
+.nav button:hover{background:var(--sel)}
+.nav button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.nav button svg{width:15px;height:15px;flex:0 0 15px;opacity:.75}
+.nav .muted{color:var(--dim)}
+.nav .badge{
+  margin-left:auto;font-size:10.5px;color:var(--faint);
+  border:1px solid var(--line);border-radius:5px;padding:0 5px;
+}
+
+.group{padding:18px 18px 6px;font-size:12px;color:var(--faint)}
+.chats{padding:0 8px;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
+/* 会話の一覧が 縦をぜんぶ使う（「よく使うもの」を消したので取り合いが無い） */
+#chatlist{flex:1 1 auto;min-height:60px;overflow-y:auto}
+.chat{
+  display:flex;align-items:center;gap:9px;padding:7px 10px;
+  border-radius:8px;font-size:13px;color:var(--dim);cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.chat:hover{background:var(--sel)}
+.chat.on{background:var(--sel);color:var(--fg)}
+.chat .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 6px}
+
+.me{
+  display:flex;align-items:center;gap:9px;padding:12px 14px;
+  border-top:1px solid var(--line);font-size:12.5px;color:var(--dim);
+  cursor:pointer;                     /* ★ 押せる場所だと分かるように */
+}
+.me:hover{background:var(--sel);color:var(--fg)}
+.me .chev{margin-left:2px;opacity:.55;font-size:10px}
+.me .av{
+  width:22px;height:22px;border-radius:50%;flex:0 0 22px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-dim));
+}
+
+/* ================= 本体 ================= */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+/* ================= 会話のいちらん ================= */
+.grouprow{display:flex;align-items:center;gap:6px;padding:14px 16px 6px}
+.grouprow .t{font-size:11px;color:var(--faint);letter-spacing:.04em}
+.grouprow .sp{margin-left:auto}
+.grouprow button{
+  all:unset;cursor:pointer;color:var(--faint);font-size:15px;line-height:1;
+  padding:2px 6px;border-radius:6px;
+}
+.grouprow button:hover{background:var(--sel);color:var(--fg)}
+#chatlist{flex:1;overflow:auto;padding:0 8px 8px;min-height:60px}
+.kumi-h{display:flex;align-items:center;gap:6px;padding:7px 8px 4px;
+  font-size:11px;color:var(--faint);cursor:pointer;user-select:none;
+  letter-spacing:.04em}
+.kumi-h:hover{color:var(--fg)}
+.kumi-h .ya{width:10px;font-size:9px;opacity:.7}
+.kumi-h .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kumi-h .n{opacity:.6}
+#chatlist .crow{margin-left:6px}
+.crow{
+  display:flex;align-items:center;gap:6px;padding:7px 8px;border-radius:8px;
+  cursor:pointer;color:var(--dim);font-size:12.5px;
+}
+.crow:hover{background:var(--sel);color:var(--fg)}
+.crow.on{background:var(--sel);color:var(--fg)}
+.crow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crow .n{font-size:10.5px;color:var(--faint)}
+.crow .dots{opacity:0;padding:0 2px;border-radius:5px}
+.crow:hover .dots{opacity:1}
+.crow .hi{font-size:10.5px;color:var(--faint);white-space:nowrap}
+.crow .x{opacity:0;padding:0 3px;border-radius:5px;color:#c76b5e}
+.crow:hover .x{opacity:1}
+.crow input[type=checkbox]{margin:0 2px 0 0}
+#seibar{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:6px 8px;font-size:11.5px;color:var(--dim)}
+#seibar .btn{padding:3px 8px;font-size:11px}
+.hibi{display:flex;align-items:center;gap:6px;padding:8px 8px 3px;font-size:11px;color:var(--faint);letter-spacing:.04em}
+.hibi .n{opacity:.7}
+.crow .dots:hover{background:#3a3a37}
+
+/* ================= かぶせて出す窓 ================= */
+.veil{
+  position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;
+  display:none;align-items:center;justify-content:center;padding:24px;
+}
+.veil.on{display:flex}
+.sheet{
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  width:min(620px,100%);max-height:80vh;display:flex;flex-direction:column;
+  overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);
+}
+.sheet h3{
+  font-size:13px;font-weight:600;padding:15px 18px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;
+}
+.sheet h3 .sp{margin-left:auto}
+.sheet .in{padding:16px 18px;overflow:auto}
+.sheet .ft{
+  padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;
+}
+.sheet .ft .sp{margin-left:auto}
+.btn{
+  all:unset;cursor:pointer;font-size:12.5px;padding:7px 14px;border-radius:8px;
+  border:1px solid var(--line);color:var(--dim);
+}
+.btn:hover{background:var(--sel);color:var(--fg)}
+.btn.go{background:var(--accent);color:#1c1c1b;border-color:var(--accent);font-weight:700}
+.btn.go:hover{background:#e07d50}
+.btn.bad{color:#c76b5e;border-color:#5a3a35}
+.btn.bad:hover{background:#3a2622;color:#e08a7c}
+.fld{margin-bottom:14px}
+.fld label{display:block;font-size:12px;color:var(--fg);margin-bottom:3px}
+.fld .hint{font-size:11px;color:var(--faint);margin-bottom:6px;line-height:1.55}
+.fld input[type=text],.fld textarea,.fld select{
+  all:unset;box-sizing:border-box;display:block;width:100%;
+  background:var(--code);border:1px solid var(--line);border-radius:8px;
+  padding:8px 11px;font:13px/1.6 inherit;color:var(--fg);
+}
+.fld textarea{min-height:110px;resize:vertical}
+/* all:unset で矢印まで消えて、押せると分からなくなっていた。描き足す */
+.fld select{
+  cursor:pointer;appearance:none;padding-right:30px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),
+                   linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+  background-position:calc(100% - 15px) 15px, calc(100% - 10px) 15px;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat;
+}
+.sw{display:flex;align-items:center;gap:9px;cursor:pointer}
+.sw input{all:unset;display:inline-block;width:34px;height:19px;border-radius:19px;
+  background:#3a3a37;position:relative;cursor:pointer;flex:0 0 auto;
+  transition:background .12s}
+.sw input:checked{background:var(--accent)}
+.sw input::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;
+  border-radius:50%;background:#e8e6e1;transition:transform .12s}
+.sw input:checked::after{transform:translateX(15px)}
+.kinds{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.kinds button{
+  all:unset;cursor:pointer;font-size:12px;padding:5px 11px;border-radius:20px;
+  border:1px solid var(--line);color:var(--dim);
+}
+.kinds button.on{background:var(--accent);color:#1c1c1b;border-color:var(--accent)}
+.rowlist{display:flex;flex-direction:column;gap:2px}
+.rowlist .r{
+  display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;
+  font-size:12.5px;color:var(--dim);cursor:pointer;
+}
+.rowlist .r:hover{background:var(--sel);color:var(--fg)}
+.rowlist .r .sp{margin-left:auto;font-size:11px;color:var(--faint)}
+
+/* ================= いれもの（コンテキスト）の帯 ================= */
+.meter{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--faint)}
+.meter .track{width:74px;height:5px;border-radius:5px;background:#2e2e2c;overflow:hidden}
+.meter .fill{height:100%;background:var(--ok);transition:width .25s,background .25s}
+.meter.mid .fill{background:var(--warn)}
+.meter.hot .fill{background:var(--accent)}
+/* 入力欄の帯は 部品が多い。窓が狭いときは 残量を引っ込める
+   （上のヘッダにも同じものが出ているので、消えても分からなくなることは無い）*/
+@media (max-width: 1100px){ #ctxmeter2{display:none} }
+
+/* ================= 右のターミナル ================= */
+/* 毎回スクショを撮らなくても、どんな指示でどう動いたかを
+   その場で読めるようにするための欄 */
+#term{
+  background:#121211;
+  border-left:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+body.no-term #term{display:none}
+/* 窓が狭いときは、右のうごき欄をしまう。
+   3列のままだと、まん中のチャットが潰れて何も読めなくなる */
+@media (max-width: 1180px){ #term{display:none} }
+@media (max-width: 900px){
+  aside{width:196px;flex:0 0 196px}
+  .turn{padding:10px 14px}
+  .composer{padding:0 14px 12px}
+}
+@media (max-width: 700px){ aside{display:none} }
+
+/* 右のうごき欄を、窓の広さに合わせて伸ばす（1/3 まで） */
+#term{width:clamp(340px, 30vw, 560px);flex:0 0 auto}
+#term .bar{
+  display:flex;align-items:center;gap:8px;
+  padding:11px 14px;border-bottom:1px solid var(--line);
+  font-size:11.5px;color:var(--dim);letter-spacing:.02em;
+}
+#term .bar .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+#term .bar .sp{margin-left:auto}
+#term .bar button{
+  background:none;border:1px solid var(--line);color:var(--dim);
+  border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;
+  font-family:inherit;
+}
+#term .bar button:hover{color:var(--fg);border-color:var(--faint)}
+#termbody{
+  flex:1;overflow:auto;padding:12px 14px 24px;
+  font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,"SF Mono",monospace;
+  color:#b8b4ac;white-space:pre-wrap;word-break:break-word;
+}
+#termbody .cmd{
+  color:var(--accent);margin:14px 0 4px;
+}
+#termbody .cmd:first-child{margin-top:0}
+#termbody .cmd b{font-weight:600;color:#e8b394}
+#termbody .blk{border-left:2px solid #2a2a28;padding-left:10px;margin-bottom:2px}
+#termbody .ok{color:var(--ok)}
+#termbody .ng{color:#c76b5e}
+#termbody .hi{color:#e6d9a8}
+#termbody .dim{color:var(--faint)}
+#termbody .step{color:#7fa8c9}
+#termbody .stamp{color:var(--faint);font-size:10.5px}
+
+/* ── ちがい（diff）の色 ── */
+.dplus{color:#7fb08a;background:rgba(127,176,138,.10);display:block}
+.dminus{color:#c76b5e;background:rgba(199,107,94,.10);display:block}
+.dhunk{color:#7fa8c9;display:block;margin-top:6px}
+#termbody .none{color:var(--faint)}
+header{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 22px;border-bottom:1px solid transparent;
+}
+header h1{font-size:14px;font-weight:600;letter-spacing:.01em}
+header .tagchip{
+  font-size:11.5px;color:var(--dim);background:var(--panel);
+  border:1px solid var(--line);border-radius:6px;padding:2px 8px;
+}
+header .right{margin-left:auto;display:flex;gap:14px;color:var(--faint)}
+header .right svg{width:16px;height:16px;cursor:pointer}
+/* 押せる所は 押せると分かるように。
+   前は 3つのうち 2つが id も持たない ただの絵で、押しても何も起きなかった */
+header .right svg:hover{color:var(--fg)}
+
+/* ── 上から降りてくる品書き ── */
+.dropdown{
+  position:fixed;z-index:60;min-width:230px;padding:6px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 12px 34px rgba(0,0,0,.45);font-size:13px;color:var(--fg);
+}
+.dropdown .it{display:flex;align-items:center;gap:10px;
+  padding:7px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;}
+.dropdown .it:hover{background:var(--line)}
+.dropdown .it .k{margin-left:auto;color:var(--faint);font-size:11px}
+.dropdown .it svg{width:15px;height:15px;flex:none;color:var(--dim)}
+.dropdown .it.danger{color:#c76b5e}
+.dropdown .it.danger svg{color:#c76b5e}
+.dropdown .sepline{height:1px;background:var(--line);margin:6px 4px}
+.dropdown .ttl{padding:6px 10px 3px;color:var(--faint);font-size:11px}
+
+#log{
+  flex:1;overflow-y:auto;padding:8px 0 20px;scroll-behavior:smooth;
+}
+/* 窓を広げたのに、中身が 760px のまま真ん中に寄っていて、
+   画面が広いほど使いにくくなっていた。
+   窓の広さに合わせて伸ばし、広すぎる時だけ上限で止める。 */
+.turn{width:100%;max-width:min(1100px, 100%);margin:0 auto;padding:10px 24px}
+.turn.user .bubble{
+  background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius);padding:11px 15px;
+  display:inline-block;max-width:100%;white-space:pre-wrap;word-break:break-word;
+}
+.turn.bot .who{
+  display:flex;align-items:center;gap:8px;font-size:12px;
+  color:var(--faint);margin-bottom:6px;
+}
+.turn.bot .who .av{
+  width:18px;height:18px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent-dim));
+}
+.turn.bot pre{
+  background:var(--code);border:1px solid var(--line);border-radius:var(--radius);
+  padding:13px 15px;overflow-x:auto;
+  font:12.5px/1.75 ui-monospace,"SF Mono",Menlo,monospace;
+  white-space:pre;color:#dcd8d1;
+}
+.turn.bot pre .ok{color:var(--ok)}
+.turn.bot pre .ng{color:#e58a86}
+.turn.bot pre .hi{color:var(--warn)}
+.turn.bot pre .dim{color:var(--faint)}
+.meta{font-size:11.5px;color:var(--faint);margin-top:7px}
+.computer-approval{margin-top:10px;padding:10px 12px;border:1px solid #715b36;
+  border-radius:8px;background:#211d16;color:var(--fg);font-size:12px;line-height:1.55}
+.computer-approval .label{color:var(--warn);font-weight:700;margin-bottom:6px}
+.computer-approval .reason{color:var(--faint);margin:4px 0 8px;white-space:pre-wrap}
+.computer-approval .context{color:var(--faint);font-size:11px;margin-top:6px}
+.computer-approval .caution{color:#e5b86e;font-size:11px;margin:7px 0 9px}
+.computer-approval button{margin-right:6px}
+
+.empty{
+  width:100%;max-width:min(1100px,100%);margin:0 auto;padding:70px 24px;
+  text-align:center;color:var(--dim);
+}
+.empty .mark{
+  width:38px;height:38px;margin:0 auto 18px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent-dim));
+}
+.empty h2{font-size:19px;font-weight:600;color:var(--fg);margin-bottom:8px}
+.empty p{font-size:13.5px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:24px}
+.chip{
+  all:unset;font-size:12.5px;color:var(--dim);background:var(--panel);
+  border:1px solid var(--line);border-radius:999px;padding:6px 13px;cursor:pointer;
+}
+.chip:hover{color:var(--fg);border-color:var(--faint)}
+.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ================= 入力 ================= */
+.composer{padding:0 24px 14px}
+.box{
+  width:100%;max-width:min(1100px,100%);margin:0 auto;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px;
+  transition:border-color .12s;
+}
+.box:focus-within{border-color:#4a4a46}
+textarea{
+  all:unset;display:block;width:100%;padding:13px 16px 4px;
+  font:14px/1.7 inherit;color:var(--fg);resize:none;
+  max-height:min(40vh, 380px);
+}
+textarea::placeholder{color:var(--faint)}
+.bar{display:flex;align-items:center;gap:10px;padding:6px 12px 9px}
+.bar button{
+  all:unset;display:flex;align-items:center;gap:6px;
+  padding:4px 9px;border-radius:7px;font-size:12px;color:var(--dim);cursor:pointer;
+}
+.bar button:hover{background:var(--sel);color:var(--fg)}
+.bar button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.bar svg{width:14px;height:14px}
+.bar .sp{margin-left:auto}
+/* きく先えらび。
+   前は素の <select> だったので、macOS の白い箱がそのまま出て、
+   暗い画面の中で ここだけ浮いていた。他のボタンと揃える。 */
+.bar select{
+  appearance:none;-webkit-appearance:none;
+  font:inherit;font-size:12px;line-height:1;
+  color:var(--dim);background-color:var(--panel);
+  border:1px solid var(--line);border-radius:8px;
+  padding:6px 24px 6px 10px;cursor:pointer;
+  max-width:230px;text-overflow:ellipsis;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239c9890' stroke-width='2.2' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat:no-repeat;background-position:right 6px center;background-size:13px;
+}
+.bar select:hover{background-color:var(--sel);color:var(--fg);border-color:var(--faint)}
+.bar select:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.bar select option,.bar select optgroup{background:var(--panel);color:var(--fg)}
+/* 手元のモデルを選んでいる間は、外に出ていないことが 見て分かるようにする */
+.bar select.temoto{color:var(--ok);border-color:var(--ok)}
+.bar select.soto{color:var(--warn);border-color:var(--warn)}
+.bar .pick{background:transparent;border:1px solid var(--line);border-radius:8px;width:30px;height:30px;font-size:15px;cursor:pointer;color:var(--fg);margin-right:4px}
+.bar .pick:hover{background:var(--line)}
+.bar .send.tomeru{background:#c76b5e}
+.bar .send.tomeru svg{display:none}
+.bar .send.tomeru::after{content:"";display:block;width:11px;height:11px;border-radius:2px;background:#fff}
+.keika{font-size:11.5px;color:var(--faint);margin:6px 0 0 2px;min-height:14px;white-space:pre-wrap}
+.keika b{color:var(--dim);font-weight:500}
+.bar .send{
+  background:var(--accent);color:#1c1c1b;font-weight:700;
+  width:28px;height:28px;justify-content:center;padding:0;border-radius:8px;
+}
+.bar .send:hover{background:#e07d50;color:#1c1c1b}
+.bar .send[disabled]{opacity:.35;cursor:default}
+.mode{
+  font-size:11.5px;border:1px solid var(--line);border-radius:6px;padding:2px 8px;
+}
+.mode.real{color:var(--warn);border-color:var(--warn)}
+.mode.practice{color:var(--faint)}
+/* 送り先が「手元のモデル」「外のモデル」のときに出す帯。
+   ここが カーネル 以外だと /sensei などに行き、**道具も承認の札も通らない**。
+   2026-09-13: これに気づかず「計算機を開いて」が断られ続けた（モデルが断っていた）。
+   ボタンの列に入れたら 字が縦に折れたので、入力欄の上に 幅いっぱいで出す。 */
+.sugoshi{
+  font-size:11.5px;color:var(--warn);border:1px solid var(--warn);border-radius:8px;
+  padding:5px 10px;margin-bottom:6px;line-height:1.5;
+}
+
+/* コマンド候補 */
+.palette{
+  position:absolute;bottom:74px;left:50%;transform:translateX(-50%);
+  width:min(720px,calc(100% - 48px));max-height:280px;overflow-y:auto;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 12px 34px rgba(0,0,0,.5);display:none;z-index:20;
+}
+.palette.on{display:block}
+.palette div{
+  display:flex;gap:12px;padding:8px 14px;font-size:13px;cursor:pointer;
+}
+.palette div.sel{background:var(--sel)}
+.palette .k{color:var(--accent);flex:0 0 130px;font-family:ui-monospace,monospace;font-size:12.5px}
+.palette .d{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.dots{display:inline-flex;gap:4px;align-items:center;height:18px}
+.dots i{width:5px;height:5px;border-radius:50%;background:var(--faint);animation:b 1.2s infinite}
+.dots i:nth-child(2){animation-delay:.15s}
+.dots i:nth-child(3){animation-delay:.3s}
+@keyframes b{0%,60%,100%{opacity:.25}30%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.dots i{animation:none;opacity:.6}}
+
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#3a3a37;border-radius:9px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+
+<aside>
+  <!-- ★ 2026-09-07 偽の信号機（丸3つ）を外した。
+       自前の窓になってから、本物の閉じる/しまう/広げる が窓の左上に出る。
+       同じものが2組 並んでいて まぎらわしかった。 -->
+  <div class="tabs">
+    <!-- ★ 2026-09-07「ホーム」タブを外した。
+         押してもカーネルと見た目が変わらず、二重だったため。
+         「はじめの画面に戻る」は 左の「新しい会話」でできる。 -->
+    <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>カーネル</div>
+  </div>
+
+  <!-- ★ 2026-09-07 左のボタン列を「新しい会話」だけに絞った。
+       ここに並んでいたもの（したこと／元にもどす／裏の係／札の候補／設定／
+       点検／もっと見る）は、**全部スラッシュコマンドで出せる**。
+       同じ入口が2つあると、どちらを覚えればいいのか分からなくなるので、
+       打つ場所（/）に一本化した。「/」を押すと候補が出る。
+       会話の一覧だけは、一覧そのものが中身なので ここに残す。 -->
+  <nav class="nav">
+    <button data-send="/clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新しい会話</button>
+  </nav>
+
+  <div class="grouprow">
+    <span class="t">会話</span>
+    <span class="sp"></span>
+    <button id="c-new" title="新しい会話をはじめる">＋</button>
+    <button id="c-arch" title="しまったものも見る">▤</button>
+    <button id="c-trash" title="ゴミ箱を見る">⌫</button>
+    <button id="c-sel" title="えらんでまとめて（組に入れる・しまう・ゴミ箱へ）">☑</button>
+  </div>
+  <div id="seibar" hidden></div>
+  <div id="chatlist"></div>
+
+
+  <!-- ★ 2026-09-07 左下を Claude Code と同じ「押すと出てくる」場所にした。
+       設定にたどり着けないのがいちばん困る、というのが直しの理由。 -->
+  <div class="me" id="mebtn" title="設定・モード・点検（押すと出ます）">
+    <span class="av"></span><span id="me-name">カーネル</span><span class="chev">∨</span>
+    <button id="bug" title="気づいたことを書いて残す（専用フォルダに貯まります）"
+      style="all:unset;cursor:pointer;margin-left:auto;color:var(--faint);padding:3px 6px;border-radius:6px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:15px;height:15px;display:block">
+        <path d="M8 6a4 4 0 0 1 8 0"/><rect x="7" y="6" width="10" height="12" rx="5"/>
+        <path d="M3 10h4M17 10h4M3 15h4M17 15h4M5 6l2 2M19 6l-2 2M5 19l2-2M19 19l-2-2"/>
+      </svg>
+    </button>
+    <span class="badge" id="me-mode">本番</span>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <h1>カーネル</h1>
+    <span class="tagchip" id="h-place">練習モード</span>
+    <span class="meter" id="ctxmeter" title="ものおぼえの入れもの（コンテキスト）の埋まりぐあい">
+      <span class="track"><span class="fill" id="ctxfill" style="width:0%"></span></span>
+      <span id="ctxtxt">0%</span>
+    </span>
+    <span class="right">
+      <svg id="term-toggle" style="cursor:pointer" title="うごきの欄を出す／しまう" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+      <svg id="net-btn" title="外とのつながり" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>
+      <svg id="more-btn" title="もっと" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>
+    </span>
+  </header>
+
+  <div id="log">
+    <div class="empty" id="empty">
+      <div class="mark"></div>
+      <h2>なにをしましょうか</h2>
+      <p>このパソコンの中だけで動きます。ネットには出ません。</p>
+      <div class="chips">
+        <button class="chip">デスクトップには何がある？</button>
+        <button class="chip">デスクトップの画像は何個？</button>
+        <button class="chip">デスクトップを整理して</button>
+        <button class="chip">デスクトップの一覧をHTMLで作って</button>
+        <button class="chip">いま何時？</button>
+        <button class="chip">動物ってなに？</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer" style="position:relative">
+    <div class="palette" id="palette"></div>
+    <div class="sugoshi" id="atesaki-chuui" hidden></div>
+    <div class="box">
+      <textarea id="in" rows="1" placeholder="/ でコマンド　・　改行は Shift+Enter" autofocus></textarea>
+      <div class="bar">
+        <button id="plusbtn" title="フォルダやファイルを話に足す">＋</button>
+        <button id="modebtn" title="ふるまいを切り替える"><span class="mode practice" id="modetag">本番モード</span></button>
+        <button id="fukasabtn" title="考える深さ。深くしてもメモリは増えません（増えるのは時間だけ）">🧠 <span id="fukasatag">さっと</span></button>
+        <button data-send="/reset" title="練習用のフォルダを作り直す"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 21v-5h5"/></svg></button>
+        <span class="sp"></span>
+        <select id="atesaki" title="どこにきくか。カーネル＝手元、それ以外はNVIDIAの外のモデル">
+          <option value="">カーネル</option>
+        </select>
+        <span class="mode practice" id="stat"></span>
+        <span class="meter" id="ctxmeter2" title="ものおぼえの入れもの（コンテキスト）の残り">
+          <span class="track"><span class="fill" id="ctxfill2" style="width:0%"></span></span>
+          <span id="ctxtxt2">残り 100%</span>
+        </span>
+        <button class="pick" id="pickf" title="ファイルを選んで、その場所を書き込む">📄</button>
+        <button class="pick" id="pickd" title="フォルダを選んで、その場所を書き込む">📁</button>
+        <button class="send" id="send" title="送る（Enter／改行は Shift+Enter）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="veil" id="veil"><div class="sheet" id="sheet"></div></div>
+
+<section id="term">
+  <div class="bar">
+    <span class="dot"></span>
+    <span>うごき</span>
+    <span class="sp"></span>
+    <button id="term-clear">消す</button>
+    <button id="term-hide">閉じる</button>
+  </div>
+  <div id="termbody"><span class="none">ここに、どんな指示でどう動いたかが出ます。</span></div>
+</section>
+
+<script>
+const TOKEN = "__TOKEN__";
+// 住所に合言葉が残らないようにする（履歴やRefererに載せない）
+try { history.replaceState(null, "", location.pathname); } catch(e){}
+const log = document.getElementById("log");
+const ta  = document.getElementById("in");
+const sendBtn = document.getElementById("send");
+const palette = document.getElementById("palette");
+let COMMANDS = [], selIdx = 0, busy = false;
+
+const api = (p, opt = {}) => fetch(p, {
+  ...opt, headers: {"X-Token": TOKEN, "Content-Type": "application/json"}
+}).then(r => r.json());
+
+/* ---------- 表示 ---------- */
+function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+function paint(text){
+  // 見やすいように、記号だけ色をつける。
+  // ちがい（diff）は行まるごと帯にする。＋と−が一目で分かるように
+  return esc(text)
+    .replace(/^(\+ .*)$/gm,  '<span class="dplus">$1</span>')
+    .replace(/^(- .*)$/gm,    '<span class="dminus">$1</span>')
+    .replace(/^(@ @@.*)$/gm,  '<span class="dhunk">$1</span>')
+    .replace(/^(\s*)(✓|★)(.*)$/gm, '$1<span class="ok">$2$3</span>')
+    .replace(/^(\s*)(✗)(.*)$/gm,   '$1<span class="ng">$2$3</span>')
+    .replace(/^(答え：.*)$/gm,      '<span class="hi">$1</span>')
+    .replace(/^(\s*（.*）)$/gm,     '<span class="dim">$1</span>')
+    .replace(/^(─+)$/gm,           '<span class="dim">$1</span>');
+}
+
+function addUser(text){
+  document.getElementById("empty")?.remove();
+  const d = document.createElement("div");
+  d.className = "turn user";
+  d.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+}
+
+function addBot(){
+  const d = document.createElement("div");
+  d.className = "turn bot";
+  d.innerHTML = `<div class="who"><span class="av"></span>カーネル</div>
+                 <pre><span class="dots"><i></i><i></i><i></i></span></pre>`;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+/* ================================================================
+   かぶせて出す窓（設定・気づいたこと・名前変更…）
+   ================================================================ */
+const veil = document.getElementById("veil"), sheet = document.getElementById("sheet");
+const atesaki = document.getElementById("atesaki");
+/* ★ 送り先が「カーネル」以外だと、打った言葉は そのままモデルに行く（/sensei）。
+   カーネルを通らない＝**道具（ファイル・Web・操作）も 承認の札も 効かない**。
+   2026-09-13 の実測: ここが「手元 30B-A3B」のまま「計算機を開いて」と頼み、
+   モデルに「私は操作できません」と断られ続けた。画面には何も出ていなかった。
+   直し: 素通りしているあいだ、送り先のとなりに ずっと出しておく。 */
+const atesakiChuuiEl = document.getElementById("atesaki-chuui");
+function atesakiChuui(){
+  const m = atesaki.value;
+  if (m === "" || m.startsWith("computer:")){   // カーネル ／ AIカーソル（承認してから動く）
+    atesakiChuuiEl.hidden = true; return;
+  }
+  atesakiChuuiEl.hidden = false;
+  atesakiChuuiEl.textContent = m.startsWith("agent:")
+    ? "読み取り専用のエージェントです。見るだけで、何も動かしません。"
+    : "送り先が カーネル ではありません。打った言葉は そのままモデルに行きます。"
+      + "道具（ファイル・Web・パソコンの操作）も 承認の札も 通りません。";
+}
+atesaki.addEventListener("change", atesakiChuui);
+let ST = {};                     // /state の中身
+let ARCH = false;                // しまったものも見るか
+let TRASH = false;               // SQLite のゴミ箱を見るか
+let SEL = false;                 // えらんでまとめて（整理）モードか
+let ERANDA = new Set();          // 整理モードでえらんだ会話の id
+let LAST = {入力:"", 出力:"", 経過:""};   // 直前のやりとり（気づいたことに添える）
+
+function closeSheet(){ veil.classList.remove("on"); sheet.innerHTML=""; }
+veil.onclick = e => { if (e.target === veil) closeSheet(); };
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && veil.classList.contains("on")) closeSheet();
+});
+/* ★ 2026-09-07「会話が消せない」の直し。
+   自前の窓（WKWebView）は、アプリ側が WKUIDelegate を実装していないと
+   **confirm() を黙って false で返す**（ダイアログも出ない）。
+   Chrome の窓だったときは動いていたので、窓を替えたときに死んでいた。
+   prompt() も同じで、こちらは常に null になる。
+   → ブラウザの標準ダイアログを一切使わず、自前のシートで聞く。 */
+// ★ 道具が「押す・打つ」の前に聞いてくる札。答えは する／この仕事は全部する／やめる（180秒黙ると「やめる」になる）
+function shouninSheet(sh){
+  openSheet(`<h3>${esc(sh.文)}</h3>
+    <div class="bd"><div class="hint">カーネルがパソコンを操作しようとしています。していい？</div></div>
+    <div class="ft"><span class="sp"></span>
+      <button class="btn" id="sh-no">やめる</button>
+      <button class="btn" id="sh-all">この仕事は全部する</button>
+      <button class="btn go" id="sh-yes">する</button>
+    </div>`);
+  let sunda = false;
+  const kotae = async (a) => {
+    if (sunda) return; sunda = true; closeSheet();
+    try{ await fetch("/approve", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: sh.id, 答え: a})}); }catch(e){}
+  };
+  sheet.querySelector("#sh-yes").onclick = () => kotae("する");
+  sheet.querySelector("#sh-all").onclick = () => kotae("全部");
+  sheet.querySelector("#sh-no").onclick  = () => kotae("やめる");
+  veil.addEventListener("click", function ichido(e){
+    if (e.target === veil){ veil.removeEventListener("click", ichido); kotae("やめる"); }
+  });
+}
+
+function tashikame(mes, botan = "消す", abunai = true, note = "この操作は元に戻せません。"){
+  return new Promise(kaeru => {
+    openSheet(`<h3>${esc(mes)}</h3>
+      <div class="bd"><div class="hint">${esc(note)}</div></div>
+      <div class="ft"><span class="sp"></span>
+        <button class="btn" data-close id="tk-no">やめる</button>
+        <button class="btn go" id="tk-yes"${abunai?' style="background:#c76b5e"':''}>${esc(botan)}</button>
+      </div>`);
+    let sunda = false;
+    const owaru = (v) => { if (sunda) return; sunda = true; closeSheet(); kaeru(v); };
+    sheet.querySelector("#tk-yes").onclick = () => owaru(true);
+    sheet.querySelector("#tk-no").onclick  = () => owaru(false);
+    veil.addEventListener("click", function ichido(e){
+      if (e.target === veil){ veil.removeEventListener("click", ichido); owaru(false); }
+    });
+  });
+}
+
+function kikitoru(mes, hinagata = ""){
+  return new Promise(kaeru => {
+    openSheet(`<h3>${esc(mes)}</h3>
+      <div class="bd"><div class="fld">
+        <input type="text" id="kt-in" value="${esc(hinagata)}"></div></div>
+      <div class="ft"><span class="sp"></span>
+        <button class="btn" data-close id="kt-no">やめる</button>
+        <button class="btn go" id="kt-yes">これで</button>
+      </div>`);
+    const inp = sheet.querySelector("#kt-in");
+    let sunda = false;
+    const owaru = (v) => { if (sunda) return; sunda = true; closeSheet(); kaeru(v); };
+    sheet.querySelector("#kt-yes").onclick = () => owaru(inp.value.trim() || null);
+    sheet.querySelector("#kt-no").onclick  = () => owaru(null);
+    inp.onkeydown = (e) => { if (e.key === "Enter") owaru(inp.value.trim() || null); };
+  });
+}
+
+/* 知らせるだけのもの。alert() も自前の窓では出ない */
+function shiraseru(mes){
+  openSheet(`<h3>${esc(mes)}</h3><div class="ft"><span class="sp"></span>
+    <button class="btn go" data-close>とじる</button></div>`);
+}
+
+function openSheet(html){
+  sheet.innerHTML = html;
+  veil.classList.add("on");
+  sheet.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSheet);
+  const f = sheet.querySelector("input[type=text],textarea");
+  if (f) setTimeout(()=>f.focus(), 30);
+}
+
+/* ================================================================
+   会話のいちらん
+   ================================================================ */
+const chatlist = document.getElementById("chatlist");
+
+const EMPTY_HTML = (document.getElementById("log") || {}).innerHTML || "";
+
+function showHome(){
+  /* 歓迎画面を戻す。会話は消さない（サーバー側は何も変えない） */
+  log.innerHTML = EMPTY_HTML;
+  log.querySelectorAll(".chip").forEach(c => c.onclick = () => send(c.textContent));
+}
+
+/* ---------- 上のタブ（カーネル）----------
+   ★ 2026-09-07「ホーム」タブを外した。カーネルと中身が同じで意味が無かった。
+   残った「カーネル」は、押すと いまの会話に戻る。                     */
+document.querySelectorAll(".tab").forEach(t => {
+  t.style.cursor = "pointer";
+  t.onclick = async () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.toggle(
+      "on", x === t));
+    if (ST.いま) await openChat(ST.いま);   // いまの会話を開き直す
+  };
+});
+
+function drawChats(){
+  const list = (TRASH ? (ST.ゴミ箱 || []) : (ST.会話 || []))
+    .filter(c => TRASH || ARCH || !c.しまった);
+  if (!list.length){
+    chatlist.innerHTML = `<div style="padding:10px 10px;color:var(--faint);font-size:11.5px">${TRASH ? "ゴミ箱は空です" : "まだありません"}</div>`;
+    return;
+  }
+  if (TRASH){
+    // ★ 捨てた日ごとにまとめる（今日／昨日／今週／それより前）。1件ずつ「戻す」「完全に消す」、上に「空にする」
+    const now = Date.now() / 1000, dayS = 86400;
+    const tag = c => {
+      const d = (now - (c.削除日時 || now)) / dayS;
+      return d < 1 ? "今日 捨てた" : d < 2 ? "昨日 捨てた" : d < 7 ? "今週 捨てた" : d < 30 ? "今月 捨てた" : "30日より前";
+    };
+    const jun = ["今日 捨てた", "昨日 捨てた", "今週 捨てた", "今月 捨てた", "30日より前"];
+    const kumi = new Map(jun.map(k => [k, []]));
+    list.forEach(c => kumi.get(tag(c)).push(c));
+    const furui = kumi.get("30日より前").length;
+    chatlist.innerHTML = `<div id="seibar" style="display:flex">
+        <span>ゴミ箱 ${list.length}件</span><span class="sp"></span>
+        ${furui ? `<button class="btn" id="t-old">30日より前の ${furui}件を消す</button>` : ""}
+        <button class="btn bad" id="t-empty">空にする</button>
+      </div>` +
+      jun.filter(k => kumi.get(k).length).map(k => `
+        <div class="hibi"><span>${k}</span><span class="n">${kumi.get(k).length}</span></div>` +
+        kumi.get(k).map(c => `
+        <div class="crow" data-id="${c.id}">
+          <span class="nm" title="${esc(c.題)}">${esc(c.題)}</span>
+          <span class="hi">${c.組 ? esc(c.組) + " · " : ""}${c.件数}件</span>
+          <span class="dots" data-restore="${c.id}" title="戻す">↩</span>
+          <span class="x" data-purge="${c.id}" title="完全に消す（戻せません）">✕</span>
+        </div>`).join("")).join("");
+    chatlist.querySelectorAll("[data-restore]").forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      await api("/chat/restore", {method:"POST", body:JSON.stringify({id: b.dataset.restore})});
+      refresh();
+    });
+    chatlist.querySelectorAll("[data-purge]").forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      if (!await tashikame("この会話を完全に消します。", "完全に消す", true, "ゴミ箱からも無くなり、戻せません。")) return;
+      await api("/chat/purge", {method:"POST", body:JSON.stringify({id: b.dataset.purge})});
+      refresh();
+    });
+    const te = chatlist.querySelector("#t-empty");
+    if (te) te.onclick = async () => {
+      if (!await tashikame(`ゴミ箱の ${list.length}件 を完全に消します。`, "全部消す", true, "戻せません。")) return;
+      await api("/chat/trash/empty", {method:"POST", body:JSON.stringify({})});
+      refresh();
+    };
+    const to = chatlist.querySelector("#t-old");
+    if (to) to.onclick = async () => {
+      if (!await tashikame(`30日より前に捨てた ${furui}件 を完全に消します。`, "消す", true, "戻せません。")) return;
+      await api("/chat/trash/empty", {method:"POST", body:JSON.stringify({日数: 30})});
+      refresh();
+    };
+    return;
+  }
+  const seibar = document.getElementById("seibar");
+  if (SEL){
+    // ★ 整理モード: 行に☑が出る。えらんだものを まとめて 組に入れる／しまう／ゴミ箱へ
+    const n = ERANDA.size;
+    seibar.hidden = false;
+    seibar.innerHTML = `<span>${n}件 えらんだ</span><span class="sp"></span>
+      <button class="btn" id="s-all">全部</button>
+      <button class="btn" id="s-group" ${n?"":"disabled"}>組に入れる</button>
+      <button class="btn" id="s-arch" ${n?"":"disabled"}>しまう</button>
+      <button class="btn bad" id="s-del" ${n?"":"disabled"}>ゴミ箱へ</button>
+      <button class="btn" id="s-off">おわり</button>`;
+    seibar.querySelector("#s-off").onclick = () => { SEL = false; ERANDA.clear(); seibar.hidden = true; drawChats(); };
+    seibar.querySelector("#s-all").onclick = () => { if (ERANDA.size === list.length) ERANDA.clear(); else list.forEach(c => ERANDA.add(c.id)); drawChats(); };
+    const matomete = async (nani, kumi = "") => {
+      const ids = [...ERANDA];
+      await api("/chat/matomete", {method:"POST", body:JSON.stringify({ids, 何: nani, 組: kumi})});
+      ERANDA.clear(); refresh();
+    };
+    seibar.querySelector("#s-del").onclick = async () => {
+      if (!await tashikame(`えらんだ ${n}件 をごみ箱へ移します。`, "ごみ箱へ", true, "ゴミ箱から戻せます。")) return;
+      matomete("ゴミ箱へ");
+    };
+    seibar.querySelector("#s-arch").onclick = () => matomete("しまう");
+    seibar.querySelector("#s-group").onclick = async () => {
+      const g = await kikitoru(`えらんだ ${n}件 をどの組に入れますか？`, "");
+      if (g === null) return;
+      matomete("組", g);
+    };
+  } else {
+    seibar.hidden = true;
+  }
+  // 組ごとにまとめる。名札の無いものは最後に「グループなし」として置く
+  const kumi = new Map();
+  list.forEach(c => {
+    const g = c.組 || "";
+    if (!kumi.has(g)) kumi.set(g, []);
+    kumi.get(g).push(c);
+  });
+  const junban = [...kumi.keys()].sort((x, y) =>
+    (x === "" ? 1 : y === "" ? -1 : x.localeCompare(y, "ja")));
+  const tojita = JSON.parse(localStorage.getItem("kumi_tojita") || "[]");
+
+  chatlist.innerHTML = junban.map(g => {
+    const cs = kumi.get(g);
+    const shut = tojita.includes(g);
+    return `<div class="kumi-h" data-kumi="${esc(g)}"
+                 title="${g ? "クリックで開け閉め" : "組に入れていない会話"}">
+        <span class="ya">${shut ? "▸" : "▾"}</span>
+        <span class="nm">${esc(g || "グループなし")}</span>
+        <span class="n">${cs.length}</span>
+      </div>` +
+      (shut ? "" : cs.map(c => `
+        <div class="crow ${c.id===ST.いま?"on":""}" data-id="${c.id}">
+          ${SEL ? `<input type="checkbox" data-sel="${c.id}" ${ERANDA.has(c.id)?"checked":""}>` : ""}
+          <span class="nm" title="${esc(c.題)}">${esc(c.題)}</span>
+          <span class="n">${c.件数}</span>
+          <span class="dots" data-menu="${c.id}">⋯</span>
+        </div>`).join(""));
+  }).join("");
+
+  // 組の見出しを押すと開け閉め。どれを閉じたかは、この端末に覚えておく
+  chatlist.querySelectorAll(".kumi-h").forEach(h => {
+    h.onclick = () => {
+      const g = h.dataset.kumi;
+      const t = JSON.parse(localStorage.getItem("kumi_tojita") || "[]");
+      const i = t.indexOf(g);
+      if (i < 0) t.push(g); else t.splice(i, 1);
+      localStorage.setItem("kumi_tojita", JSON.stringify(t));
+      drawChats();
+    };
+  });
+  chatlist.querySelectorAll(".crow").forEach(r => {
+    r.onclick = e => {
+      if (e.target.dataset.menu) return chatMenu(e.target.dataset.menu);
+      if (SEL){   // 整理モードでは、行を押す＝えらぶ
+        const id = r.dataset.id;
+        if (ERANDA.has(id)) ERANDA.delete(id); else ERANDA.add(id);
+        drawChats(); return;
+      }
+      openChat(r.dataset.id);
+    };
+  });
+}
+
+async function openChat(id){
+  const r = await api("/chat/open", {method:"POST", body:JSON.stringify({id})});
+  if (r.error) return;
+  log.innerHTML = "";
+  (r.会話.やりとり || []).forEach(t => {
+    if (t.役 === "user") addUser(t.文);
+    else { const n = addBot(); n.querySelector(".dots")?.remove();
+           fillBot(n, {出力:t.文, ミリ秒:t.ミリ秒||0, モード:ST.モード||"—"}); }
+  });
+  if (!(r.会話.やりとり||[]).length) log.innerHTML = "";
+  refresh();
+}
+
+function chatMenu(id){
+  const c = (ST.会話||[]).find(x => x.id === id) || {};
+  openSheet(`
+    <h3>${esc(c.題||"会話")}<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+    <div class="in">
+      <div class="fld">
+        <label>名前</label>
+        <input type="text" id="m-name" value="${esc(c.題||"")}">
+      </div>
+      <div class="rowlist">
+      </div>
+      <div class="fld">
+        <label>グループ</label>
+        <div class="hint">同じ名前を付けた会話が、ひとまとめで並びます。
+          空にすると「グループなし」に戻ります。</div>
+        <input type="text" id="m-kumi" list="kumi-cand" value="${esc(c.組||"")}"
+               placeholder="例: ゲーム / 日常生活 / アプリ">
+        <datalist id="kumi-cand">${(ST.組||[]).filter(g=>g.名)
+            .map(g=>`<option value="${esc(g.名)}">`).join("")}</datalist>
+      </div>
+      <div class="rowlist">
+        <div class="r" id="m-fork">枝分かれさせる<span class="sp">ここまでを写して、別の会話にする</span></div>
+        <div class="r" id="m-tr">読み物として見る<span class="sp">まるごとの書き起こし</span></div>
+        <div class="r" id="m-arch">${c.しまった?"しまうのをやめる":"しまう"}<span class="sp">いちらんから外す</span></div>
+        <div class="r" id="m-del" style="color:#c76b5e">消す<span class="sp">ゴミ箱へ移す（あとで戻せます）</span></div>
+      </div>
+    </div>
+    <div class="ft"><span class="sp"></span>
+      <button class="btn" data-close>やめる</button>
+      <button class="btn go" id="m-save">保存する</button>
+    </div>`);
+  sheet.querySelector("#m-save").onclick = async () => {
+    await api("/chat/rename",{method:"POST",
+      body:JSON.stringify({id, 題: sheet.querySelector("#m-name").value})});
+    await api("/chat/group",{method:"POST",
+      body:JSON.stringify({会話: id, 組: sheet.querySelector("#m-kumi").value})});
+    closeSheet(); refresh();
+  };
+  sheet.querySelector("#m-fork").onclick = async () => {
+    const r = await api("/chat/fork",{method:"POST",body:JSON.stringify({id})});
+    closeSheet(); if (r.会話) openChat(r.会話); else refresh();
+  };
+  sheet.querySelector("#m-arch").onclick = async () => {
+    await api("/chat/archive",{method:"POST",
+      body:JSON.stringify({id, on: !c.しまった})});
+    closeSheet(); refresh();
+  };
+  sheet.querySelector("#m-del").onclick = async () => {
+    if (!await tashikame("この会話をごみ箱へ移します。", "ごみ箱へ", true, "ゴミ箱から戻せます。")) return;
+    await api("/chat/delete",{method:"POST",body:JSON.stringify({id})});
+    closeSheet(); log.innerHTML=""; refresh();
+  };
+  sheet.querySelector("#m-tr").onclick = async () => {
+    const r = await api(`/transcript?id=${encodeURIComponent(id)}`);
+    openSheet(`<h3>書き起こし<span class="sp"></span>
+        <button class="btn" id="tr-copy">写す</button>
+        <button class="btn" data-close>閉じる</button></h3>
+      <div class="in"><pre style="white-space:pre-wrap;font:11.5px/1.7 ui-monospace,Menlo,monospace;color:var(--dim)">${esc(r.文||"")}</pre></div>`);
+    sheet.querySelector("#tr-copy").onclick = () => {
+      navigator.clipboard?.writeText(r.文||""); };
+  };
+}
+
+document.getElementById("c-new").onclick = async () => {
+  await api("/chat/new",{method:"POST",body:JSON.stringify({})});
+  log.innerHTML = ""; refresh();
+};
+/* ================================================================
+   上から降りてくる品書き（右上の ⋮ と 地球）
+
+   前は 右上の3つのうち 押せるのは 1つだけで、
+   あとの2つは id も持たない ただの絵だった。
+
+   **入れるのは 本当に動くものだけ。**
+   押しても何も起きない品書きは、無いより悪い。
+   ここに並ぶ物は すべて すでに server.py / chats.py にある。
+   ================================================================ */
+let DD = null;
+function closeDrop(){ if (DD) { DD.remove(); DD = null; } }
+document.addEventListener("click", e => {
+  if (DD && !e.target.closest(".dropdown")
+         && !e.target.closest("#more-btn") && !e.target.closest("#net-btn"))
+    closeDrop();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrop(); });
+
+const DICON = {
+  art:'<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
+  file:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  bg:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  pen:'<path d="M4 20h4L20 8l-4-4L4 16z"/>',
+  doc:'<path d="M6 3h8l4 4v14H6z"/><path d="M9 12h6M9 16h6"/>',
+  fork:'<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7M12 12v5"/>',
+  box:'<path d="M3 7h18v4H3z"/><path d="M5 11v9h14v-9"/><path d="M10 15h4"/>',
+  del:'<path d="M4 7h16"/><path d="M7 7V5h10v2"/><path d="M6 7l1 13h10l1-13"/>',
+  chk:'<path d="M20 6L9 17l-5-5"/>',
+  net:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/>',
+  undo:'<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+};
+function dsv(k){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+  + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+  + (DICON[k]||"") + '</svg>'; }
+
+function openDrop(anchor, items){
+  closeDrop();
+  const d = document.createElement("div");
+  d.className = "dropdown";
+  d.innerHTML = items.map((it, i) => {
+    if (it.区切り) return '<div class="sepline"></div>';
+    if (it.見出し) return '<div class="ttl">' + esc(it.見出し) + '</div>';
+    return '<div class="it' + (it.危ない ? " danger" : "") + '" data-i="' + i + '">'
+      + dsv(it.絵) + '<span>' + esc(it.名) + '</span>'
+      + (it.鍵 ? '<span class="k">' + esc(it.鍵) + '</span>' : '') + '</div>';
+  }).join("");
+  document.body.appendChild(d);
+  const r = anchor.getBoundingClientRect();
+  const w = d.offsetWidth, h = d.offsetHeight;   // 画面の外にはみ出さない所に置く
+  d.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px";
+  d.style.top  = (r.bottom + h + 8 > innerHeight
+                  ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
+  d.querySelectorAll(".it").forEach(el => el.onclick = () => {
+    const it = items[+el.dataset.i];
+    closeDrop();
+    try { it.する && it.する(); } catch (err) { console.error(err); }
+  });
+  DD = d;
+}
+
+/* いま開いている会話。server.py は "いま" という名で返す（"会話id" ではない） */
+function imaNoKaiwa(){ return ST.いま || null; }
+
+function mishowTranscript(id){
+  return async () => {
+    const r = await api("/transcript?id=" + encodeURIComponent(id));
+    openSheet('<h3>書き起こし<span class="sp"></span>'
+      + '<button class="btn" id="tr-copy2">写す</button>'
+      + '<button class="btn" data-close>閉じる</button></h3>'
+      + '<div class="in"><pre style="white-space:pre-wrap;'
+      + 'font:11.5px/1.7 ui-monospace,Menlo,monospace;color:var(--dim)">'
+      + esc(r.文||"") + '</pre></div>');
+    sheet.querySelector("#tr-copy2").onclick =
+      () => navigator.clipboard?.writeText(r.文||"");
+  };
+}
+
+document.getElementById("more-btn").onclick = (e) => {
+  e.stopPropagation();
+  if (DD) return closeDrop();
+  const id = imaNoKaiwa();
+  const it = [
+    {名:"アーティファクト", 絵:"art",  する:()=>send("/artifacts")},
+    {名:"したこと",         絵:"doc",  する:()=>send("/history")},
+    {名:"裏の係",           絵:"bg",   する:()=>send("/bg status")},
+    {名:"点検",             絵:"chk",  する:()=>send("/doctor")},
+    {区切り:true},
+    {名:"元にもどす",       絵:"undo", する:()=>send("/undo")},
+    {名:"設定",             絵:"file", する:()=>send("/settings")},
+  ];
+  if (id) {
+    it.push({区切り:true}, {見出し:"この会話"});
+    it.push({名:"名前を変える／組みわけ", 絵:"pen", する:()=>chatMenu(id)});
+    it.push({名:"読み物として見る", 絵:"doc", する:mishowTranscript(id)});
+    it.push({名:"枝分かれさせる", 絵:"fork", する:async ()=>{
+      const r = await api("/chat/fork",{method:"POST",body:JSON.stringify({id})});
+      if (r.会話) openChat(r.会話); else refresh(); }});
+    it.push({名:"しまう", 絵:"box", する:async ()=>{
+      await api("/chat/archive",{method:"POST",
+        body:JSON.stringify({id, on:true})});
+      refresh(); }});
+    it.push({名:"消す", 絵:"del", 危ない:true, する:async ()=>{
+      if (!await tashikame("この会話をごみ箱へ移します。", "ごみ箱へ", true, "ゴミ箱から戻せます。")) return;
+      await api("/chat/delete",{method:"POST",body:JSON.stringify({id})});
+      log.innerHTML = ""; refresh(); }});
+  }
+  openDrop(e.currentTarget, it);
+};
+
+document.getElementById("net-btn").onclick = (e) => {
+  e.stopPropagation();
+  if (DD) return closeDrop();
+  openDrop(e.currentTarget, [
+    {見出し:"このアプリは ネットに出ません"},
+    {名:"つながっているか見る", 絵:"net", する:()=>send("ネットにつながってる？")},
+    {名:"先生（LLM）の様子",    絵:"bg",  する:()=>send("/nvidia")},
+    {区切り:true},
+    {名:"ネットで調べる", 絵:"art", する:async ()=>{
+      const w = await kikitoru("何を調べますか？"); if (w) send("ネットで"+w+"を調べて"); }},
+    {名:"ウィキペディアで引く", 絵:"doc", する:async ()=>{
+      const w = await kikitoru("何を引きますか？"); if (w) send("ウィキペディアで"+w+"を調べて"); }},
+  ]);
+};
+
+document.getElementById("c-arch").onclick = () => { ARCH = !ARCH; TRASH = false; drawChats(); };
+document.getElementById("c-trash").onclick = () => { TRASH = !TRASH; SEL = false; ERANDA.clear(); drawChats(); };
+document.getElementById("c-sel").onclick = () => { SEL = !SEL; TRASH = false; ERANDA.clear(); drawChats(); };
+
+/* ================================================================
+   左下（自分のところ）── 押すと出てくる
+   ★ 2026-09-07 追加。理由は「設定にたどり着けない」。
+     左のボタン列を畳んだので、行き先を1ヶ所にまとめた。
+     Claude Code と同じで、**いちばん下の自分の名前が入口**。
+   ================================================================ */
+document.getElementById("mebtn").onclick = (e) => {
+  e.stopPropagation();
+  if (DD) return closeDrop();
+  const honban = (ST.設定 || {}).モード === "本番";
+  openDrop(e.currentTarget, [
+    {見出し:"カーネル"},
+    {名:"設定をひらく",          絵:"file", する:()=>setteiSheet()},
+    {名:"考える深さ（いま "+FUKASA_NA((ST.設定||{})["考える深さ"] ?? -1)+"）",
+                                 絵:"bg",   する:()=>document.getElementById("fukasabtn").click()},
+    {名:honban ? "練習モードにする" : "本番モードにする",
+                                 絵:"box",  する:async ()=>{
+       await api("/settings",{method:"POST",
+         body:JSON.stringify({鍵:"モード", 値: honban ? "練習" : "本番"})});
+       refresh(); }},
+    {区切り:true},
+    {名:"点検する",              絵:"chk",  する:()=>send("/doctor")},
+    {名:"したこと",              絵:"undo", する:()=>send("/history")},
+    {名:"裏の係",                絵:"bg",   する:()=>send("/bg status")},
+    {名:"札の候補",              絵:"doc",  する:()=>send("/candidates")},
+    {名:"覚えていること",        絵:"file", する:()=>send("/memory")},
+    {区切り:true},
+    {名:"コマンドの一覧",        絵:"art",  する:()=>send("/help")},
+    {名:"気づいたことを書き残す",絵:"pen",  する:()=>document.getElementById("bug").click()},
+  ]);
+};
+
+/* ---------------- 設定のシート（本物のつまみ） ----------------
+   ★ これまで設定は /settings の **文字の一覧**しか無かった。
+     読めても変えられないので、たどり着いても意味が無かった。
+     ここでは 設定の中身から画面を **その場で組み立てる**。
+     こうしておけば、あとで設定が増えても ここを直さなくてよい。   */
+const SETTEI_JUN = ["考える深さ", "モード", "確認", "読むだけ", "先生を使う",
+                    "先生", "先生と直接", "覚える", "会話の長さ", "考える様子",
+                    "育てる", "じっくり", "詳しく", "辞書"];
+
+async function setteiSheet(){
+  const S   = ST.設定 || {};
+  const setu = ST.設定の説明 || {};
+  const kagi = [...SETTEI_JUN.filter(k => k in S),
+                ...Object.keys(S).filter(k => !SETTEI_JUN.includes(k))];
+
+  const hitotsu = (k) => {
+    const v = S[k], h = esc(setu[k] || "");
+    const id = "st-" + encodeURIComponent(k);
+    if (k === "考える深さ"){
+      return `<div class="fld"><label>${esc(k)}</label>
+        <div class="hint">${h}</div>
+        <select id="${id}" data-k="${esc(k)}" data-t="num">
+          ${FUKASA_MEI.map(f=>`<option value="${f.n}"${f.n===v?" selected":""}
+             >${esc(f.名)} ── ${esc(f.説)}</option>`).join("")}
+        </select></div>`;
+    }
+    if (k === "モード"){
+      return `<div class="fld"><label>${esc(k)}</label>
+        <div class="hint">${h}</div>
+        <select id="${id}" data-k="${esc(k)}" data-t="str">
+          <option value="本番"${v==="本番"?" selected":""}>本番 ── 本物のフォルダ</option>
+          <option value="練習"${v==="練習"?" selected":""}>練習 ── 試験用の置き場</option>
+        </select></div>`;
+    }
+    if (typeof v === "boolean"){
+      return `<div class="fld"><label class="sw">
+          <input type="checkbox" id="${id}" data-k="${esc(k)}" data-t="bool"${v?" checked":""}>
+          <span>${esc(k)}</span></label>
+        <div class="hint" style="margin:4px 0 0 43px">${h}</div></div>`;
+    }
+    if (typeof v === "number"){
+      return `<div class="fld"><label>${esc(k)}</label>
+        <div class="hint">${h}</div>
+        <input type="text" id="${id}" data-k="${esc(k)}" data-t="num"
+               value="${esc(String(v))}"></div>`;
+    }
+    const t = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+    return `<div class="fld"><label>${esc(k)}</label>
+      <div class="hint">${h}</div>
+      <input type="text" id="${id}" data-k="${esc(k)}"
+             data-t="${Array.isArray(v)?"list":"str"}" value="${esc(t)}"></div>`;
+  };
+
+  openSheet(`<h3>設定<span class="sp"></span>
+      <span style="font-size:11px;color:var(--faint)">変えるとすぐ効きます</span></h3>
+    <div class="in">
+      <div class="hint" style="margin-bottom:14px">
+        ★ 考える深さを深くしても、メモリは増えません（増えるのは時間だけ）。<br>
+        実測120問: さっと 66.7% → じっくり 98.3%。おまかせは同じ点を75%の時間で。
+      </div>
+      ${kagi.map(hitotsu).join("")}
+    </div>
+    <div class="ft"><span class="sp"></span>
+      <button class="btn" data-close>とじる</button></div>`);
+
+  // ★ 「保存」を押させない。触ったら すぐ効く（Claude Code と同じ手ざわり）
+  sheet.querySelectorAll("[data-k]").forEach(el => {
+    const okuru = async () => {
+      const k = el.dataset.k, t = el.dataset.t;
+      let v;
+      if (t === "bool") v = el.checked;
+      else if (t === "num"){ v = parseInt(el.value, 10); if (isNaN(v)) return; }
+      else if (t === "list") v = el.value.split(",").map(x=>x.trim()).filter(Boolean);
+      else v = el.value;
+      const r = await api("/settings",{method:"POST",
+        body:JSON.stringify({鍵:k, 値:v})});
+      if (r && r.error) return shiraseru(r.error);
+      await refresh();
+    };
+    if (el.type === "checkbox" || el.tagName === "SELECT") el.onchange = okuru;
+    else { el.onchange = okuru; el.onblur = okuru; }
+  });
+}
+
+/* ================================================================
+   気づいたこと（虫マーク）
+   ================================================================ */
+let FBKIND = "不具合";
+document.getElementById("bug").onclick = () => {
+  FBKIND = "不具合";
+  openSheet(`
+    <h3>気づいたことを残す<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+    <div class="in">
+      <div class="kinds" id="fb-kinds">
+        ${["不具合","こうしてほしい","使いにくい","その他"].map((k,i)=>
+          `<button data-k="${k}" class="${i?"":"on"}">${k}</button>`).join("")}
+      </div>
+      <div class="fld">
+        <div class="hint">直前のやりとりと、そのときの設定も一緒に残します。
+          いちいち説明しなくても、あとから読み返せます。</div>
+        <textarea id="fb-text" placeholder="なにが起きましたか。どうしてほしいですか。"></textarea>
+      </div>
+      <div class="fld"><div class="hint" id="fb-where"></div></div>
+    </div>
+    <div class="ft">
+      <button class="btn" id="fb-list">これまでの分を見る</button>
+      <span class="sp"></span>
+      <button class="btn" data-close>やめる</button>
+      <button class="btn go" id="fb-save">残す</button>
+    </div>`);
+  sheet.querySelectorAll("#fb-kinds button").forEach(b => b.onclick = () => {
+    sheet.querySelectorAll("#fb-kinds button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on"); FBKIND = b.dataset.k;
+  });
+  sheet.querySelector("#fb-save").onclick = async () => {
+    const t = sheet.querySelector("#fb-text").value.trim();
+    if (!t) return;
+    const r = await api("/feedback",{method:"POST",body:JSON.stringify({
+      文:t, 種類:FBKIND, 入力:LAST.入力, 出力:LAST.出力, 経過:LAST.経過})});
+    if (r.error) return shiraseru(r.error);
+    openSheet(`<h3>残しました<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+      <div class="in"><div class="hint">置き場所</div>
+        <pre style="white-space:pre-wrap;font:11.5px/1.7 ui-monospace,Menlo,monospace;color:var(--dim)">${esc(r.置き場)}</pre></div>
+      <div class="ft"><span class="sp"></span>
+        <button class="btn" id="fb-open">Finder で開く</button>
+        <button class="btn go" data-close>わかった</button></div>`);
+    sheet.querySelector("#fb-open").onclick = () =>
+      api("/open",{method:"POST",body:JSON.stringify({パス:r.置き場})});
+  };
+  sheet.querySelector("#fb-list").onclick = async () => {
+    const r = await api("/feedbacks");
+    openSheet(`<h3>これまでに残したこと<span class="sp"></span>
+        <button class="btn" id="fl-open">Finder で開く</button>
+        <button class="btn" data-close>閉じる</button></h3>
+      <div class="in"><div class="rowlist">${
+        (r.一覧||[]).length
+        ? r.一覧.map(f=>`<div class="r" data-p="${esc(f.パス)}">${esc(f.名)}<span class="sp">${esc(f.さわり)}</span></div>`).join("")
+        : '<div class="hint">まだありません</div>'}</div></div>`);
+    sheet.querySelector("#fl-open").onclick = () =>
+      api("/open",{method:"POST",body:JSON.stringify({パス:r.置き場})});
+    sheet.querySelectorAll(".rowlist .r").forEach(x => x.onclick = () =>
+      api("/open",{method:"POST",body:JSON.stringify({パス:x.dataset.p})}));
+  };
+};
+
+/* ================================================================
+   設定
+   ================================================================ */
+function openSettings(){
+  const S = ST.設定 || {}, H = ST.設定の説明 || {};
+  const row = (k) => {
+    const v = S[k], h = H[k] || "";
+    if (k === "モード")
+      return `<div class="fld"><label>${k}</label><div class="hint">${esc(h)}</div>
+          <select data-k="${k}"><option ${v==="本番"?"selected":""}>本番</option>
+          <option ${v==="練習"?"selected":""}>練習</option></select></div>`;
+    if (typeof v === "boolean")
+      return `<div class="fld"><label class="sw">
+          <input type="checkbox" data-k="${k}" ${v?"checked":""}>
+          <span>${k}</span></label><div class="hint">${esc(h)}</div></div>`;
+    if (typeof v === "number")
+      return `<div class="fld"><label>${k}</label><div class="hint">${esc(h)}</div>
+          <input type="text" data-k="${k}" data-num="1" value="${v}"></div>`;
+    // 先生だけは 選べるようにする。
+    //   前は「groq:openai/gpt-oss-120b, ...」と手で打つ欄しかなかったので、
+    //   手元のモデルに替えられることが 画面から分からなかった。
+    if (k === "先生"){
+      const cur = (v||[]).join(", ");
+      const nama = ST.手元のモデル === true  ? '<b style="color:#3a3">動いています</b>'
+                 : ST.手元のモデル === false ? '<b style="color:#c33">止まっています</b>'
+                 : "";
+      const opts = [
+        ["local:main",
+         "手元のモデル ― このパソコンの中だけ。外に一切出ない"],
+        ["local:35b",
+         "手元 Qwen3.5 35B-A3B ― 少し遅いが推論向け（約11.9GB）"],
+        ["groq:openai/gpt-oss-120b, groq:openai/gpt-oss-20b",
+         "Groq ― 速い。外につながる"],
+        ["local:main, groq:openai/gpt-oss-120b",
+         "手元をまず試し、だめなら Groq"],
+      ];
+      const shitteru = opts.some(o => o[0] === cur);
+      return `<div class="fld"><label>${k}</label>
+          <div class="hint">${esc(h)}<br>手元のモデル: ${nama}
+            （30Bは速く、35B-A3Bは推論向け。どちらもこのパソコンの中だけ）</div>
+          <select data-k="${k}" data-arr="1">
+            ${opts.map(o=>`<option value="${esc(o[0])}" ${cur===o[0]?"selected":""}>${esc(o[1])}</option>`).join("")}
+            ${shitteru?"":`<option value="${esc(cur)}" selected>いま: ${esc(cur)}</option>`}
+          </select>
+          <div class="hint" style="margin-top:6px">細かく決めたいとき（"local:main+think" など）</div>
+          <input type="text" data-k="${k}" data-arr="1" value="${esc(cur)}"></div>`;
+    }
+    if (Array.isArray(v))
+      return `<div class="fld"><label>${k}</label><div class="hint">${esc(h)}</div>
+          <input type="text" data-k="${k}" data-arr="1" value="${esc(v.join(", "))}"></div>`;
+    return `<div class="fld"><label>${k}</label><div class="hint">${esc(h)}</div>
+        <input type="text" data-k="${k}" value="${esc(String(v??""))}"></div>`;
+  };
+  openSheet(`
+    <h3>設定<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+    <div class="in">${Object.keys(S).map(row).join("")}
+      <div class="fld"><label>NVIDIA の鍵</label>
+        <div class="hint">いま: ${esc(ST.NVIDIA?.呼び方 || "使えません")}<br>
+          build.nvidia.com で <b>使いたいモデルの個別ページ</b> を開き、
+          そのページの中の「Get API Key」で作った鍵を貼ってください。<br>
+          （一覧ページや NGC で作った鍵は、一覧は見えても推論が通りません）</div>
+        <input type="password" id="nvkey" placeholder="nvapi- で始まる文字列を貼る"
+               autocomplete="off" spellcheck="false">
+        <div style="margin-top:6px">
+          <button class="btn go" id="nvsave">確かめて保存</button>
+          <span id="nvmsg" style="margin-left:8px"></span>
+        </div>
+        <pre id="nvdetail" style="display:none;white-space:pre-wrap;margin-top:8px;
+             font-size:12px;opacity:.85"></pre></div>
+    </div>
+    <div class="ft"><span class="sp"></span><button class="btn go" data-close>とじる</button></div>`);
+  {
+    const box = sheet.querySelector("#nvkey"), btn = sheet.querySelector("#nvsave");
+    const msg = sheet.querySelector("#nvmsg"), det = sheet.querySelector("#nvdetail");
+    if (btn) btn.onclick = async () => {
+      const k = (box.value || "").trim();
+      if (!k){ msg.textContent = "鍵を貼ってください"; return; }
+      btn.disabled = true;
+      msg.textContent = "調べています…（形 → 一覧 → 推論。20秒ほど）";
+      det.style.display = "none";
+      try{
+        const r = await api("/nvidia/key",
+                    {method:"POST", body: JSON.stringify({鍵: k})});
+        if (r.ok){
+          msg.textContent = "✓ 使えます。保存しました";
+          box.value = "";
+          refresh();                 // 送り先えらびに NVIDIA が並ぶ
+        } else {
+          msg.textContent = "✗ この鍵では動きません（保存していません）";
+          det.textContent = r.error || "";
+          det.style.display = "block";
+        }
+      }catch(e){
+        msg.textContent = "つながりませんでした: " + e;
+      }
+      btn.disabled = false;
+    };
+  }
+  sheet.querySelectorAll("[data-k]").forEach(el => {
+    const send = async () => {
+      let v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.dataset.num) v = Number(el.value) || 0;
+      else if (el.dataset.arr) v = el.value.split(",").map(x=>x.trim()).filter(Boolean);
+      else v = el.value;
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:el.dataset.k,値:v})});
+      refresh();
+    };
+    el.onchange = send;
+  });
+}
+document.querySelector('[data-send="/settings"]')?.addEventListener("click", e => {
+  e.stopPropagation(); e.preventDefault(); openSettings();
+}, true);
+
+/* ================================================================
+   ふるまい（モード）と 思考力
+   ================================================================ */
+const MODES = [
+  ["本番",  "本物のフォルダを触る。仮想で確かめてから実行"],
+  ["練習",  "sandbox の中だけ。本物には一切触らない"],
+  ["たずねる", "本番だが、ものを動かす前に必ず一言たずねる"],
+  ["読むだけ", "数える・見せるだけ。ものは1つも動かさない"],
+];
+document.getElementById("modebtn").onclick = () => {
+  openSheet(`<h3>ふるまい<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+    <div class="in"><div class="rowlist">${MODES.map(([n,d])=>
+      `<div class="r" data-m="${n}">${n}<span class="sp">${d}</span></div>`).join("")}</div></div>`);
+  sheet.querySelectorAll("[data-m]").forEach(r => r.onclick = async () => {
+    const m = r.dataset.m;
+    if (m === "たずねる"){
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"モード",値:"本番"})});
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"確認",値:true})});
+    } else if (m === "読むだけ"){
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"読むだけ",値:true})});
+    } else {
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"モード",値:m})});
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"確認",値:false})});
+      await api("/settings",{method:"POST",body:JSON.stringify({鍵:"読むだけ",値:false})});
+    }
+    closeSheet(); refresh();
+  });
+};
+/* ---------- 考える深さ ----------
+   ★ 深くしても **メモリは1バイトも増えない**（増えるのは時間だけ）。
+     深さは 文脈を伸ばすのではなく 手数で稼ぐ作りにしてある。
+   実測（120問・2ビットのまま）: 深さ0 66.7% → 深さ2 98.3%
+   深さ3 は深さ2と同点だったので、ふだんは 2 で足りる。            */
+const FUKASA_MEI = [
+  {n:-1, 名:"おまかせ", 説:"問いを見て、浅く/深くを自分で決める（おすすめ）"},
+  {n:0,  名:"さっと",   説:"考えない。いちばん速い"},
+  {n:1,  名:"ふつう",   説:"少し考える"},
+  {n:2,  名:"じっくり", 説:"よく考える。ここが上限（深さ3にしても点は同じ）"},
+  {n:3,  名:"とことん", 説:"考えて、さらに自分で見直す（2倍の時間）"},
+];
+const FUKASA_NA = (n) => (FUKASA_MEI.find(f => f.n === n) || FUKASA_MEI[0]).名;
+document.getElementById("fukasabtn").onclick = (e) => {
+  e.stopPropagation();
+  if (DD) return closeDrop();
+  const ima = (ST.設定 || {})["考える深さ"] ?? -1;
+  openDrop(e.currentTarget, [
+    {見出し:"考える深さ（メモリは増えません）"},
+    ...FUKASA_MEI.map(f => ({
+      名: (f.n === ima ? "● " : "○ ") + f.名 + " ── " + f.説,
+      絵: "bg",
+      する: async () => {
+        await api("/settings",{method:"POST",
+          body:JSON.stringify({鍵:"考える深さ", 値:f.n})});
+        refresh();
+      }})),
+  ]);
+};
+
+/* ================================================================
+   ＋（フォルダ・ファイルを話に足す）
+   ================================================================ */
+/* ---------- ファイルを貼る ---------- */
+/*  猫の jpg をそのまま送ると、カーネルが「猫だ」と言えるようにするための入口。
+    貼られた物は本物のフォルダには置かず、使い捨ての置き場に入れる。 */
+const KIND = {
+  画像:/\.(jpe?g|png|gif|heic|webp|bmp|tiff?)$/i,
+  音:  /\.(aiff?|wav|m4a|mp3|caf|aac|flac)$/i,
+  動画:/\.(mp4|mov|m4v|avi|mkv|webm)$/i,
+};
+function kindOf(name){
+  for (const [k, rx] of Object.entries(KIND)) if (rx.test(name)) return k;
+  return null;
+}
+async function attach(file){
+  if (file.size > 60_000_000){
+    shiraseru("大きすぎます（60MB まで）"); return;
+  }
+  const b = await file.arrayBuffer();
+  let s2 = "", u8 = new Uint8Array(b);
+  for (let i = 0; i < u8.length; i += 0x8000)
+    s2 += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  const r = await api("/upload", {method:"POST",
+    body: JSON.stringify({名: file.name, 中身: btoa(s2)})});
+  if (r.error) return shiraseru(r.error);
+  const k = kindOf(file.name);
+  const ask = k === "画像" ? "には何が写ってる？"
+            : k === "音"   ? "はどんな音？"
+            : k === "動画" ? "には何が写ってる？"
+            : "について教えて";
+  ta.value = r.パス + " " + ask;
+  resize(); ta.focus();
+  return r;
+}
+const picker = document.createElement("input");
+picker.type = "file"; picker.style.display = "none";
+picker.onchange = async () => {
+  for (const f of picker.files) await attach(f);
+  picker.value = "";
+};
+document.body.appendChild(picker);
+
+/* ドラッグして落としても受け取る */
+["dragover","drop"].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault();
+  if (ev === "dragover") document.body.style.outline = "2px dashed var(--accent)";
+}));
+document.addEventListener("dragleave", () => document.body.style.outline = "");
+document.addEventListener("drop", async e => {
+  document.body.style.outline = "";
+  for (const f of e.dataTransfer.files) await attach(f);
+});
+/* 貼りつけ（Cmd+V）でも受け取る */
+ta.addEventListener("paste", async e => {
+  const fs = [...(e.clipboardData?.files || [])];
+  if (!fs.length) return;
+  e.preventDefault();
+  for (const f of fs) await attach(f);
+});
+
+document.getElementById("plusbtn").onclick = () => {
+  openSheet(`<h3>話に足す<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+    <div class="in">
+      <div class="fld"><div class="hint">
+        場所やファイルの名前を入れると、次の命令がそこを向きます。
+        Finder からドラッグしてきた文字を貼っても構いません。</div>
+        <input type="text" id="p-path" placeholder="デスクトップ ／ ~/Downloads ／ ~/Desktop/会議.pdf">
+      </div>
+      <div class="rowlist">
+        <div class="r" id="p-file">Macでファイルをえらぶ<span class="sp">貼りつけ・ドラッグでも入ります</span></div>
+        <div class="r" data-p="デスクトップ">デスクトップ<span class="sp">よく使う</span></div>
+        <div class="r" data-p="ダウンロード">ダウンロード<span class="sp">よく使う</span></div>
+        <div class="r" id="p-art">作ったもの<span class="sp">カーネルが作った HTML</span></div>
+      </div>
+    </div>
+    <div class="ft"><span class="sp"></span>
+      <button class="btn" data-close>やめる</button>
+      <button class="btn go" id="p-add">足す</button></div>`);
+  const put = v => { ta.value = (ta.value ? ta.value + " " : "") + v + " の";
+                     closeSheet(); resize(); ta.focus(); };
+  sheet.querySelector("#p-add").onclick = () => {
+    const v = sheet.querySelector("#p-path").value.trim(); if (v) put(v);
+  };
+  sheet.querySelectorAll("[data-p]").forEach(r => r.onclick = () => put(r.dataset.p));
+  sheet.querySelector("#p-file").onclick = async () => {
+    const r = await api("/pick-file", {method:"POST", body:"{}"});
+    if (r.error) return shiraseru(r.error);
+    if (r.キャンセル) return;
+    if (r.パス) put(r.パス);
+  };
+  sheet.querySelector("#p-art").onclick = async () => {
+    const r = await api("/artifacts");
+    openSheet(`<h3>作ったもの<span class="sp"></span><button class="btn" data-close>閉じる</button></h3>
+      <div class="in"><div class="rowlist">${
+        (r.一覧||[]).length
+        ? r.一覧.map(a=>`<div class="r" data-o="${esc(a.パス)}">${esc(a.名)}
+            <span class="sp">${(a.大きさ/1024).toFixed(1)} KB</span></div>`).join("")
+        : '<div class="hint">まだありません</div>'}</div></div>`);
+    sheet.querySelectorAll("[data-o]").forEach(x => x.onclick = () =>
+      api("/open",{method:"POST",body:JSON.stringify({パス:x.dataset.o})}));
+  };
+};
+
+/* ---------- 右のターミナル ---------- */
+const termbody = document.getElementById("termbody");
+
+function termPaint(text){
+  return esc(text)
+    .replace(/^(\s*\+ .*)$/gm, '<span class="dplus">$1</span>')
+    .replace(/^(\s*- .*)$/gm,   '<span class="dminus">$1</span>')
+    .replace(/^(\s*@ @@.*)$/gm, '<span class="dhunk">$1</span>')
+    .replace(/^(\s*)(✓|★)(.*)$/gm, '$1<span class="ok">$2$3</span>')
+    .replace(/^(\s*)(✗|－)(.*)$/gm, '$1<span class="ng">$2$3</span>')
+    .replace(/^(\s*\[[^\]]+\].*)$/gm, '<span class="step">$1</span>')
+    .replace(/^(\s*── .*)$/gm,      '<span class="hi">$1</span>')
+    .replace(/^(答え：.*)$/gm,       '<span class="hi">$1</span>')
+    .replace(/^(\s*（.*）)$/gm,      '<span class="dim">$1</span>')
+    .replace(/^(\s*─+)$/gm,         '<span class="dim">$1</span>');
+}
+
+function termAdd(text, res){
+  document.querySelector("#termbody .none")?.remove();
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2,"0");
+  const mm = String(t.getMinutes()).padStart(2,"0");
+  const ss = String(t.getSeconds()).padStart(2,"0");
+  const head = document.createElement("div");
+  head.className = "cmd";
+  head.innerHTML = `<span class="stamp">${hh}:${mm}:${ss}</span> $ <b>${esc(text)}</b>`;
+  termbody.appendChild(head);
+  const blk = document.createElement("div");
+  blk.className = "blk";
+  const body = (res.経過 || res.出力 || "").trim();
+  blk.innerHTML = termPaint(body || "（何も出ませんでした）")
+    + `\n<span class="stamp">→ ${res.ミリ秒 ?? 0} ミリ秒 ・ ${res.種類 || "—"}</span>`;
+  termbody.appendChild(blk);
+  termbody.scrollTop = termbody.scrollHeight;
+}
+
+document.getElementById("term-clear").onclick = () => {
+  termbody.innerHTML = '<span class="none">ここに、どんな指示でどう動いたかが出ます。</span>';
+};
+const toggleTerm = () => {
+  document.body.classList.toggle("no-term");
+  try{ localStorage.setItem("kt-term",
+        document.body.classList.contains("no-term") ? "0" : "1"); }catch(e){}
+};
+document.getElementById("term-hide").onclick = toggleTerm;
+document.getElementById("term-toggle").onclick = toggleTerm;
+try{ if (localStorage.getItem("kt-term") === "0")
+       document.body.classList.add("no-term"); }catch(e){}
+
+function fillBot(node, res){
+  const body = (res.出力 || "（何も返ってきませんでした）").trim();
+  node.querySelector("pre").innerHTML = paint(body);
+  const m = document.createElement("div");
+  m.className = "meta";
+  m.textContent = `${res.ミリ秒} ミリ秒 ・ ${res.モード}モード`;
+  node.appendChild(m);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addComputerApproval(node, res){
+  const p = res.操作;
+  if (!p || !p.id) return;
+  const box = document.createElement("div");
+  box.className = "computer-approval";
+  box.innerHTML = `<div class="label">AIカーソルの提案（まだ実行していません）</div>
+    <div>${esc(String(p.label || "操作"))}</div>
+    ${p.reason ? `<div class="reason">理由: ${esc(String(p.reason))}</div>` : ""}
+    ${(p.observed_app || p.observed_screen) ? `<div class="context">観測時: ${esc(String(p.observed_app || "前面アプリ不明"))}
+      ${p.observed_screen ? `・${esc(String(p.observed_screen.width))}×${esc(String(p.observed_screen.height))}` : ""}</div>` : ""}
+    <div class="caution">実行前に対象画面と操作内容を確認してください。画面サイズが変わっていれば自動で停止します。</div>
+    <button class="btn go" data-computer-approve>この操作を実行</button>
+    <button class="btn bad" data-computer-cancel>やめる</button>`;
+  node.appendChild(box);
+  const finish = (text, bad=false) => {
+    box.innerHTML = `<div class="${bad ? "reason" : "label"}">${esc(text)}</div>`;
+  };
+  box.querySelector("[data-computer-approve]").onclick = async () => {
+    box.querySelectorAll("button").forEach(b => b.disabled = true);
+    try{
+      const r = await api("/computer/approve", {method:"POST",
+        body: JSON.stringify({id:p.id})});
+      if (r.error) finish("実行できませんでした: " + r.error, true);
+      else finish(r.出力 || "操作を実行しました。");
+      termAdd("AIカーソルを承認", r);
+    }catch(e){ finish("実行できませんでした: " + e, true); }
+  };
+  box.querySelector("[data-computer-cancel]").onclick = async () => {
+    box.querySelectorAll("button").forEach(b => b.disabled = true);
+    try{
+      const r = await api("/computer/cancel", {method:"POST",
+        body: JSON.stringify({id:p.id})});
+      finish(r.error || "操作を取り消しました。", !!r.error);
+    }catch(e){ finish("取り消せませんでした: " + e, true); }
+  };
+  log.scrollTop = log.scrollHeight;
+}
+
+/* ---------- 送信 ---------- */
+async function send(text){
+  text = (text ?? ta.value).trim();
+  if (!text || busy) return;
+  busy = true; sendBtn.disabled = true;
+  ta.value = ""; resize(); hidePalette();
+  addUser(text);
+  const node = addBot();
+  try{
+    const m = atesaki.value;
+    // local: / groq: は /sensei（モデルに じかに）。
+    // agent:local:35b は読み取り専用の道具ループ。
+    // computer:local:35b は画面を観測して、承認された操作だけを行う。
+    // それ以外の非空は NVIDIA の別名。空はカーネル本体。
+    const computer = m.startsWith("computer:");
+    const computerModel = computer ? m.slice(9) : m;
+    const agent = m.startsWith("agent:");
+    const agentModel = agent ? m.slice(6) : m;
+    const jika = agentModel.startsWith("local:") || agentModel.startsWith("groq:");
+    atesaki.classList.toggle("temoto", computer || agent || m.startsWith("local:"));
+    atesaki.classList.toggle("soto", m !== "" && !computer && !agent && !m.startsWith("local:"));
+    const res = computer
+      ? await api("/computer/plan", {method:"POST", body: JSON.stringify({text, model:computerModel})})
+      : agent
+      ? await api("/agent", {method:"POST", body: JSON.stringify({text, model:agentModel})})
+      : jika
+      ? await api("/sensei", {method:"POST", body: JSON.stringify({text, model:m})})
+      : m
+      ? await api("/nvidia", {method:"POST", body: JSON.stringify({text, model:m})})
+      : await askNagashi(text, node);
+    const r = res.error ? {出力:"エラー： "+res.error, ミリ秒:0, モード:"—"} : res;
+    fillBot(node, r);
+    if (computer && !res.error) addComputerApproval(node, res);
+    termAdd(text, r);
+    LAST = {入力:text, 出力:r.出力||"", 経過:r.経過||""};
+  }catch(e){
+    const r = {出力:"つながりませんでした： "+e, ミリ秒:0, モード:"—"};
+    fillBot(node, r);
+    termAdd(text, r);
+  }
+  busy = false; sendBtn.disabled = false; ta.focus();
+  refresh();
+}
+
+/* ---------- 流しながら受ける（/ask/stream）＋ 止める ---------- */
+let ABORT = null;
+async function askNagashi(text, node){
+  // 吹き出しの下に「いま何をしているか」を出す。文字が来たらそのまま流す。
+  const pre = node.querySelector("pre");
+  let keika = node.querySelector(".keika");
+  if (!keika){ keika = document.createElement("div"); keika.className = "keika"; node.appendChild(keika); }
+  ABORT = new AbortController();
+  sendBtn.classList.add("tomeru"); sendBtn.disabled = false; sendBtn.title = "止める";
+  let moji = "", kangae = 0, kekka = null, kaiwa = null;
+  const kaku = () => { pre.innerHTML = paint(moji || " "); log.scrollTop = log.scrollHeight; };
+  try{
+    const r = await fetch("/ask/stream", {method:"POST", signal: ABORT.signal,
+      headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify({text, 会話: ST.いま || undefined})});
+    const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    while (true){
+      const {value, done} = await rd.read(); if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0){
+        const ln = buf.slice(0, i).trim(); buf = buf.slice(i+1); if (!ln) continue;
+        let m; try{ m = JSON.parse(ln); }catch(e){ continue; }
+        if (m.会話) kaiwa = m.会話;
+        if (m.経過 !== undefined){ keika.innerHTML = `<b>${esc(m.経過.trim().slice(0,90))}</b>`; }
+        if (m.考え !== undefined){ kangae = m.考え; keika.innerHTML = `<b>考えています … ${kangae} 字</b>`; }
+        if (m.文字 !== undefined){
+          // 考えている間（答えの前）は字数だけ。答えは文字をそのまま。
+          moji += m.文字; kaku();
+        }
+        if (m.承認){ shouninSheet(m.承認); }
+        if (m.完了){ kekka = m.完了; }
+      }
+    }
+  }catch(e){
+    if (e.name !== "AbortError") throw e;
+  }finally{
+    sendBtn.classList.remove("tomeru"); sendBtn.title = "送る（Enter／改行は Shift+Enter）"; ABORT = null;
+  }
+  if (!kekka){
+    // 止めた。画面に出た分をそのまま残す（サーバ側も履歴に残している）
+    kekka = {出力: (moji.trim() ? moji.trim() + "\n" : "") + "（ここで止めた）", ミリ秒: 0, モード: ST.モード || "—", 会話: kaiwa};
+  }
+  keika.remove();
+  return kekka;
+}
+async function erabu(nani){
+  const r = await api("/pick", {method:"POST", body: JSON.stringify({何: nani})});
+  if (r.error || !r.道 || !r.道.length) return;
+  // 頼み文の中に、選んだ場所をそのまま書き込む（続けて「を整理して」などと打てる）
+  const ins = r.道.map(p => p.replace(/\/$/, "")).join(" ");
+  const s = ta.value; ta.value = (s ? s.replace(/\s*$/, "") + " " : "") + ins + " ";
+  ta.focus(); resize();
+}
+document.getElementById("pickf").onclick = () => erabu("file");
+document.getElementById("pickd").onclick = () => erabu("folder");
+sendBtn.addEventListener("click", (e) => {
+  if (ABORT){ e.stopImmediatePropagation(); ABORT.abort(); }
+}, true);
+
+/* ---------- コマンド候補 ---------- */
+function showPalette(q){
+  const list = COMMANDS.filter(c => c.名.startsWith(q));
+  if (!list.length) return hidePalette();
+  selIdx = Math.min(selIdx, list.length - 1);
+  palette.innerHTML = list.map((c,i) =>
+    `<div class="${i===selIdx?"sel":""}" data-cmd="${c.名.split(" ")[0]}">
+       <span class="k">${esc(c.名)}</span><span class="d">${esc(c.説明)}</span></div>`
+  ).join("");
+  palette.classList.add("on");
+  palette.querySelectorAll("div").forEach(d =>
+    d.onclick = () => { ta.value = d.dataset.cmd + " "; hidePalette(); ta.focus(); });
+  return list;
+}
+function hidePalette(){ palette.classList.remove("on"); selIdx = 0; }
+
+/* ---------- 入力まわり ---------- */
+// 入力欄の高さ。中身に合わせて伸び縮みする。
+//   ★ 画面が出来上がる前に測ると、とんでもない高さで固まる。
+//     実際に、開いた直後の入力欄が 200px（5行ぶん）の空箱になっていた。
+//     一度そうなると scrollHeight が その高さを引きずるので、直らない。
+//     だから ①下限と上限を挟む ②出来上がった後と 窓の大きさが変わった後に
+//     もう一度測る。
+const TA_MIN = 42, TA_MAX = 200;
+function resize(){
+  ta.style.height = "auto";
+  const h = ta.scrollHeight || TA_MIN;
+  ta.style.height = Math.max(TA_MIN, Math.min(h, TA_MAX)) + "px";
+}
+window.addEventListener("load", resize);
+window.addEventListener("resize", resize);
+ta.addEventListener("input", () => {
+  resize();
+  const v = ta.value;
+  if (v.startsWith("/") && !v.includes("\n")) showPalette(v.split(" ")[0]);
+  else hidePalette();
+});
+// 日本語を打っているあいだ（変換中）は、Enter は「確定」であって「送信」ではない。
+// ここを見ていなかったので、「テトリス」と打って変換を確定した瞬間に
+// 送信されてしまい、文章を最後まで打てなかった。
+//   e.isComposing … 変換中なら true
+//   keyCode 229   … 古い実装で、変換中の Enter に付く値
+let COMPOSING = false;
+ta.addEventListener("compositionstart", () => { COMPOSING = true; });
+ta.addEventListener("compositionend",   () => {
+  // 確定した直後の keydown が、まだ変換中の扱いで来ることがある。
+  // ひと呼吸おいてから解除する
+  setTimeout(() => { COMPOSING = false; }, 0);
+});
+
+ta.addEventListener("keydown", e => {
+  if (e.isComposing || COMPOSING || e.keyCode === 229) return;
+  const open = palette.classList.contains("on");
+  if (open && (e.key === "ArrowDown" || e.key === "ArrowUp")){
+    e.preventDefault();
+    selIdx += e.key === "ArrowDown" ? 1 : -1;
+    if (selIdx < 0) selIdx = 0;
+    showPalette(ta.value.split(" ")[0]);
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey){
+    e.preventDefault();
+    if (open){
+      const sel = palette.querySelector(".sel");
+      if (sel){ ta.value = sel.dataset.cmd + " "; hidePalette(); resize(); return; }
+    }
+    send();
+  }
+  if (e.key === "Escape") hidePalette();
+});
+sendBtn.onclick = () => send();
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-send]");
+  if (b) send(b.dataset.send);
+  const c = e.target.closest(".chip");
+  if (c) send(c.textContent);
+});
+
+/* ここには前まで「押すたびに 本番⇄練習 を入れ替える」処理があった。
+   ── 外した理由（2026-09-06）──
+   ① 上の方（MODES のところ）で **同じボタンに別の処理が付いていて**、
+      後から書かれたこちらが 上書きして殺していた。
+      本来の「4つから選ぶシート」は 一度も出ていなかった。
+   ② 送信ボタンの真横で、**押した瞬間に確認なしで本番と練習が入れ替わる**。
+      入れ替わっても字が変わるだけなので気づきにくい。
+      ・本番のつもりが練習 → ファイルの命令が 本物に効かない
+      ・練習のつもりが本番 → **本物のフォルダが動く**
+      実際にこのセッション中、気づかないうちに練習へ切り替わっていた。
+   いまは MODES のシートで、どれにするかを選んで決める。 */
+
+/* ---------- 状態 ---------- */
+async function refresh(){
+  try{
+    const s = await api("/state");
+    ST = s;
+    const real = s.モード === "本番";
+    const ro = s.設定?.読むだけ, ask = s.設定?.確認;
+    const label = ro ? "読むだけ" : !real ? "練習モード"
+                     : ask ? "たずねる" : "本番モード";
+    const tag = document.getElementById("modetag");
+    tag.textContent = label;
+    tag.className = "mode " + (real && !ro ? "real" : "practice");
+    document.getElementById("h-place").textContent =
+      ro ? "読むだけ（何も動かしません）"
+         : real ? "本物のフォルダ" : "練習（sandbox）";
+    document.getElementById("me-mode").textContent = label;
+    document.getElementById("stat").textContent = `札 ${s.札} ・ 部品 ${s.部品}`;
+    // 送り先えらび。
+    //   カーネル       … ふだんの相棒（カード・部品・ノートを通る）
+    //   手元のモデル   … モデルに じかに。**外に出ない**。同時に載るのは1つだけ
+    //   外のモデル     … Groq / NVIDIA
+    {
+      const ms = (s.NVIDIA && s.NVIDIA.呼び方) ? (s.NVIDIA.モデル || []) : [];
+      const te = s.手元の一覧 || [];
+      const sig = ms.join(",") + "|" + te.map(x=>x.key).join(",") + "|" + (s.手元のいま||"");
+      if (atesaki.dataset.sig !== sig){
+        const keep = atesaki.value;
+        let h = '<optgroup label="カーネル"><option value="">カーネル（相棒）</option></optgroup>';
+        if (te.length){
+          h += '<optgroup label="手元のモデルに じかに（外に出ません）">'
+            + te.map(x => `<option value="${esc(x.key)}">${esc(x.名)}${x.いま?" ● いま":""}</option>`).join("")
+            + (te.some(x=>x.key === "local:35b")
+               ? '<option value="agent:local:35b">手元 Qwen3.5 エージェント（読み取り専用）</option>'
+               + '<option value="computer:local:35b">AIカーソル（Qwen3.5・確認して実行）</option>' : "")
+            + '</optgroup>';
+        }
+        h += '<optgroup label="外のモデル">'
+          + '<option value="groq:openai/gpt-oss-120b">Groq gpt-oss-120b</option>'
+          + '<option value="groq:openai/gpt-oss-20b">Groq gpt-oss-20b</option>'
+          + ms.map(m => `<option value="${esc(m)}">NVIDIA ${esc(m)}</option>`).join("")
+          + '</optgroup>';
+        atesaki.innerHTML = h;
+        atesaki.dataset.sig = sig;
+        if ([...atesaki.options].some(o => o.value === keep)) atesaki.value = keep;
+      }
+      atesaki.classList.toggle("temoto", atesaki.value.startsWith("local:")
+        || atesaki.value.startsWith("agent:")
+        || atesaki.value.startsWith("computer:"));
+      atesaki.classList.toggle("soto",
+        atesaki.value !== "" && !atesaki.value.startsWith("local:")
+        && !atesaki.value.startsWith("agent:")
+        && !atesaki.value.startsWith("computer:"));
+      atesakiChuui();
+      const now = te.find(x=>x.いま);
+      atesaki.title = "どこにきくか。カーネル＝相棒 ／ 手元＝モデルにじかに（外に出ない）"
+        + (now ? "\nいま載っているモデル: " + now.名 : "")
+        + "\n※ エージェントは読み取り専用。AIカーソルは承認後だけ操作。手元のモデル切替は15〜60秒かかります";
+    }
+    document.getElementById("fukasatag").textContent =
+      FUKASA_NA((s.設定 || {})["考える深さ"] ?? -1);
+
+    // ものおぼえの入れもの
+    const c = s.いれもの || {割合:0, 使った:0, 上限:0};
+    const nokori = Math.max(0, 100 - (c.割合 || 0));
+    const setmeter = (mid, fid, tid, txt) => {
+      const m = document.getElementById(mid);
+      if (!m) return;
+      document.getElementById(fid).style.width = c.割合 + "%";
+      m.className = "meter" + (c.割合 >= 85 ? " hot" : c.割合 >= 60 ? " mid" : "");
+      document.getElementById(tid).textContent = txt;
+      m.title = `ものおぼえの入れもの: 残り ${nokori}%`
+              + `（${c.使った}/${c.上限} 往復・${(c.文字数||0).toLocaleString()} 文字）`;
+    };
+    setmeter("ctxmeter",  "ctxfill",  "ctxtxt",  `${c.使った}/${c.上限}`);
+    setmeter("ctxmeter2", "ctxfill2", "ctxtxt2", `残り ${nokori}%`);
+
+    // 左のボタンは絞ったので、札は「有れば書く」だけにする
+    const bg = s.裏の係 || {};
+    const fuda = (id, v) => { const e = document.getElementById(id);
+                              if (e) e.textContent = v; };
+    fuda("b-bg", bg.動作中 ? (bg.調べた||0).toLocaleString() : "停止");
+    fuda("b-cand", bg.候補 ?? "");
+    drawChats();
+    ikiteru();
+  }catch(e){ shippai(); }
+}
+
+/* 「よく使うもの」の一覧は やめた（2026-09-06）。
+   はじめの画面に同じ言い回しが並んでいて 二重だったのと、
+   左が縦に詰まって 会話の一覧が見えなくなっていたため。 */
+api("/commands").then(c => COMMANDS = c).catch(()=>{});
+
+/* ---------- つながりの見張り ----------
+   Chrome は、窓が裏に回ると setInterval を「1分に1回」まで間引く。
+   なので、表に戻ってきたときにも必ず合図を送る。
+   それでも切れていたら、黙って壊れるのではなく、はっきり知らせる。      */
+/* ★ 2026-09-07 直し
+   前は **1回でも失敗したら** すぐ「切れました」を出していた。
+   窓が裏に回って戻ってきた直後や、手元のモデルが重い一瞬でも
+   通信は落ちるので、**生きているのに切れたと出る**ことがあった。
+   → 3回続けて駄目だったときだけ出す。そして自分で繋ぎ直しに行く。 */
+let DEAD = false;
+let SHIPAI = 0;                  // 続けて失敗した回数
+const SHIPAI_GEN = 3;            // これを超えたら はじめて知らせる
+
+function banner(on){
+  let b = document.getElementById("deadbar");
+  if (on && !b){
+    b = document.createElement("div");
+    b.id = "deadbar";
+    b.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:99;"
+      + "background:#5a3a35;color:#f0d5cf;font-size:12.5px;padding:9px 16px;"
+      + "text-align:center";
+    b.innerHTML = "うちうちのサーバーとのつながりが切れました。"
+      + "繋ぎ直しています…（戻らなければ カーネルを開き直してください）";
+    document.body.appendChild(b);
+  } else if (!on && b){ b.remove(); }
+}
+
+/* 通信が通った／通らなかった を1ヶ所で受ける */
+function ikiteru(){
+  SHIPAI = 0;
+  if (DEAD){ DEAD = false; banner(false); }
+}
+function shippai(){
+  SHIPAI++;
+  if (SHIPAI >= SHIPAI_GEN && !DEAD){ DEAD = true; banner(true); }
+}
+
+async function ping(){
+  try { await api("/ping"); ikiteru(); }
+  catch(e){ shippai(); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden){ ping(); refresh(); }
+});
+window.addEventListener("focus", ping);
+/* 機械が寝て起きたときも、必ず一度たしかめる */
+window.addEventListener("pageshow", ping);
+window.addEventListener("online", ping);
+
+/* 切れているあいだは 2秒ごとに繋ぎ直しに行く。
+   サーバーが立ち直れば（同じ番号・同じ合言葉のまま）黙って元に戻る。 */
+setInterval(() => { if (DEAD) ping(); }, 2000);
+
+refresh(); setInterval(refresh, 4000); setInterval(ping, 20000); resize();
+</script>
+</body>
+</html>
