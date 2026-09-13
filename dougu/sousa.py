@@ -23,6 +23,28 @@ if HERE not in sys.path:
 SAIDAI_TE = 12
 SAIDAI_BYOU = 600
 FUKASA_TE = 1        # 手を決めるときの考える深さ。0 だと「もう済んだ」に気づかず同じ所を押し続けた（3回目の実測）
+FUKASA_KOMATTA = 2   # 困っている時だけ、ここまで上げる（1回 2.5秒 → 32秒。いつも深いと元が取れない）
+
+
+def _fukasa_wo_kimeru(kazu: dict, tsumazuki: int) -> int:
+    """この1手に どれだけ考えさせるか、輪が **自分で** 決める。
+
+    ★ なぜ（2026-09-13）
+      これまでは 道具ごとに固定だった（操作=1、他=0）。固定だと、
+      簡単な手にも同じだけ払い、迷っている時にも増やせない。
+      teachers の階段（浅く解いて、食い違ったら深くする）と同じ考えを 輪に持ち込む。
+
+    ★ 何を証拠にするか（問いの見た目ではなく、**輪が実際につまずいた跡**）
+      ・同じ手を2回くり返した … 画面が変わっていないのに 同じ所を押している。迷っている印。
+      ・手が読めなかった直後   … JSON が壊れた。考えが足りていない。
+      どちらも無いあいだは 1 のまま。**困った時だけ 2 に上げる。**
+      （いつも 2 にすると 1手 32秒。3手の課題で 1分半 余計にかかる。）
+    """
+    if tsumazuki >= 1:
+        return FUKASA_KOMATTA
+    if kazu and max(kazu.values()) >= 2:
+        return FUKASA_KOMATTA
+    return FUKASA_TE
 _AIZU = re.compile(r"(開いて|起動して|立ち上げて|前に出して|押して|クリック|入力して|打って|書いて|閉じて).{0,20}(アプリ|画面|ボタン|メニュー)|"
                    r"(テキストエディット|メモ帳?|電卓|計算機|Finder|ファインダー|Safari|サファリ|Chrome|クローム|プレビュー|カレンダー|リマインダー|システム設定|Music|ミュージック)"
                    r".{0,12}(開いて|起動して|立ち上げて|前に出して|で|を使って)", re.I)
@@ -241,6 +263,7 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
     nerai = _nerai(mokuteki)          # 目当てのアプリ（分かれば）
     yurushita: set[str] = set()       # この仕事で「前に出す」を承認ずみのアプリ
     mae_moji: set | None = None
+    tsumazuki = 0                     # 続けて「手が読めなかった」回数。深さを上げる印
     shounin.hajimeru()
     try:
         for ban in range(1, SAIDAI_TE + 1):
@@ -254,11 +277,16 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
                     pass
             say("  操作: 画面を見る（%d手目）" % ban)
             g = _gamen(nerai)
-            te, ng = _te_wo_kimeru(mokuteki, rireki, g, timeout, fukasa=FUKASA_TE, mae=mae_moji)
+            fukasa = _fukasa_wo_kimeru(kazu, tsumazuki)
+            if fukasa != FUKASA_TE:
+                say("  操作: 迷っているので 深く考える（深さ%d）" % fukasa)
+            te, ng = _te_wo_kimeru(mokuteki, rireki, g, timeout, fukasa=fukasa, mae=mae_moji)
             mae_moji = {m["文"] for m in g["文字"]}
             if not te:
+                tsumazuki += 1
                 rireki.append(ng); say("    " + ng)
                 continue
+            tsumazuki = 0
             say("    頭脳の手: %s" % json.dumps(te, ensure_ascii=False)[:120])
             kind = te.get("手")
             if kind == "できた":
