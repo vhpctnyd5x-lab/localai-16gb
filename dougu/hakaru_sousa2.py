@@ -43,13 +43,12 @@ def _mieru(kotoba: str) -> bool:
         return False
 
 
+# ★ 課題は「GUI でしかできないこと」だけにする（2026-09-14）
+#   ファイルを動かす課題を入れていたが、これは **道具（kernel の うつす）で 1秒** で済む。
+#   GUI にやらせると 12手・600秒かけて毎回失敗していた。課題の作り方が間違っていた。
+#   操作の輪は「アプリの画面の中でしかできないこと」に使う。
 # (見出し, 目当て, 下ごしらえ, 終わりの形を確かめる)
 MONDAI = [
-    ("Finder: デスクトップの紙を 書類へ 移す",
-     f"Finderで デスクトップの {FUDA} を 書類フォルダ に移して",
-     _junbi_file,
-     lambda: os.path.exists(os.path.join(DOCS, FUDA)) and not os.path.exists(os.path.join(DESK, FUDA))),
-
     ("メモ: 新しいメモに 印を書く",
      f"メモを開いて、新しいメモに {SHIRUSHI} と書いて",
      None,
@@ -59,6 +58,11 @@ MONDAI = [
      "Safariを開いて 新しいタブを出して",
      None,
      lambda: (hands.mae_no_app() or "") == "Safari"),
+
+    ("計算機: 12×34 を計算して 答えを読む",
+     "計算機を開いて 12×34 を計算して、答えを教えて",
+     None,
+     lambda: _mieru("408")),
 ]
 
 
