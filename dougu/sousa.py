@@ -276,11 +276,18 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
                 except Exception:
                     pass
             say("  操作: 画面を見る（%d手目）" % ban)
+            # ★ どこで秒を食っているかを、毎手ぶん残す（2026-09-13: 1手 115秒。
+            #   目（画面を見る）と 頭（手を決める）のどちらが重いか、推測で語らないため）
+            t_me = time.time()
             g = _gamen(nerai)
+            me_byou = time.time() - t_me
             fukasa = _fukasa_wo_kimeru(kazu, tsumazuki)
             if fukasa != FUKASA_TE:
                 say("  操作: 迷っているので 深く考える（深さ%d）" % fukasa)
+            t_atama = time.time()
             te, ng = _te_wo_kimeru(mokuteki, rireki, g, timeout, fukasa=fukasa, mae=mae_moji)
+            say("    かかった秒: 目 %.0f ／ 頭 %.0f（文字 %d個）"
+                % (me_byou, time.time() - t_atama, len(g["文字"])))
             mae_moji = {m["文"] for m in g["文字"]}
             if not te:
                 tsumazuki += 1
