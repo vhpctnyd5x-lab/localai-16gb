@@ -23,21 +23,62 @@ def junbi():
         os.remove(q)
 
 
+SHIRUSHI = "カーネル試験0913"
+
+
+def _mieru(kotoba: str) -> bool:
+    """画面に その言葉が見えているか（輪と同じ目で見る）"""
+    try:
+        sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+        import sousa
+        g = sousa._gamen(None)
+        return any(kotoba.replace(" ", "") in m["文"].replace(" ", "") for m in g["文字"])
+    except Exception as e:
+        print("   （確かめられませんでした: %s）" % e)
+        return False
+
+
+def _mae_no_app() -> str:
+    try:
+        sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+        import hands
+        return hands.mae_no_app() or ""
+    except Exception:
+        return ""
+
+
+MONDAI = [
+    ("Finder: デスクトップの紙を 書類へ 移す",
+     f"Finderで デスクトップの {FUDA} を 書類フォルダ に移して",
+     junbi,
+     lambda: os.path.exists(os.path.join(DOCS, FUDA)) and not os.path.exists(os.path.join(DESK, FUDA))),
+    ("メモ: 新しいメモに 印を書く",
+     f"メモを開いて、新しいメモに {SHIRUSHI} と書いて",
+     None,
+     lambda: _mieru(SHIRUSHI)),
+    ("Safari: 前に出して 新しいタブを出す",
+     "Safariを開いて 新しいタブを出して",
+     None,
+     lambda: _mae_no_app() == "Safari"),
+]
+
+
 def main():
-    junbi()
-    tanomi = f"Finderで デスクトップの {FUDA} を 書類フォルダ に移して"
-    print("── Finder: デスクトップの紙を 書類へ 移す")
-    print("   頼み: %s" % tanomi)
-    t0 = time.time()
-    r = tsukau_app.tanomu(tanomi)
-    byou = time.time() - t0
-    ok = os.path.exists(os.path.join(DOCS, FUDA)) and not os.path.exists(os.path.join(DESK, FUDA))
-    print("\n   返事: %s" % str(r.get("出力", ""))[:200])
-    print("   %s  %.0f秒 ／ 機械の確かめ: 書類に在る=%s ・ デスクトップから消えた=%s"
-          % ("○" if ok else "×", byou,
-             os.path.exists(os.path.join(DOCS, FUDA)),
-             not os.path.exists(os.path.join(DESK, FUDA))))
-    return 0 if ok else 1
+    maru = 0
+    for midashi, tanomi, shitagoshirae, tashikame in MONDAI:
+        if shitagoshirae:
+            shitagoshirae()
+        print("── %s" % midashi)
+        print("   頼み: %s" % tanomi)
+        t0 = time.time()
+        r = tsukau_app.tanomu(tanomi)
+        byou = time.time() - t0
+        ok = bool(tashikame())
+        maru += ok
+        print("   返事: %s" % str(r.get("出力", "")).strip().replace("\n", " ")[:160])
+        print("   %s  %.0f秒 ／ 機械の確かめ: %s\n" % ("○" if ok else "×", byou, "○" if ok else "×"))
+    print("  操作の課題（アプリ経由）: %d/%d" % (maru, len(MONDAI)))
+    return 0 if maru == len(MONDAI) else 1
 
 
 if __name__ == "__main__":

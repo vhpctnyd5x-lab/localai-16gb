@@ -22,32 +22,32 @@ if HERE not in sys.path:
 
 SAIDAI_TE = 12
 SAIDAI_BYOU = 600
-FUKASA_TE = 1        # 手を決めるときの考える深さ。0 だと「もう済んだ」に気づかず同じ所を押し続けた（3回目の実測）
-FUKASA_KOMATTA = 2   # 困っている時だけ、ここまで上げる（1回 2.5秒 → 32秒。いつも深いと元が取れない）
+FUKASA_TE = 0        # ふつうの1手。**思考させない**（2026-09-13 の実測: 深さ1で 頭 70〜120秒）
+FUKASA_KOMATTA = 1   # 形が壊れた／同じ手のくり返し。ここだけ考えさせる
 
 
-def _fukasa_wo_kimeru(kazu: dict, tsumazuki: int) -> int:
+def _fukasa_wo_kimeru(kazu: dict, tsumazuki: int, ng: str = "") -> int:
     """この1手に どれだけ考えさせるか、輪が **自分で** 決める。
 
-    ★ なぜ（2026-09-13）
-      これまでは 道具ごとに固定だった（操作=1、他=0）。固定だと、
-      簡単な手にも同じだけ払い、迷っている時にも増やせない。
-      teachers の階段（浅く解いて、食い違ったら深くする）と同じ考えを 輪に持ち込む。
+    ★ 実測（2026-09-13・Qwen3-30B-A3B Q2_K・手元）
+        1手の中身は  目（画面を見る）4〜8秒  ／  頭（手を決める）46〜122秒。
+        **壁はモデル。画面ではない。** だから深さは「払う時間」そのもの。
+        深さ1 で 頭 70〜120秒、**深さ2 は 120秒の上限に当たって全滅**（3手とも時間切れ）。
 
-    ★ 何を証拠にするか（問いの見た目ではなく、**輪が実際につまずいた跡**）
-      ・同じ手を2回くり返した … 画面が変わっていないのに 同じ所を押している。迷っている印。
-      ・手が読めなかった直後   … JSON が壊れた。考えが足りていない。
-      どちらも無いあいだは 1 のまま。**困った時だけ 2 に上げる。**
-      （いつも 2 にすると 1手 32秒。3手の課題で 1分半 余計にかかる。）
+    ★ 決め方（問いの見た目ではなく、輪が実際につまずいた跡で決める）
+        ・前が **時間切れ** … 深くしない。深くすれば必ずまた時間切れになる。0 のまま。
+        ・前の手が **読めなかった**（形が壊れた・HTTP 500）… 考えが足りない。1 に上げる。
+        ・**同じ手を2回くり返した** … 画面が変わっていないのに同じ所を押している。1 に上げる。
+        ・それ以外 … 0（思考なし）。いちばん速い。
     """
+    if "Timeout" in ng or "timed out" in ng or "時間" in ng:
+        return FUKASA_TE
     if tsumazuki >= 1:
         return FUKASA_KOMATTA
     if kazu and max(kazu.values()) >= 2:
         return FUKASA_KOMATTA
     return FUKASA_TE
-_AIZU = re.compile(r"(開いて|起動して|立ち上げて|前に出して|押して|クリック|入力して|打って|書いて|閉じて).{0,20}(アプリ|画面|ボタン|メニュー)|"
-                   r"(テキストエディット|メモ帳?|電卓|計算機|Finder|ファインダー|Safari|サファリ|Chrome|クローム|プレビュー|カレンダー|リマインダー|システム設定|Music|ミュージック)"
-                   r".{0,12}(開いて|起動して|立ち上げて|前に出して|で|を使って)", re.I)
+
 
 SYSTEM = ("あなたは Mac を操作する係。目当てを達成するために、**次の1手だけ** を JSON で書く。\n"
           "使える手:\n"
@@ -126,6 +126,26 @@ def _seiri(t: str) -> str:
     t = re.sub(r"^[^\w\s]{1,2}\s*|\s*[^\w\s]{1,2}$", "", (t or "").strip())
     t = re.sub(r"^[一-龥]\s+(?=[A-Za-z0-9])", "", t)
     return t.strip()
+
+
+# ★ 頭脳は語彙どおりに書かないことがある（2026-09-13 の実測）。
+#   メモの課題では、文字を打てていたのに {"手":"完了"} と返した。
+#   輪は「完了」を知らないので通じず、そのまま続けて 同じ所を3回押して止まった。
+#   **言い換えはここで受ける。** 語彙そのものは増やさない（増やすと頭脳が迷う）。
+_IIKAE = {
+    "完了": "できた", "終わり": "できた", "おわり": "できた", "済んだ": "できた",
+    "達成": "できた", "done": "できた", "finished": "できた", "complete": "できた",
+    "無理": "できない", "むり": "できない", "失敗": "できない", "できません": "できない",
+}
+
+
+def _te_no_iikae(te: dict) -> dict:
+    """頭脳の言い換えを、輪の語彙に直す"""
+    k = str(te.get("手") or "").strip()
+    if k in _IIKAE:
+        te = dict(te)
+        te["手"] = _IIKAE[k]
+    return te
 
 
 def _gamen(nerai: str | None = None) -> dict:
@@ -264,6 +284,7 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
     yurushita: set[str] = set()       # この仕事で「前に出す」を承認ずみのアプリ
     mae_moji: set | None = None
     tsumazuki = 0                     # 続けて「手が読めなかった」回数。深さを上げる印
+    mae_ng = ""                       # 前の手のつまずき方（時間切れ か 形が壊れた か）
     shounin.hajimeru()
     try:
         for ban in range(1, SAIDAI_TE + 1):
@@ -281,7 +302,7 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
             t_me = time.time()
             g = _gamen(nerai)
             me_byou = time.time() - t_me
-            fukasa = _fukasa_wo_kimeru(kazu, tsumazuki)
+            fukasa = _fukasa_wo_kimeru(kazu, tsumazuki, mae_ng)
             if fukasa != FUKASA_TE:
                 say("  操作: 迷っているので 深く考える（深さ%d）" % fukasa)
             t_atama = time.time()
@@ -291,9 +312,12 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
             mae_moji = {m["文"] for m in g["文字"]}
             if not te:
                 tsumazuki += 1
+                mae_ng = ng
                 rireki.append(ng); say("    " + ng)
                 continue
             tsumazuki = 0
+            mae_ng = ""
+            te = _te_no_iikae(te)
             say("    頭脳の手: %s" % json.dumps(te, ensure_ascii=False)[:120])
             kind = te.get("手")
             if kind == "できた":
