@@ -60,6 +60,9 @@ SHITEI = [
     # ★ cache-reuse は「行が前へずれた」分しか拾えない。画面が先＋初めて見えた順 と組むと効くかもしれない
     ("J C ＋ --cache-reuse 16",              opts(extra=["-dev", "none", "--cache-reuse", "16"])),
     ("K C ＋ --cache-reuse 32",              opts(extra=["-dev", "none", "--cache-reuse", "32"])),
+    # ★ 深い文脈（4.6k）では -fa off が書き出し +31%（hakaru_kaki --nagai・2026-09-17）。読み込みが損しないかをここで見る
+    ("L C ＋ cache-reuse 16 ＋ -fa off",     opts(extra=["-dev", "none", "--cache-reuse", "16", "-fa", "off"])),
+    ("M C ＋ cache-reuse 16（今の server.py）", opts(extra=["-dev", "none", "--cache-reuse", "16"])),
 ]
 
 # ── 頼み文（本物の形）────────────────────────────────────────────

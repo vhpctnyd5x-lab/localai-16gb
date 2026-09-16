@@ -33,6 +33,14 @@ TOKEN = secrets.token_urlsafe(24)
 # 画面が生きている合図。窓を閉じたら来なくなるので、自分から終わる。
 # 出しっぱなしのサーバーが残らないようにするため
 LAST_PING = [time.time()]
+# ★ 手元のモデルの畳み方（2026-09-16・「安い」）。使われずに MODERU_IDLE 秒たったら 11GB を返す。
+#   16GB の機械で 11GB を握ったままだと「パソコンは悪くないのにずっと重い」（実際に起きた）。
+#   次の頼みで moderu_youi が起こし直す（内蔵から 10〜20秒＋最初の読み込み）。
+#   環境変数 KERNEL_MODERU_IDLE（秒）。0 で畳まない。
+MODERU_IDLE = int(os.environ.get("KERNEL_MODERU_IDLE", str(15 * 60)) or 0)
+_TSUKATTA = [time.time()]      # 手元のモデルを最後に使った時
+_TSUKAICHUU = [0]              # いま手元のモデルを使っている頼みの数（0 のときだけ畳む）
+_TATANDA = [False]             # 使われずに畳んだか（画面に「休止中」と出すため）
 
 # 秒。この間 合図が無ければ店じまい。
 #
@@ -165,6 +173,14 @@ def moderu_ichiran():
     return out
 
 
+def _pid_ikiteru(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
 def _ikiteru():
     import urllib.request
     try:
@@ -254,6 +270,14 @@ def _temoto_shimau():
     if pid is not None:
         for _ in range(30):              # 最大 9 秒待つ
             try:
+                # ★ 2026-09-17: 自分の子なら ここで回収する。回収しないと 終わった後も **ゾンビ** として
+                #   os.kill(pid, 0) が通り続け、毎回 9秒待って 力ずくの 9 を送っていた（畳むのに 12秒）。
+                try:
+                    if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                        pid = None
+                        break
+                except ChildProcessError:
+                    pass
                 os.kill(pid, 0)
             except Exception:
                 pid = None
@@ -262,6 +286,7 @@ def _temoto_shimau():
     if pid is not None:                  # まだ居るなら 力ずくで
         try:
             os.kill(pid, 9)
+            os.waitpid(pid, 0)
         except Exception:
             pass
     try:
@@ -298,6 +323,11 @@ def _temoto_okosu(key="local:main"):
         if _sore_ga_notteru(key):
             _IMA["key"] = key          # 記憶がずれていたら ここで直す
             return "すでに動いています（%s）" % v["名"]
+        # ★ 2026-09-17: 同じモデルを **読み込み中**（立てたが /health がまだ）なら、殺して立て直さない。
+        #   前は 温め（_atatameru）が立てた直後に最初の頼みが来ると、頼みの側が「別のが居る」と見て
+        #   読み込み中のものを殺し、もう1本立て直していた（実測: pid が 2つ、15秒の無駄）。待てばよい。
+        if _IMA["key"] == key and _IMA["pid"] and _pid_ikiteru(_IMA["pid"]):
+            return "立ち上げ中です（%s）" % v["名"]
         if _IMA["key"] is not None or _ikiteru():
             _temoto_shimau()
             for _ in range(20):                # 番号が空くまで
@@ -361,6 +391,40 @@ def moderu_youi(key):
         if not _matsu(240):
             return False, "読み込みが終わりませんでした（%s）" % MODERU[key]["名"]
         return True, "%s に入れ替えました" % MODERU[key]["名"]
+
+
+@contextlib.contextmanager
+def _temoto_tsukau():
+    """頼みの間、手元のモデルを畳ませない。先生が手元なら、畳んだ後の起こし直しもここで。"""
+    _TSUKAICHUU[0] += 1
+    _TSUKATTA[0] = time.time()
+    try:
+        try:
+            if any(str(t).startswith("local:") for t in (CTX.get("設定") or {}).get("先生", [])):
+                ok, msg = moderu_youi("local:main")
+                if not ok:
+                    sys.stderr.write("手元のモデル: %s\n" % msg)
+                _TATANDA[0] = False
+        except Exception:
+            pass
+        yield
+    finally:
+        _TSUKAICHUU[0] -= 1
+        _TSUKATTA[0] = time.time()
+
+
+def _temoto_tatamu_nara():
+    """見張りから 5秒ごとに呼ばれる。使われずに MODERU_IDLE 秒たっていれば畳む。"""
+    if not MODERU_IDLE or _TSUKAICHUU[0] or _IMA["pid"] is None:
+        return
+    if time.time() - _TSUKATTA[0] < MODERU_IDLE:
+        return
+    with _MODERU_LOCK:
+        if _TSUKAICHUU[0] or _IMA["pid"] is None:
+            return
+        sys.stderr.write("手元のモデル: %d分 使われていないので畳みます（次の頼みで起こし直す）\n" % (MODERU_IDLE // 60))
+        _temoto_shimau()
+        _TATANDA[0] = True
 
 
 def _atatameru():
@@ -444,7 +508,7 @@ def handle_text_nagashi(text, q, tomeru):
     """handle_text と同じ道筋を、途中経過と文字を q に流しながら通る。
     ★ 画面の「止める」= tomeru。teachers は次のかたまりで接続を切る。"""
     import teachers as _T
-    with _LOCK:
+    with _LOCK, _temoto_tsukau():
         t0 = time.time()
         cfg = CTX["設定"]
         keep = cfg.get("考える様子")
@@ -505,7 +569,7 @@ def _split_answer(out):
 
 def handle_text(text):
     """入力ひとつを処理して、画面に出す中身を返す"""
-    with _LOCK:
+    with _LOCK, _temoto_tsukau():
         t0 = time.time()
         # 画面から使うときは、途中経過も必ず取る。
         # 吹き出しには出さず、右のターミナルに流すため
@@ -591,6 +655,7 @@ def state():
         "手元のモデル": temoto,
         "手元の一覧": moderu_ichiran(),
         "手元のいま": _IMA["key"],
+        "手元は休止中": bool(_TATANDA[0]),
         "会話": chats.listing(),
         "組": chats.groups(),
         # 削除は SQLite の soft delete。通常の一覧からは消すが、あとで戻せる。
@@ -955,7 +1020,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # 80B は 6 t/s しか出ない。待ち時間を分けておく
             byou = 600 if who == "local:80b" else 300
             rireki = CTX.setdefault("先生の話", [])
-            r = sensei.kiku(text, CTX["設定"], rireki, timeout=byou, sensei=who)
+            with _temoto_tsukau():
+                r = sensei.kiku(text, CTX["設定"], rireki, timeout=byou, sensei=who)
             if r.get("error"):
                 return self._json({"error": r["error"]}, 502)
             rireki.append({"who": "user", "文": text})
@@ -1323,6 +1389,10 @@ def _watchdog(httpd):
     """
     while True:
         time.sleep(5)
+        try:
+            _temoto_tatamu_nara()
+        except Exception:
+            pass
         if time.time() - LAST_PING[0] <= IDLE_LIMIT:
             continue
         if _mado_iru() and time.time() - LAST_PING[0] < HARD_LIMIT:

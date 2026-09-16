@@ -1323,6 +1323,7 @@ function openSettings(){
     if (k === "先生"){
       const cur = (v||[]).join(", ");
       const nama = ST.手元のモデル === true  ? '<b style="color:#3a3">動いています</b>'
+                 : ST.手元は休止中           ? '<b style="color:#996">休止中（使うと起きる・15秒ほど）</b>'
                  : ST.手元のモデル === false ? '<b style="color:#c33">止まっています</b>'
                  : "";
       const opts = [
