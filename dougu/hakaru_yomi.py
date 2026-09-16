@@ -57,6 +57,9 @@ SHITEI = [
     ("G C ＋ 投機なし",                      opts(spec=None, extra=["-dev", "none"])),
     ("H C ＋ 常駐(--mlock)",                 opts(extra=["-dev", "none", "--mlock"])),
     ("I C の代わりに Metal に 8層(-ngl 8)",  opts(ngl="8")),
+    # ★ cache-reuse は「行が前へずれた」分しか拾えない。画面が先＋初めて見えた順 と組むと効くかもしれない
+    ("J C ＋ --cache-reuse 16",              opts(extra=["-dev", "none", "--cache-reuse", "16"])),
+    ("K C ＋ --cache-reuse 32",              opts(extra=["-dev", "none", "--cache-reuse", "32"])),
 ]
 
 # ── 頼み文（本物の形）────────────────────────────────────────────
@@ -209,9 +212,13 @@ def main():
     args = sys.argv[1:]
     if "--narabi" in args:
         i = args.index("--narabi"); NARABI = args[i + 1]; args = args[:i] + args[i + 2:]
+        sousa.NARABI = NARABI
         TE1 = _tanomi([], G1)
-        TE2 = _tanomi(["アプリ「Notes」を前に出す"], G2, {m["文"] for m in G1["文字"]})
-        TE3 = _tanomi(["アプリ「Notes」を前に出す", "キー cmd+n を押す"], G3, {m["文"] for m in G2["文字"]})
+        # 並びは「初めて見えた順」を手渡す（輪と同じ: 前の頼み文の並び → 次の頼み文）
+        mae1 = [m["文"] for m in G1["文字"]]
+        TE2 = _tanomi(["アプリ「Notes」を前に出す"], G2, mae1)
+        f2, a2 = sousa._moji_narabi(G2, mae1)
+        TE3 = _tanomi(["アプリ「Notes」を前に出す", "キー cmd+n を押す"], G3, f2 + a2)
         print("  並び: %s（画面を履歴より前に置く）" % NARABI if NARABI == "画面が先" else "  並び: %s" % NARABI)
     erabu = [x for x in SHITEI if not args or any(x[0].startswith(a) for a in args)]
     kekka = []

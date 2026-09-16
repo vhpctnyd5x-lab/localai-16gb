@@ -82,12 +82,14 @@ SYSTEM = ("あなたは Mac を操作する係。目当てを達成するため�
 
 _JSON = re.compile(r"\{.*?\}", re.S)
 
-# ★ 頼み文の並び（2026-09-16）。「画面が後」が今までの形。
+# ★ 頼み文の並び（2026-09-16）。既定は「画面が先」。「画面が後」が 9/13 までの形。
 #   毎手 変わるのは 画面 と 履歴（1行増える）の両方。履歴が画面の前にあると、履歴が1行増えるだけで
-#   その後ろの画面ぶん（約500トークン＝40秒）を丸ごと読み直す（llama.log: 毎手 600〜800トークン読み直し）。
-#   「画面が先」なら、画面が変わらなかった手は 履歴の1行（十数トークン）だけ読み直せば済む。
-#   速さは hakaru_yomi、頭が迷わないかは hakaru_atama で測ってから既定を決める。環境変数 KERNEL_NARABI で切り替え。
-NARABI = os.environ.get("KERNEL_NARABI", "画面が後")
+#   その後ろの画面ぶんを丸ごと読み直す（実測: 毎手 537トークン＝14秒）。llama-server の --cache-reuse も
+#   「後ろへずれた」行は拾えない。
+#   「画面が先」＋ 画面の文字を「初めて見えた順」（_moji_narabi）＋ --cache-reuse 16（server.py）で
+#   次の手の読み直しは **537 → 97トークン（14秒 → 3.3秒）**（hakaru_yomi・2026-09-16）。
+#   頭の物差しも 12/14 → 13/14 で悪くならなかった。環境変数 KERNEL_NARABI=画面が後 で前の形に戻せる。
+NARABI = os.environ.get("KERNEL_NARABI", "画面が先")
 
 
 # アプリごとの手引き（頭脳が知らない、その Mac の作法）。目当てのアプリが分かっているときだけ渡す
@@ -226,15 +228,45 @@ def _gamen(nerai: str | None = None) -> dict:
             "窓の題": _mado_no_dai(nerai) if nerai else ""}
 
 
-def _shiryou(g: dict, mae: set | None = None) -> str:
+def _moji_narabi(g: dict, mae) -> tuple[list[str], list[str]]:
+    """画面の文字を「初めて見えた順」に分ける → (前から見えている行, 新しく見えた行)。
+    ★ 2026-09-16: llama-server の使い回しは「前半が同じ」ときだけ効く。--cache-reuse も、行が **後ろへ**
+      ずれた分は拾えない（前へずれた分しか拾えない。実測: 読み直し 537 のまま）。
+      だから 前の手で見えていた行は 前の並びのまま前に置き、新しい行は後ろに足す。
+      すると読み直すのは「消えた行」以降だけ。mae は 前の頼み文の並び（list）。set なら今の並びで代用。"""
+    ima = [m["文"] for m in g["文字"][:60]]
+    ima_set = set(ima)
+    if isinstance(mae, (list, tuple)):
+        furui = [x for x in mae if x in ima_set]
+    elif mae:
+        furui = [x for x in ima if x in mae]
+    else:
+        furui = list(ima)
+    mita = set(furui)
+    return furui, [x for x in ima if x not in mita]
+
+
+def _shiryou(g: dict, mae=None) -> str:
     lines = ["前のアプリ: " + (g["アプリ"] or "不明")]
     if g.get("目当て"):
         lines.append("目当てのアプリ: %s%s" % (g["目当て"], "（その窓の文字だけ見せている）" if g.get("枠") else "（窓が見つからない）"))
-        lines.append("いま前にある窓の題: " + (g["窓の題"] or "（窓なし）"))
+        if NARABI != "画面が先":
+            lines.append("いま前にある窓の題: " + (g["窓の題"] or "（窓なし）"))
         if g["目当て"] in _TEBIKI:
             lines.append("手引き: " + _TEBIKI[g["目当て"]])
+    if NARABI == "画面が先":
+        # ★ 変わる所（新しい行・窓の題）は 画面の資料の **いちばん後ろ**。前半を変えない（_moji_narabi 参照）
+        furui, atarashii = _moji_narabi(g, mae)
+        lines.append("見えている文字（押せるのはこれだけ）:")
+        lines += ["  " + x for x in furui + atarashii]
+        if mae is not None and atarashii:
+            lines.append("前の手のあとに新しく見えた文字: " + " / ".join(atarashii[:12]))
+        if g.get("目当て"):
+            lines.append("いま前にある窓の題: " + (g["窓の題"] or "（窓なし）"))
+        return "\n".join(lines)
     if mae is not None:
-        atarashii = [m["文"] for m in g["文字"] if m["文"] not in mae][:12]
+        mae_set = set(mae)
+        atarashii = [m["文"] for m in g["文字"] if m["文"] not in mae_set][:12]
         if atarashii:
             lines.append("前の手のあとに新しく見えた文字: " + " / ".join(atarashii))
     lines.append("見えている文字（押せるのはこれだけ）:")
@@ -259,7 +291,7 @@ def _sagasu(g: dict, moji: str):
     return None
 
 
-def _te_wo_kimeru(mokuteki: str, rireki: list[str], g: dict, timeout: int, fukasa: int = 0, mae: set | None = None) -> tuple[dict | None, str]:
+def _te_wo_kimeru(mokuteki: str, rireki: list[str], g: dict, timeout: int, fukasa: int = 0, mae=None) -> tuple[dict | None, str]:
     import teachers as T
     p = ["目当て: " + mokuteki.strip()]
     # ★ 窓をずらさない（前は 直近8手だけ）。ずらすと前半が変わり、使い回しが毎回壊れる。
@@ -378,7 +410,7 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
     kazu: dict = {}                   # (手, 文字) → 回数。同じ手のくり返しを止める
     nerai = _nerai(mokuteki)          # 目当てのアプリ（分かれば）
     yurushita: set[str] = set()       # この仕事で「前に出す」を承認ずみのアプリ
-    mae_moji: set | None = None
+    mae_moji: list | None = None      # 前の頼み文の画面の並び（_moji_narabi）
     tsumazuki = 0                     # 続けて「手が読めなかった」回数。深さを上げる印
     mae_ng = ""                       # 前の手のつまずき方（時間切れ か 形が壊れた か）
     shounin.hajimeru()
@@ -405,7 +437,9 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
             te, ng = _te_wo_kimeru(mokuteki, rireki, g, timeout, fukasa=fukasa, mae=mae_moji)
             say("    かかった秒: 目 %.0f ／ 頭 %.0f（文字 %d個）"
                 % (me_byou, time.time() - t_atama, len(g["文字"])))
-            mae_moji = {m["文"] for m in g["文字"]}
+            # 次の手のために、今の頼み文の並び（前から見えている行 → 新しい行）を覚える
+            furui, atarashii = _moji_narabi(g, mae_moji)
+            mae_moji = furui + atarashii
             if not te:
                 tsumazuki += 1
                 mae_ng = ng

@@ -49,13 +49,21 @@ def main():
     finally:
         teachers.ask_one, sousa._KIROKU = moto_ask, moto
     t = tsukanda.get("p", "")
-    ok2 = sousa.NARABI == "画面が後" and t.rfind("【画面（資料）】") > t.rfind("これまでの手")
+    # ★ 2026-09-16 から既定は「画面が先」: 変わる所（新しい行・窓の題・履歴）が全部 画面の文字より後ろにある
+    ok2 = (sousa.NARABI == "画面が先" and t.find("見えている文字") < t.find("いま前にある窓の題") < t.find("これまでの手"))
     m2 += ok2
-    print("  %s  頼み文の最後は【画面（資料）】（既定の並び 画面が後）" % ("○" if ok2 else "×"))
+    print("  %s  変わる所（窓の題・履歴）は画面の文字より後ろ（既定の並び 画面が先）" % ("○" if ok2 else "×"))
+    # 初めて見えた順: 前の並びを渡すと、残っている行は同じ並びのまま、新しい行が後ろに付く
+    g2 = {"アプリ": "Notes", "枠": None, "目当て": "Notes", "窓の題": "メモ",
+          "文字": [{"文": x, "x": 1, "y": i} for i, x in enumerate(["新しい行", "ファイル", "編集", "新規メモ"])]}
+    f, a = sousa._moji_narabi(g2, ["編集", "新規メモ", "消えた行", "ファイル"])
+    ok4 = f == ["編集", "新規メモ", "ファイル"] and a == ["新しい行"]
+    m2 += ok4
+    print("  %s  画面の文字は初めて見えた順（前の並びを保ち、新しい行は後ろ）" % ("○" if ok4 else "×"))
     ok3 = "rireki[-8:]" not in src
     m2 += ok3
     print("  %s  これまでの手の窓をずらさない（前半を壊さない）" % ("○" if ok3 else "×"))
-    print("\n  頼み文: %d/%d" % (maru + m2, len(MONDAI) + 3))
+    print("\n  頼み文: %d/%d" % (maru + m2, len(MONDAI) + 4))
     return 0 if (maru == len(MONDAI) and m2 == 3) else 1
 
 
