@@ -87,11 +87,12 @@ def _element(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def observe(include_image: bool = False, fast: bool = False) -> dict[str, Any]:
+def observe(include_image: bool = False, fast: bool = False,
+            rect: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
     """画面を観測する。AI向けには OCR と座標だけを返す。"""
-    path = eyes.shot()
+    path = eyes.shot(rect=rect)
     try:
-        seen = eyes.read(path, fast=fast)
+        seen = eyes.read(path, fast=fast, rect=rect)
         screen = _screen()
         elements = [_element(x) for x in seen.get("文字", [])]
         result: dict[str, Any] = {

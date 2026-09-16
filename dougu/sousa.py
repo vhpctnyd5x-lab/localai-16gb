@@ -205,11 +205,14 @@ def _yakunitatsu(t: str) -> bool:
 
 def _gamen(nerai: str | None = None) -> dict:
     """いまの画面: 前のアプリ と 見えている文字（座標つき）。
-    ★ 目当てのアプリが分かっていれば、**その窓の中とメニューバーだけ** を見せる。
+    ★ 目当てのアプリが前にあれば、その窓だけを撮って読む。窓が取れない時と、
+      まだ別のアプリが前にある時は全画面を撮る。
       実測: 全画面を見せたら、頭脳は Claude の窓の「+ 新規」を押し、Claude の入力欄に打った。"""
-    import computer
-    o = computer.observe(include_image=False, fast=False)
+    import computer, hands
     waku = _mado(nerai) if nerai else None
+    mae = hands.mae_no_app() or ""
+    kiritori = waku if waku and mae == nerai else None
+    o = computer.observe(include_image=False, fast=False, rect=kiritori)
     moji = []
     mita = set()
     for e in o.get("elements", []):

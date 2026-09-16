@@ -39,10 +39,26 @@ def screen_size():
         return None, None
 
 
-def shot(path=None, window=None):
+def _rect(rect):
+    """screencapture に渡せる (x, y, 幅, 高さ) に整える。"""
+    if rect is None:
+        return None
+    if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+        raise ValueError("枠は (x, y, 幅, 高さ) で指定してください")
+    try:
+        x, y, w, h = (int(float(v)) for v in rect)
+    except (TypeError, ValueError):
+        raise ValueError("枠の座標が不正です")
+    if w <= 0 or h <= 0:
+        raise ValueError("枠の幅と高さは正の数にしてください")
+    return x, y, w, h
+
+
+def shot(path=None, window=None, rect=None):
     """画面を1枚撮る。
 
-    window にアプリ名を渡すと、その窓だけを撮る（前に出してから撮る）
+    window にアプリ名を渡すと、そのアプリを前に出してから撮る。
+    rect に (x, y, 幅, 高さ) を渡すと、その枠だけを撮る。
     """
     path = path or os.path.join(tempfile.gettempdir(),
                                 f"kernel-shot-{int(time.time()*1000)}.png")
@@ -52,7 +68,11 @@ def shot(path=None, window=None):
                        capture_output=True, timeout=10)
         time.sleep(0.6)
     # -x は「カシャッ」という音を鳴らさない。人の作業のじゃまをしない
-    r = subprocess.run(["screencapture", "-x", "-t", "png", path],
+    rect = _rect(rect)
+    argv = ["screencapture", "-x", "-t", "png"]
+    if rect:
+        argv += ["-R", "%d,%d,%d,%d" % rect]
+    r = subprocess.run(argv + [path],
                        capture_output=True, timeout=25)
     if r.returncode != 0 or not os.path.exists(path):
         raise Exception("画面を撮れませんでした。"
@@ -61,7 +81,7 @@ def shot(path=None, window=None):
     return path
 
 
-def read(path, fast=False, langs="ja-JP,en-US"):
+def read(path, fast=False, langs="ja-JP,en-US", rect=None):
     """画像の中の文字を読む。座標は「画面の座標」に直して返す"""
     if not ready():
         raise Exception("読み取りの道具がありません（tools/see）")
@@ -71,39 +91,42 @@ def read(path, fast=False, langs="ja-JP,en-US"):
         raise Exception((r.stderr or "読めませんでした").strip()[:200])
     d = json.loads(r.stdout)
 
-    # Retina のぶんを割り戻す
+    # Retina のぶんを割り戻す。窓だけの画像は、窓の左上も足して
+    # 全画面と同じ座標へ戻す。
     sw, sh = screen_size()
     iw = d["大きさ"]["幅"]
-    scale = (iw / sw) if (sw and iw) else 1.0
-    if scale and abs(scale - 1.0) > 0.01:
-        for it in d["文字"]:
-            for k in ("箱", "まんなか"):
-                it[k]["x"] = int(it[k]["x"] / scale)
-                it[k]["y"] = int(it[k]["y"] / scale)
-            if "幅" in it["箱"]:
-                it["箱"]["幅"] = int(it["箱"]["幅"] / scale)
-                it["箱"]["高さ"] = int(it["箱"]["高さ"] / scale)
+    rect = _rect(rect)
+    moto_w = rect[2] if rect else sw
+    scale = (iw / moto_w) if (moto_w and iw) else 1.0
+    ox, oy = (rect[0], rect[1]) if rect else (0, 0)
+    for it in d["文字"]:
+        for k in ("箱", "まんなか"):
+            it[k]["x"] = int(it[k]["x"] / scale + ox)
+            it[k]["y"] = int(it[k]["y"] / scale + oy)
+        if "幅" in it["箱"]:
+            it["箱"]["幅"] = int(it["箱"]["幅"] / scale)
+            it["箱"]["高さ"] = int(it["箱"]["高さ"] / scale)
     d["倍率"] = round(scale, 2)
     return d
 
 
-def look(window=None, fast=False, keep=False):
+def look(window=None, fast=False, keep=False, rect=None):
     """撮って、読む。いちばんよく使う入口"""
-    p = shot(window=window)
+    p = shot(window=window, rect=rect)
     try:
-        return read(p, fast=fast)
+        return read(p, fast=fast, rect=rect)
     finally:
         if not keep:
             try: os.remove(p)
             except OSError: pass
 
 
-def find(text, seen=None, window=None, fast=False):
+def find(text, seen=None, window=None, fast=False, rect=None):
     """画面から、その文字を探す。
 
     戻り値: [{"文", "まんなか": {"x","y"}, "確からしさ"}] を、近い順に
     """
-    d = seen or look(window=window, fast=fast)
+    d = seen or look(window=window, fast=fast, rect=rect)
     q = text.strip().lower()
     if not q:
         return []
@@ -120,9 +143,9 @@ def find(text, seen=None, window=None, fast=False):
     return exact + part
 
 
-def text_of(window=None, fast=False):
+def text_of(window=None, fast=False, rect=None):
     """画面に出ている文字を、まるごと1つの文字列で"""
-    return look(window=window, fast=fast)["全文"]
+    return look(window=window, fast=fast, rect=rect)["全文"]
 
 
 if __name__ == "__main__":

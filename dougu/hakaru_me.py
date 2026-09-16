@@ -16,8 +16,7 @@
   使い方:  /usr/local/bin/python3 hakaru_me.py [アプリ名]   … 省略時は前にあるアプリの窓
 """
 from __future__ import annotations
-import os, sys, time, subprocess, tempfile
-import os, sys
+import os, sys, time, tempfile
 KERNEL = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel")
                                                 if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel")
 sys.path.insert(0, KERNEL)
@@ -25,24 +24,30 @@ import eyes, hands, sousa
 
 
 def toru(rect=None):
-    p = os.path.join(tempfile.gettempdir(), "kernel-hakaru-me.png")
-    cmd = ["screencapture", "-x", "-t", "png"] + (["-R", "%d,%d,%d,%d" % rect] if rect else []) + [p]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
-    if r.returncode != 0 or not os.path.exists(p):
-        raise SystemExit("画面を撮れません（%s）。システム設定 → プライバシーとセキュリティ → 画面収録 で、この端末（Claude / Terminal）を許可してください"
-                         % (r.stderr or "").strip()[:60])
-    return p
+    p = os.path.join(tempfile.gettempdir(), "kernel-hakaru-me-%d.png" % os.getpid())
+    try:
+        return eyes.shot(path=p, rect=rect)
+    except Exception as e:
+        raise SystemExit("画面を撮れません（%s）。システム設定 → プライバシーとセキュリティ → 画面収録 で、この端末を許可してください"
+                         % str(e)[:60])
 
 
-def hakaru(label, rect=None, fast=False, kai=2):
-    byou_t, byou_y, kazu = [], [], 0
+def hakaru(label, rect=None, fast=False, kai=3):
+    byou_t, byou_y, kazu = [], [], []
     for _ in range(kai):
-        t0 = time.time(); p = toru(rect); t1 = time.time()
-        d = eyes.read(p, fast=fast); t2 = time.time()
-        os.remove(p)
-        byou_t.append(t1 - t0); byou_y.append(t2 - t1); kazu = len(d.get("文字", []))
-    print("  %-22s 撮る %.1f秒 ／ 読む %.1f秒 ／ 文字 %3d個" % (label, sorted(byou_t)[kai // 2], sorted(byou_y)[kai // 2], kazu))
-    return kazu
+        p = None
+        try:
+            t0 = time.monotonic(); p = toru(rect); t1 = time.monotonic()
+            d = eyes.read(p, fast=fast, rect=rect); t2 = time.monotonic()
+            byou_t.append(t1 - t0); byou_y.append(t2 - t1); kazu.append(len(d.get("文字", [])))
+        finally:
+            if p:
+                try: os.remove(p)
+                except OSError: pass
+    chuou = lambda a: sorted(a)[len(a) // 2]
+    print("  %-22s 撮る %.1f秒 ／ 読む %.1f秒 ／ 文字 %3d個（%d回の中央値）" %
+          (label, chuou(byou_t), chuou(byou_y), chuou(kazu), kai))
+    return chuou(kazu)
 
 
 def main():
