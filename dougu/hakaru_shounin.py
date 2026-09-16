@@ -13,7 +13,11 @@
 from __future__ import annotations
 import os, sys, threading
 
-sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+import os, sys
+# ★ 2026-09-16: 正は内蔵の写し（外部SSDは日に何度も切れる）。無ければ SSD を見る
+KERNEL = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel")
+                                                if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel")
+sys.path.insert(0, KERNEL)
 import machine, shounin, main
 
 

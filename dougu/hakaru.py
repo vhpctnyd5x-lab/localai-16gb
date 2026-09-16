@@ -3,7 +3,7 @@
 """dougu/hakaru.py -- 「表」と「文章」の道具（kernel/shigoto.py）の物差し。各10課題・機械採点。
    ★ 採点は「報告の文か、成果物の中身に、期待した値があるか」。曖昧な課題（要約など）は入れない。"""
 import json, io, os, sys, time, shutil, csv, re
-K = "/Volumes/Mac Windows/LocalAI/kernel"; sys.path.insert(0, K)
+K = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel") if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"); sys.path.insert(0, K)
 import shigoto
 HERE = os.path.dirname(os.path.abspath(__file__)); OUT = os.path.join(HERE, "kekka"); os.makedirs(OUT, exist_ok=True)
 D = os.path.expanduser("~/Desktop/dougu_shiken"); shutil.rmtree(D, ignore_errors=True); os.makedirs(D)

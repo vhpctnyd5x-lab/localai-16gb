@@ -1,4 +1,5 @@
 #!/bin/bash
+export LANG=en_US.UTF-8
 # 操作の輪の課題（メモ・Safari・Finder）。画面を触るので、人がパソコンを使っていない時に。
 # 手元のモデルは アプリが立てたもの（127.0.0.1:8080）を使い回す。2本目は立てない。
 cd "$(dirname "$0")"; mkdir -p kekka

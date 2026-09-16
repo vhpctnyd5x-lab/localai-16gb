@@ -1,4 +1,5 @@
 #!/bin/bash
+export LANG=en_US.UTF-8
 # 操作の課題を3回まわして中央値を見る。1回の数字は1回の数字にすぎないため。
 cd "$(dirname "$0")"; mkdir -p kekka
 curl -sf -m 3 http://127.0.0.1:8080/health >/dev/null 2>&1 || { echo "手元のモデルが動いていません"; exit 2; }

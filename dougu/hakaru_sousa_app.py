@@ -29,7 +29,10 @@ SHIRUSHI = "カーネル試験0913"
 def _mieru(kotoba: str) -> bool:
     """画面に その言葉が見えているか（輪と同じ目で見る）"""
     try:
-        sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+        import os, sys
+        # ★ 2026-09-16: 正は内蔵の写し（外部SSDは日に何度も切れる）。無ければ SSD を見る
+        sys.path.insert(0, os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel")
+                                                                  if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"))
         import sousa
         g = sousa._gamen(None)
         return any(kotoba.replace(" ", "") in m["文"].replace(" ", "") for m in g["文字"])
@@ -40,7 +43,9 @@ def _mieru(kotoba: str) -> bool:
 
 def _mae_no_app() -> str:
     try:
-        sys.path.insert(0, "/Volumes/Mac Windows/LocalAI/kernel")
+        import os, sys
+        sys.path.insert(0, os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel")
+                                                                  if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"))
         import hands
         return hands.mae_no_app() or ""
     except Exception:

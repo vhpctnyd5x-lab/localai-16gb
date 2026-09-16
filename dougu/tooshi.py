@@ -3,7 +3,7 @@
 """dougu/tooshi.py -- 通し試験。アプリと同じ入口 main.route() に頼み文を入れ、正しい道具に振り分けられるかを見る。
    物差し（hakaru*.py）は道具を直接呼ぶので、ここで「入口→振り分け→道具」がつながっていることを確かめる。"""
 import io, os, sys, csv, shutil, contextlib, time, re
-K = "/Volumes/Mac Windows/LocalAI/kernel"; sys.path.insert(0, K); os.chdir(K)
+K = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel") if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"); sys.path.insert(0, K); os.chdir(K)
 import main, settings as S
 D = os.path.expanduser("~/Desktop/dougu_shiken"); shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
 with io.open(os.path.join(D, "uriage.csv"), "w", encoding="utf-8", newline="") as f:

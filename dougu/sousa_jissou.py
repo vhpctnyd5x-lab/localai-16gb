@@ -3,7 +3,7 @@
 """sousa_jissou.py -- 操作の輪を **実際に動かす** 試験（マウス・キーボードを動かす）。
    本人が「やっていい」と言ったときだけ走らせる。承認は自動（shounin.JIDOU）。終わったら Claude を前に戻す。"""
 import sys, os, json, time, subprocess
-K = "/Volumes/Mac Windows/LocalAI/kernel"; sys.path.insert(0, K)
+K = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel") if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"); sys.path.insert(0, K)
 import sousa, shounin, eyes, hands
 shounin.JIDOU = True
 HERE = os.path.dirname(os.path.abspath(__file__)); OUT = os.path.join(HERE, "kekka"); os.makedirs(OUT, exist_ok=True)

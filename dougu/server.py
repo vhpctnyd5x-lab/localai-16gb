@@ -73,6 +73,9 @@ def _SPEC_OPTS():
 def _sagasu_lsrv():
     ne = [
         os.environ.get("KERNEL_LLAMA_SERVER") or "",
+        # ★ 2026-09-16: 内蔵の写しを先に。外部SSDは日に何度も切れ、切れた瞬間に
+        #   SSD上の bin/.dylib を持つ llama-server ごと落ちる（今日それで測定が止まった）。
+        os.path.expanduser("~/LocalAI_mirror/llama-latest/build/bin/llama-server"),
         # Qwen3.5 / MTP / 最新のKVキャッシュ機能を使う新ビルド。
         # 無ければ従来の実験用ビルドへ戻る。
         "/Volumes/Mac Windows/LocalAI/llama-latest/build/bin/llama-server",
@@ -117,7 +120,7 @@ MODERU = {
     #   ・枝刈り版(REAP96)に得の証拠なし（難問 93.3% vs 素 96.7%, p=0.289 / 読解 76.2% vs 80.0%）
     #   ・Qwen3.5-35B は 3.3倍おそく賢さの差なし / 80B系はRAMに収まらず遅い
     #   → 雑談・推論・読解・道具、全部これ1本。設定は 2026-09-10/11 実測の最速
-    #     （-t 12 / -np 1 / KV q8_0 / 投機 ngram-simple は _SPEC_OPTS が足す）
+    #     （-t 12 / -np 1 / -dev none / KV f16 / 投機 ngram-simple は _SPEC_OPTS が足す）
     "local:main": {
         "名": "手元 30B-A3B（11.3GB・これ1本）",
         "file": os.path.join(_MODELS, "Qwen3-30B-A3B-Q2_K.gguf"),
@@ -128,8 +131,17 @@ MODERU = {
         #   （"The model produced output that does not match the expected …"）。
         #   2026-09-13 の操作の試験では、これで 1手ぶん 80〜100秒を何度も捨てていた。
         #   none なら 崩れた札も ただの文として届き、こちらの _yomu が JSON を拾える。
-        "opts": ["-t", "12", "-ngl", "0", "-c", "8192", "-np", "1", "-cb", "-ub", "256",
-                 "-ctk", "q8_0", "-ctv", "q8_0", "--reasoning-format", "none"],
+        # ★ 2026-09-16 読み込み（prompt eval）で選び直した（dougu/hakaru_yomi.py・約1000トークン・3回の中央値）:
+        #     今まで（KV q8_0）                      17.3 t/s   次の手 537トークン 31秒
+        #     -dev none（AMD GPU を触らせない）      28.7 t/s              18.5秒
+        #     ＋ KV 量子化なし（f16）          ★     39.8 t/s              14秒   ← これ。2.3倍
+        #     ＋ -ub 512 / -tb 6 / 投機なし / mlock   40〜42     差は誤差。-ub は「止める」の効きで 256 のまま
+        #     ＋ --cache-reuse 64                    33.9（遅くなる・読み直しも減らない）
+        #     -ngl 8（Metal・AMD 5300M）             14.2 で落ちた
+        #   操作の輪は 1手の 97% が読み込み。-ngl 0 でも Metal の機器が居ると読み込みに割り込んで遅くなる。
+        #   KV q8_0 は 2026-09-06 にも pp -28% と出ていた（tg のために残っていた）。RAM は +0.4GB。
+        "opts": ["-t", "12", "-ngl", "0", "-dev", "none", "-c", "8192", "-np", "1", "-cb", "-ub", "256",
+                 "--reasoning-format", "none"],
     },
     # ★ GLM-4.7-Flash は 2026-09-11 に落選: Mac で 6.8 t/s（30B素の6割）、6段 70% vs 100%
 }

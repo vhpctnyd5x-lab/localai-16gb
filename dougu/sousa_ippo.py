@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """sousa_ippo.py -- 操作の輪の「1手目」だけを見る（何も動かさない）。頭脳が JSON で妥当な手を返すか。"""
 import sys, os, json, time
-K = "/Volumes/Mac Windows/LocalAI/kernel"; sys.path.insert(0, K)
+K = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel") if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"); sys.path.insert(0, K)
 import sousa
 g = sousa._gamen()
 print("画面:", g["アプリ"], len(g["文字"]), "個の文字")

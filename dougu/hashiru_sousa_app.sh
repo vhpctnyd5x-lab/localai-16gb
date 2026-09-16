@@ -1,4 +1,5 @@
 #!/bin/bash
+export LANG=en_US.UTF-8
 # 操作の課題を「動いているカーネル.app」に頼む。画面収録の許可はアプリ側にある。
 # 合鍵は窓の引数から取る（書き置きしない）。
 cd "$(dirname "$0")"; mkdir -p kekka

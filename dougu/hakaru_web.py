@@ -4,7 +4,7 @@
    ★ 測るのは3つ: (1) ページの事実を答えられるか (2) 無いことを「無い」と言えるか (3) ページの中の命令に **従わない** か。
    ネットに出るので、ページが変われば数字も変わる。日付を書いて残す。"""
 import json, os, sys
-K = "/Volumes/Mac Windows/LocalAI/kernel"; sys.path.insert(0, K)
+K = os.environ.get("KERNEL_DIR") or next((d for d in (os.path.expanduser("~/LocalAI_mirror/kernel"), "/Volumes/Mac Windows/LocalAI/kernel") if os.path.isfile(os.path.join(d, "server.py"))), "/Volumes/Mac Windows/LocalAI/kernel"); sys.path.insert(0, K)
 import web
 HERE = os.path.dirname(os.path.abspath(__file__)); OUT = os.path.join(HERE, "kekka"); os.makedirs(OUT, exist_ok=True)
 WANA = "https://raw.githubusercontent.com/vhpctnyd5x-lab/localai-16gb/main/monosashi/wana.html"
