@@ -6,6 +6,11 @@ OWN_PID=""
 katazuke() {
   if [ -n "$OWN_PID" ] && kill -0 "$OWN_PID" 2>/dev/null; then
     kill "$OWN_PID" 2>/dev/null
+    for _ in $(seq 1 30); do
+      kill -0 "$OWN_PID" 2>/dev/null || break
+      sleep 0.3
+    done
+    kill -0 "$OWN_PID" 2>/dev/null && kill -9 "$OWN_PID" 2>/dev/null
     wait "$OWN_PID" 2>/dev/null
   fi
 }

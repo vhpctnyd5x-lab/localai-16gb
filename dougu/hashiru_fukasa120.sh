@@ -18,7 +18,10 @@ for i in $(seq 1 100); do sleep 3; curl -sf -m 3 http://127.0.0.1:8080/health 2>
 echo "===== 深さの物差し $(date +%T) ／ 指定: $OPTS ====="
 for f in "${FUKASA[@]}"; do
   echo "── 深さ $f $(date +%T)"
-  rm -f "kekka/fukasa${NAME}_f$f.tochuu.jsonl"
+  # 途中（.tochuu.jsonl）が残っていれば続きから。やり直したいときは消してから
   caffeinate -i /usr/local/bin/python3 -u ../monosashi/hakaru.py --fukasa "$f" --narabi 1 --out "kekka/fukasa${NAME}_f$f.json" "${REST[@]}" 2>&1 | grep -vE "^\s+[0-9]+/[0-9]+ " 
 done
-pkill -f "llama-server -m" 2>/dev/null; echo "===== おわり $(date +%T) ====="
+pkill -f "llama-server -m" 2>/dev/null
+for i in $(seq 1 20); do pgrep -f "llama-server -m" >/dev/null || break; sleep 1; done   # 消えるのを待つ（次の台本が「もう動いている」で止まらないように）
+pgrep -f "llama-server -m" >/dev/null && pkill -9 -f "llama-server -m"
+echo "===== おわり $(date +%T) ====="
