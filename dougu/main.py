@@ -219,8 +219,12 @@ def route(text, ctx):
     # 場所やパスが引けているなら、それは手元の実物の話。
     # ファイルを扱う kernel に回す。
     # ただし、場所を受け取ることに意味がある部品は、そのまま通す。
-    _BASHO_OK = {"フォルダをひらく", "最近のダウンロード", "ゴミ箱", "空き容量",
-                 "フォルダの大きさ", "最近のファイル", "ファイルを探す", "大きいファイル", "選んでいるファイル"}   # 2026-09-17 kikai.py の分
+    _BASHO_OK = {"フォルダをひらく", "最近のダウンロード", "ゴミ箱", "空き容量", "こよみ"}
+    try:
+        import kikai as _kikai
+        _BASHO_OK |= set(_kikai.OPS)      # 2026-09-17: 暦・計算・予定などは「2026」がフォルダ名でも ファイルの話ではない
+    except Exception:
+        pass
     if hit and hit[0] not in _BASHO_OK:
         try:
             import kernel as _k
