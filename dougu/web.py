@@ -340,6 +340,34 @@ def yomu(url: str, timeout: int = 20) -> dict:
     return {"url": url, "題": dai, "本文": hon[:SAIDAI_JI], "文字数": len(hon), "error": None}
 
 
+def _shiboru(hon: str, toi: str, limit: int = 2000) -> str:
+    """ページ本文から、問いに関わる段落だけを limit 字まで残す（冒頭は必ず残す）。
+    ★ 2026-09-17: 4000字（約3000トークン・100秒）を丸ごと読ませていた。問いの語を含む段落に絞ると半分で済む。"""
+    if len(hon) <= limit:
+        return hon
+    toi = re.sub(r"https?://\S+", " ", toi)
+    go = [w for w in re.findall(r"[一-鿿々]+|[ァ-ヿー]{2,}|[A-Za-z0-9]{2,}", toi)
+          if w not in ("何", "誰", "読", "教", "上", "資料", "ページ", "場合", "何県", "何人")]
+    dan = [d.strip() for d in re.split(r"\n+", hon) if d.strip()]
+    ten = []
+    for i, d in enumerate(dan):
+        ten.append((sum(d.count(w) for w in go), -i, d))
+    erabi = {ten[0][2]} if dan else set()
+    nokori = limit - len(dan[0]) if dan else limit
+    for t, _i, d in sorted(ten, reverse=True):
+        if t <= 0 or nokori <= 0:
+            break
+        if d in erabi:
+            continue
+        erabi.add(d); nokori -= len(d)
+    for d in dan:                       # 余りは冒頭から順に埋める（要点はたいてい前にある）
+        if nokori <= 0:
+            break
+        if d not in erabi:
+            erabi.add(d); nokori -= len(d)
+    return "\n".join(d for d in dan if d in erabi)[:limit]
+
+
 def kotaeru(text: str, iu=None, timeout: int = 150) -> dict:
     """頼み文の URL を読み、資料として頭脳に渡して答えさせる。"""
     if aizu_sagasu(text):
@@ -357,7 +385,7 @@ def kotaeru(text: str, iu=None, timeout: int = 150) -> dict:
             shiryou.append("【資料 %s】読めませんでした（%s）" % (u, r["error"]))
         else:
             say("    %d字（%s）" % (r["文字数"], r["題"][:40]))
-            shiryou.append("【資料 %s】\n題: %s\n%s" % (u, r["題"], r["本文"]))
+            shiryou.append("【資料 %s】\n題: %s\n%s" % (u, r["題"], _shiboru(r["本文"], text)))
     toi = re.sub(_URL, "（上の資料）", text).strip()
     prompt = "\n\n".join(shiryou) + "\n\n【頼み】" + toi
     r = T.ask_one("local:main", prompt, system=_SHIRYOU, timeout=timeout, fukasa=0)
@@ -382,6 +410,22 @@ def shiraberu(text: str, iu=None, timeout: int = 150) -> dict:
     for i, (dai, url, batsu) in enumerate(kekka, 1):
         shiryou.append("%d. %s\nURL: %s\n抜粋: %s" %
                        (i, dai, url, batsu[:SAGASU_BATSU_JI]))
+    # ★ 2026-09-17: 検索の抜粋（DuckDuckGo は短い）に 百科事典の冒頭 3件を足す（1秒・約600トークン）。
+    #   抜粋だけで答えられる率が上がり、ページ本文を読む 2分を省ける
+    if not any("wikipedia.org" in u for _d, u, _b in kekka):
+        for dai, url, batsu in _wiki_sagasu(query, 10, "ja")[:3]:
+            shiryou.append("百科事典: %s\nURL: %s\n冒頭: %s" % (dai, url, batsu[:SAGASU_BATSU_JI]))
+
+    # ★ 2026-09-17: まず抜粋だけで答えさせる（約1000トークン・25秒）。Wikipedia の冒頭は一語の答えを含むことが多い。
+    #   「見つからなかった」ならページ本文を読んで（約2500トークン・2分）もう一度。実測 117〜135秒 → 抜粋で済めば 30秒前後
+    prompt1 = "\n\n".join(shiryou) + ("\n\n【頼み】" + query)
+    r1 = T.ask_one("local:main", prompt1, system=_SHIRYOU + " 抜粋だけで確かに分かる時だけ答え、分からなければ『見つからなかった』とだけ答えること。",
+                   timeout=timeout, fukasa=0)
+    ans1 = (r1.get("text") or "").strip()
+    if ans1 and not r1.get("error") and "見つから" not in ans1 and "分かりません" not in ans1 and len(ans1) < 200:
+        say("  Web: 抜粋で答えられた")
+        return {"答え": ans1 + "\n\n" + "\n".join("出典: " + u for _d, u, _b in kekka[:2]), "資料": [u for _d, u, _b in kekka[:2]],
+                "検索結果": kekka, "error": None, "ミリ秒": int((time.time() - t0) * 1000)}
 
     shuttens = []
     for dai, url, _batsu in kekka[:2]:
