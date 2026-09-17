@@ -49,7 +49,12 @@ def kiku(bun: str, iu=None) -> bool:
         if iu: iu("  ▶ %s（全部許す、と言われている）" % bun)
         return True
     if TOIKAKE is None:
-        # 端末
+        # 端末。★ 2026-09-17: 人が居ない（stdin が端末でない＝無人の台本）なら聞かずに「やめる」。
+        #   前は input() が閉じないパイプで待ち続け、夜の物差しが 40分止まった。
+        import sys as _sys
+        if not _sys.stdin.isatty():
+            print("  ▶ %s  → 人が居ないので やめました" % bun)
+            return False
         try:
             a = input("  ▶ %s  [y=する / a=この仕事は全部する / n=やめる] " % bun).strip().lower()
         except EOFError:

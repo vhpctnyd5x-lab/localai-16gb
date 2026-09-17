@@ -13,7 +13,7 @@ cfg = S.load(); cfg["覚える"] = False; cfg["考える様子"] = True
 ctx = {"設定": cfg, "記憶": None, "会話": [], "kernel": main.kernel}
 S._apply(cfg, ctx)
 KADAI = [
- ("ターミナル", "ターミナルで ~/Desktop/dougu_shiken にあるファイルを一覧して", "uriage.csv"),
+ ("ターミナル", "ターミナルで %s にあるファイルを一覧して" % D, "uriage.csv"),   # 前は ~/Desktop/dougu_shiken 固定で、hakaru_tanmatsu の置き土産に頼っていた
  ("表",        "%s/uriage.csv の 個数 の列の合計を出して" % D, "10"),
  ("Web",       "https://example.com/ を読んで、ページの題は？", "Example Domain"),
  ("数え上げ",   "1から6の目のサイコロを2個ふって、目の和が7になるのは何通り？", "6"),
