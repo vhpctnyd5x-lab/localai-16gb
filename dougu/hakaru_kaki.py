@@ -89,7 +89,8 @@ def hakaru(midashi, o, srvlog):
         print("   立ち上げ: %s ／ 書き出し: %s t/s → 中央 %.2f t/s（%d トークン） ／ 読み込み %.1f t/s（文脈 %d）"
               % (koto, " / ".join("%.2f" % x for x in tps), med, n, float(tm.get("prompt_per_second") or 0), int(tm.get("prompt_n") or 0) + int(tm.get("cache_n") or 0)))
         print("   答えの頭: %s\n" % kotae.replace("\n", " ")[:60])
-        return {"名": midashi, "tg": med, "n": n}
+        # ★ 温度0なら投機で出力は変わらないはず。変わったら速くても採らない（9/10 の下書き役は変わっていた）
+        return {"名": midashi, "tg": med, "n": n, "出力": kotae}
     except Exception as e:
         print("   ×  つまずいた: %s: %s\n" % (type(e).__name__, str(e)[:120])); return None
     finally:
@@ -110,8 +111,10 @@ def main():
             r = hakaru(midashi, o, srvlog)
             if r: kekka.append(r)
     print("===== まとめ（書き出し t/s が高いほど速い）=====")
+    moto = next((r["出力"] for r in kekka if r["名"].startswith("a ")), None)
     for r in sorted(kekka, key=lambda r: -r["tg"]):
-        print("  %-42s %6.2f t/s" % (r["名"][:42], r["tg"]))
+        onaji = "" if moto is None or r["名"].startswith("a ") else ("  出力 同じ" if r["出力"] == moto else "  ★出力 ちがう（採らない）")
+        print("  %-42s %6.2f t/s%s" % (r["名"][:42], r["tg"], onaji))
     with open(os.path.join(Y.KEKKA, "kaki_%s.json" % time.strftime("%m%d_%H%M")), "w", encoding="utf-8") as f:
         json.dump(kekka, f, ensure_ascii=False, indent=1)
     print("===== おわり %s =====" % time.strftime("%H:%M"))

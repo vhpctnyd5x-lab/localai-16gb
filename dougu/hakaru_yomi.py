@@ -63,6 +63,8 @@ SHITEI = [
     # ★ 深い文脈（4.6k）では -fa off が書き出し +31%（hakaru_kaki --nagai・2026-09-17）。読み込みが損しないかをここで見る
     ("L C ＋ cache-reuse 16 ＋ -fa off",     opts(extra=["-dev", "none", "--cache-reuse", "16", "-fa", "off"])),
     ("M C ＋ cache-reuse 16（今の server.py）", opts(extra=["-dev", "none", "--cache-reuse", "16"])),
+    # ★ 2026-09-17: 書き出しは -t 6 でも同じ速さ（hakaru_kaki b）。読み込みも同じなら 6本にして、残りの CPU を本人のアプリに残す
+    ("N L ＋ -t 6（本人の作業を邪魔しない）",  opts(t="6", extra=["-dev", "none", "--cache-reuse", "16", "-fa", "off"])),
 ]
 
 # ── 頼み文（本物の形）────────────────────────────────────────────
