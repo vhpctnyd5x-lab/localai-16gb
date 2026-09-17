@@ -98,7 +98,11 @@ def m_file_search(slots):
     """ファイルを探す : Spotlight（mdfind）で名前から探す。家の中だけ"""
     w = slots.get("語") or ""
     home = os.path.expanduser("~")
-    out = _M()._run(["mdfind", "-onlyin", home, "-name", w], timeout=20)
+    t = slots.get("_文", "")
+    if re.search(r"(と書いて|とかいて|中身|なかみ|内容|本文)", t):        # 名前ではなく中身で探す
+        out = _M()._run(["mdfind", "-onlyin", home, '"%s"' % w.replace('"', "")], timeout=20)
+    else:
+        out = _M()._run(["mdfind", "-onlyin", home, "-name", w], timeout=20)
     rows = [l for l in out.splitlines() if l.strip() and "/Library/" not in l]
     if not rows:
         return f"「{w}」という名前のファイルは見つかりません"
@@ -242,6 +246,91 @@ def m_ip(slots):
         except Exception:
             continue
     return "ネットにつながっていないようです（アドレスなし）"
+
+
+def m_recent_files(slots):
+    """最近のファイル : 最近使った（開いた）ファイル"""
+    t = slots.get("_文", "")
+    hi = 7 if "今週" in t else (2 if ("昨日" in t or "きのう" in t) else 1)
+    home = os.path.expanduser("~")
+    out = _M()._run(["mdfind", "-onlyin", home, "kMDItemLastUsedDate >= $time.today(-%d) && kMDItemContentTypeTree != 'public.folder'" % hi], timeout=20)
+    rows = [p for p in out.splitlines() if p.strip() and "/Library/" not in p and "/." not in p]
+    if not rows:
+        return "最近使ったファイルは見つかりません"
+    rows.sort(key=lambda p: -os.path.getmtime(p) if os.path.exists(p) else 0)
+    return "最近使ったファイル（%d 件・新しい順）\n" % len(rows) + "\n".join("  " + p.replace(home, "~") for p in rows[:12])
+
+
+def m_net_speed(slots):
+    """ネットの速さ : macOS の networkQuality で下り・上り（20秒ほど）"""
+    out = _M()._run(["networkQuality", "-s"], timeout=60)
+    dl = re.search(r"Downlink capacity:\s*([\d.]+ \w+)", out); ul = re.search(r"Uplink capacity:\s*([\d.]+ \w+)", out)
+    if not dl:
+        return "測れませんでした: " + out[-120:]
+    return "下り %s ／ 上り %s" % (dl.group(1), ul.group(1) if ul else "?")
+
+
+_BASHO = {"デスクトップ": "Desktop", "ダウンロード": "Downloads", "書類": "Documents", "ドキュメント": "Documents", "写真": "Pictures",
+          "ピクチャ": "Pictures", "ミュージック": "Music", "音楽": "Music", "ムービー": "Movies", "動画": "Movies", "ホーム": "", "家": ""}
+
+
+def m_folder_size(slots):
+    """フォルダの大きさ : そのフォルダが何GB使っているか"""
+    t = slots.get("_文", "")
+    na, sub = next(((k, v) for k, v in _BASHO.items() if k in t), (None, None))
+    if na is None:
+        raise Exception("どのフォルダか分かりません（デスクトップ・ダウンロード・書類・写真・ミュージック・ムービー）")
+    d = os.path.join(os.path.expanduser("~"), sub)
+    out = _M()._run(["du", "-sk", d], timeout=120)
+    kb = int(out.split()[0])
+    return "%s は %s 使っています" % (na, _M()._human(kb * 1024))
+
+
+_TOSHI = {"ニューヨーク": "America/New_York", "ワシントン": "America/New_York", "ロサンゼルス": "America/Los_Angeles", "サンフランシスコ": "America/Los_Angeles",
+          "シアトル": "America/Los_Angeles", "シカゴ": "America/Chicago", "トロント": "America/Toronto", "ハワイ": "Pacific/Honolulu", "ホノルル": "Pacific/Honolulu",
+          "ロンドン": "Europe/London", "パリ": "Europe/Paris", "ベルリン": "Europe/Berlin", "ローマ": "Europe/Rome", "マドリード": "Europe/Madrid", "モスクワ": "Europe/Moscow",
+          "ドバイ": "Asia/Dubai", "インド": "Asia/Kolkata", "デリー": "Asia/Kolkata", "バンコク": "Asia/Bangkok", "シンガポール": "Asia/Singapore", "香港": "Asia/Hong_Kong",
+          "北京": "Asia/Shanghai", "上海": "Asia/Shanghai", "台北": "Asia/Taipei", "ソウル": "Asia/Seoul", "シドニー": "Australia/Sydney", "メルボルン": "Australia/Melbourne",
+          "ブラジル": "America/Sao_Paulo", "サンパウロ": "America/Sao_Paulo", "カイロ": "Africa/Cairo", "イスタンブール": "Europe/Istanbul", "アメリカ": "America/New_York", "イギリス": "Europe/London"}
+
+
+def m_world_clock(slots):
+    """世界時計 : その街はいま何時か"""
+    from zoneinfo import ZoneInfo
+    t = slots.get("_文", "")
+    na, tz = next(((k, v) for k, v in _TOSHI.items() if k in t), (None, None))
+    if na is None:
+        raise Exception("その街の時計は持っていません")
+    ima = _dt.datetime.now(ZoneInfo(tz))
+    sa = (ima.utcoffset() - _dt.datetime.now().astimezone().utcoffset()).total_seconds() / 3600
+    return "%s はいま %d月%d日 %d時%02d分（%s曜日・日本との差 %+g時間）" % (na, ima.month, ima.day, ima.hour, ima.minute, "月火水木金土日"[ima.weekday()], sa)
+
+
+def m_keisan(slots):
+    """計算 : 四則計算を間違えずに（頭脳に計算させない）"""
+    import ast, operator as op
+    t = slots.get("_文", "")
+    shiki = re.sub(r"[=＝は？?。を計算してくださいの答え]+$", "", t.strip()).translate(str.maketrans("０１２３４５６７８９（）×÷－＋．，", "0123456789()*/-+.,"))
+    shiki = shiki.replace("×", "*").replace("÷", "/").replace("x", "*").replace("^", "**").replace(",", "").strip()
+    ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul, ast.Div: op.truediv, ast.Pow: op.pow, ast.Mod: op.mod, ast.USub: op.neg, ast.FloorDiv: op.floordiv}
+
+    def ev(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return n.value
+        if isinstance(n, ast.BinOp) and type(n.op) in ops:
+            if isinstance(n.op, ast.Pow) and abs(ev(n.right)) > 64:
+                raise ValueError
+            return ops[type(n.op)](ev(n.left), ev(n.right))
+        if isinstance(n, ast.UnaryOp) and type(n.op) in ops:
+            return ops[type(n.op)](ev(n.operand))
+        raise ValueError
+    try:
+        v = ev(ast.parse(shiki, mode="eval").body)
+    except Exception:
+        raise Exception("式が読めません: " + shiki[:40])
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return "%s = %s" % (shiki, format(v, ",") if isinstance(v, int) else round(v, 6))
 
 
 # ── 外 ─────────────────────────────────────────────────────────────
@@ -443,6 +532,11 @@ OPS = {
     "バックアップ":       (m_backup,         False),
     "選んでいるファイル": (m_selection,      False),
     "IPアドレス":         (m_ip,             False),
+    "最近のファイル":     (m_recent_files,   False),
+    "ネットの速さ":       (m_net_speed,      False),
+    "フォルダの大きさ":   (m_folder_size,    False),
+    "世界時計":           (m_world_clock,    False),
+    "計算":               (m_keisan,         False),
     "音楽":               (m_music,          True),
     "タイマー":           (m_timer,          True),
     "画面ロック":         (m_lock,           True),
@@ -458,7 +552,8 @@ OPS = {
     "電源を切る":         (m_shutdown,       True),
 }
 YOMU = {"予定", "リマインダー一覧", "メモを探す", "ファイルを探す", "いまの曲", "天気", "未読メール",
-        "大きいファイル", "重いアプリ", "バックアップ", "選んでいるファイル", "IPアドレス"}
+        "大きいファイル", "重いアプリ", "バックアップ", "選んでいるファイル", "IPアドレス",
+        "最近のファイル", "ネットの速さ", "フォルダの大きさ", "世界時計", "計算"}
 KIKEN = {
     "音楽": "外", "タイマー": "外", "画面ロック": "外", "明るさ": "外", "設定を開く": "外", "辞書": "外", "消音": "外",
     "メモを書く": "跡",            # メモが増える（消せるが、勝手に増やさない）
@@ -471,6 +566,11 @@ KIKEN = {
 
 # machine.PATTERNS の **前** に置く（先に当たった方が勝つ）。語は絞って、既存の用件を奪わないように
 PATTERNS_MAE = [
+    (r"^[\d０-９\s\+\-\*/×÷x\^\(\)（）\.．,，＋－]+[=＝は？?]*(を計算して|の答え|ください)?[？?。]*$", "計算"),
+    (r"(最近|さいきん|昨日|きのう|今週).{0,6}(使った|つかった|開いた|ひらいた|見た|さわった|触った).{0,4}(ファイル|書類|もの)", "最近のファイル"),
+    (r"(ネット|回線|wi-?fi|通信).{0,4}(速さ|はやさ|速度|スピード|速い|はやい|遅い|おそい)", "ネットの速さ"),
+    (r"(デスクトップ|ダウンロード|書類|ドキュメント|写真|ピクチャ|ミュージック|ムービー|ホーム).{0,6}(何|なん|どれくらい|どのくらい).{0,3}(gb|ギガ|mb|メガ|容量|大き)|(デスクトップ|ダウンロード|書類|写真|ミュージック|ムービー).{0,4}(の)?(大きさ|容量|サイズ)", "フォルダの大きさ"),
+    (r"(ニューヨーク|ロサンゼルス|サンフランシスコ|シアトル|シカゴ|トロント|ハワイ|ホノルル|ロンドン|パリ|ベルリン|ローマ|マドリード|モスクワ|ドバイ|インド|デリー|バンコク|シンガポール|香港|北京|上海|台北|ソウル|シドニー|メルボルン|サンパウロ|ブラジル|カイロ|イスタンブール|アメリカ|イギリス).{0,8}(何時|なんじ|時間|時差)", "世界時計"),
     (r"(今日|きょう|明日|あした|今週|来週|の)?\s*(予定|スケジュール|カレンダー).{0,6}(何|なに|ある|教え|おしえ|見せ|みせ|は[？?]?$|は$)", "予定"),
     (r"リマインダー.{0,8}(入れ|いれ|足し|たし|追加|作っ|つくっ|登録)|(を|と)リマインド(し|して)", "リマインダーに入れる"),
     (r"リマインダー.{0,8}(一覧|見せ|みせ|教え|おしえ|何|なに|ある|は[？?]?$)", "リマインダー一覧"),
