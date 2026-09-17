@@ -102,12 +102,45 @@ def _tsuki_tasu(hi: _dt.date, n: int) -> _dt.date:
     return hi
 
 
-def kotae(text: str, kyou: _dt.date | None = None) -> str | None:
-    """日付の問いに答える。暦の問いでなければ None。"""
+_JIKAN_OFS = re.compile(_SUJI + r"\s*(時間|分)\s*(後|あと|前|まえ)")
+_KIKU_JIKAN = re.compile(r"(何|なん)時")
+_MOTO_JIKAN = re.compile(r"(?<![何なん])(午前|午後|朝|夜|夕方)?\s*([0-9０-９]{1,2})\s*(?:時\s*([0-9０-９]{1,2})?\s*分?|[:：]([0-9０-９]{2}))")
+
+
+def _jikan(text: str, ima: _dt.datetime) -> str | None:
+    """「14時30分の2時間後は何時」「3時間後は何時」→ 16時30分。時刻の足し引き。"""
+    m = _JIKAN_OFS.search(text)
+    if not m:
+        return None
+    n = _kazu(m.group(1))
+    if n is None:
+        return None
+    moto = ima
+    mm = _MOTO_JIKAN.search(text[:m.start()])
+    if mm:
+        h = _kazu(mm.group(2)); mi = _kazu(mm.group(3) or mm.group(4) or "0") or 0
+        if h is None or h > 24 or mi > 59:
+            return None
+        if mm.group(1) in ("午後", "夜", "夕方") and h < 12:
+            h += 12
+        moto = ima.replace(hour=h % 24, minute=mi, second=0, microsecond=0)
+    d = _dt.timedelta(hours=n) if m.group(2) == "時間" else _dt.timedelta(minutes=n)
+    saki = moto - d if m.group(3) in ("前", "まえ") else moto + d
+    kotae = "%d時%02d分" % (saki.hour, saki.minute)
+    if saki.date() != moto.date():
+        kotae += "（%s）" % ("翌日" if saki.date() > moto.date() else "前日")
+    return kotae
+
+
+def kotae(text: str, kyou: _dt.date | None = None, ima: _dt.datetime | None = None) -> str | None:
+    """日付・時刻の問いに答える。暦の問いでなければ None。"""
     text = (text or "").strip()
     if not text:
         return None
-    kyou = kyou or _dt.date.today()
+    ima = ima or _dt.datetime.now()
+    kyou = kyou or ima.date()
+    if _KIKU_JIKAN.search(text) and _JIKAN_OFS.search(text):
+        return _jikan(text, ima)
     kiku_youbi = bool(_KIKU_YOUBI.search(text))
     kiku_hi = bool(_KIKU_HI.search(text))
     kiku_kikan = bool(_KIKU_KIKAN.search(text)) and not _OFFSET.search(text)

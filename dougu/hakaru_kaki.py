@@ -19,12 +19,17 @@ SYSTEM = "あなたは親切な相棒。日本語で簡潔に答える。"
 KIHON = ["-dev", "none", "--cache-reuse", "16"]
 
 
-def opts(t="12", tb=None, spec="ngram-simple", kv=None, fa=None):
+DRAFT = os.path.expanduser("~/LocalAI_mirror/models/Qwen3-0.6B-Q8_0.gguf")   # 下書き役（同じ語彙の小さい Qwen3）
+
+
+def opts(t="12", tb=None, spec="ngram-simple", kv=None, fa="off", draft=None, nmax=None):
     a = ["-t", t, "-ngl", "0", "-ub", "256"] + KIHON
     if tb: a += ["-tb", tb]
     if kv: a += ["-ctk", kv, "-ctv", kv]
     if fa: a += ["-fa", fa]
-    if spec: a += ["--spec-type", spec]
+    if draft: a += ["-md", draft, "--spec-type", "draft-simple", "-ngld", "0"]
+    elif spec: a += ["--spec-type", spec]
+    if nmax: a += ["--spec-draft-n-max", str(nmax)]
     return a
 
 
@@ -37,6 +42,11 @@ SHITEI = [
     ("f 投機 ngram-cache",                     opts(spec="ngram-cache")),
     ("g -fa off",                              opts(fa="off")),
     ("h KV q8_0（前の形）",                     opts(kv="q8_0")),
+    # ★ 2026-09-17: 下書き役のモデル（Qwen3-0.6B Q8_0・0.6GB）に先を書かせ、本体は答え合わせだけ（speculative decoding）。
+    #   ngram は「文の繰り返し」にしか効かないが、下書き役は新しい文にも効く。RAM は +0.7GB。
+    ("i 下書き役 Qwen3-0.6B",                  opts(draft=DRAFT)),
+    ("j 下書き役 0.6B・先読み 8",               opts(draft=DRAFT, nmax=8)),
+    ("k 下書き役 0.6B・先読み 4",               opts(draft=DRAFT, nmax=4)),
 ]
 
 
