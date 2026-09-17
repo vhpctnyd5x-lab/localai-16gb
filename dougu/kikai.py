@@ -333,6 +333,25 @@ def m_keisan(slots):
     return "%s = %s" % (shiki, format(v, ",") if isinstance(v, int) else round(v, 6))
 
 
+def _shortcuts():
+    return [l.strip() for l in _M()._run(["shortcuts", "list"], timeout=20).splitlines() if l.strip()]
+
+
+def m_shortcut_list(slots):
+    """ショートカット一覧 : ショートカット.app に入っているもの（本人が作れば、カーネルから何でも動かせる）"""
+    rows = _shortcuts()
+    if not rows:
+        return "ショートカットはありません"
+    return "ショートカット %d 個\n" % len(rows) + "\n".join("  - " + r for r in rows[:30])
+
+
+def m_shortcut_run(slots):
+    """ショートカットを実行 : 名前のショートカットを動かす（中で何をするかは本人が作った通り。必ず承認のあと）"""
+    na = slots.get("語") or ""
+    out = _M()._run(["shortcuts", "run", na], timeout=120)
+    return "ショートカット「%s」を動かしました" % na + (("\n" + out[:300]) if out else "")
+
+
 # ── 外 ─────────────────────────────────────────────────────────────
 def m_music(slots):
     """音楽 : ミュージック.app を 再生・止める・次・前"""
@@ -537,6 +556,8 @@ OPS = {
     "フォルダの大きさ":   (m_folder_size,    False),
     "世界時計":           (m_world_clock,    False),
     "計算":               (m_keisan,         False),
+    "ショートカット一覧": (m_shortcut_list,  False),
+    "ショートカットを実行": (m_shortcut_run, True),
     "音楽":               (m_music,          True),
     "タイマー":           (m_timer,          True),
     "画面ロック":         (m_lock,           True),
@@ -553,11 +574,12 @@ OPS = {
 }
 YOMU = {"予定", "リマインダー一覧", "メモを探す", "ファイルを探す", "いまの曲", "天気", "未読メール",
         "大きいファイル", "重いアプリ", "バックアップ", "選んでいるファイル", "IPアドレス",
-        "最近のファイル", "ネットの速さ", "フォルダの大きさ", "世界時計", "計算"}
+        "最近のファイル", "ネットの速さ", "フォルダの大きさ", "世界時計", "計算", "ショートカット一覧"}
 KIKEN = {
     "音楽": "外", "タイマー": "外", "画面ロック": "外", "明るさ": "外", "設定を開く": "外", "辞書": "外", "消音": "外",
     "メモを書く": "跡",            # メモが増える（消せるが、勝手に増やさない）
     "リマインダーに入れる": "跡",
+    "ショートカットを実行": "跡",  # 中で何をするか分からない（本人が作ったもの）
     "メールを送る": "跡",          # 送ったものは取り消せない。札に「誰に何を」を書く
     "メッセージを送る": "跡",
     "再起動": "跡",                # 保存していないものは消える
@@ -594,6 +616,8 @@ PATTERNS_MAE = [
     (r"(ミュート|消音|音を消し|音をけし|音を戻し|音をもどし|ミュート解除)", "消音"),
     (r"[「『].+[」』].{0,12}(メール|めーる)(を)?(し|して|送|おく)|(に|へ)\s*メール(し|して|を送|をおく)", "メールを送る"),
     (r"[「『].+[」』].{0,12}(メッセージ|めっせーじ)(を)?(し|して|送|おく)|(に|へ)\s*メッセージ(し|して|を送|をおく)", "メッセージを送る"),
+    (r"ショートカット.{0,6}(一覧|見せ|みせ|教え|おしえ|何|なに|ある)", "ショートカット一覧"),
+    (r"ショートカット.{0,8}(実行|動か|うごか|走らせ|はしらせ|やって|して)", "ショートカットを実行"),
     (r"再起動", "再起動"),
     (r"(電源を切|電源をき|シャットダウン)", "電源を切る"),
 ]
@@ -616,6 +640,23 @@ def slots_hook(name, text, slots) -> bool:
         if not w:
             return False
         slots["語"] = w
+    if name == "ショートカットを実行":
+        w = M._quoted(text)
+        if not w:
+            m = re.search(r"^(.+?)(という|っていう|の)?ショートカット", text)
+            w = m.group(1).strip("　 ") if m else None
+        if not w:
+            return False
+        try:
+            aru = _shortcuts()
+        except Exception:
+            aru = []
+        _n = lambda x: re.sub(r"\s+", "", x).lower()
+        hit = next((a for a in aru if a == w), None) or next((a for a in aru if _n(w) in _n(a)), None)
+        if aru and not hit:
+            return False           # そんなショートカットは無い → 頭脳へ（「無い」と答えさせる）
+        slots["語"] = hit or w
+        slots["_札"] = "ショートカット「%s」を動かす" % (hit or w)
     if name in ("メールを送る", "メッセージを送る"):
         to, body = _atesaki(text)
         if not to or not body:
