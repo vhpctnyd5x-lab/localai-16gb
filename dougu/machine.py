@@ -908,6 +908,10 @@ PATTERNS = [
 
     (r"(wikipedia|ウィキペディア|ウィキ|百科事典)", "ウィキペディア"),
 ]
+# ★ 2026-09-17: 続きの用件（kikai.py）。表はここで合流させ、言い方は先に見る
+import kikai as _kikai
+OPS.update(_kikai.OPS); KIKEN.update(_kikai.KIKEN); YOMU.update(_kikai.YOMU)
+PATTERNS = _kikai.PATTERNS_MAE + PATTERNS
 _COMPILED = [(re.compile(p, re.IGNORECASE), name) for p, name in PATTERNS]
 
 # アプリの呼び名 → 本当の名前
@@ -932,6 +936,8 @@ _WORD_PATS = [
     re.compile(r"([^\s　、。]{1,40}?)\s*(?:について|に関して)"),
     # 「タブから」「ネットで」などをまたがないよう、助詞で区切る
     re.compile(r"([^\s　、。をはがのにへ]{1,40}?)\s*を\s*(?:調べ|検索|ぐぐ|探)"),
+    # 「猫をネットで調べて」「富士山を Wikipedia で調べて」— 語 → を → 場所 → 調べ
+    re.compile(r"^([^\s　、。をはがのにへ]{1,40}?)\s*を\s*(?:ネット|web|ウェブ|google|グーグル|ウィキペディア|wikipedia|ウィキ|百科事典|タブ)"),
     re.compile(r"([^\s　、。]{1,40}?)\s*(?:って|とは)\s*(?:何|なに|誰|どこ|いつ)"),
 ]
 # 用件そのものを指す語は、調べたい語ではない
@@ -1050,6 +1056,16 @@ def match(text):
             import koyomi
             if koyomi.kotae(text) is None:
                 continue          # 暦の形で読めないなら、この用件ではない（頭脳に回す）
+        if name in _kikai.OPS and not _kikai.slots_hook(name, text, slots):
+            continue
+        if name in ("読み上げる", "知らせる"):
+            # 「「休憩」と知らせて」「おはようと読み上げて」の中身。無いと部品が「何を読むか分かりません」と言う
+            w = _quoted(text)
+            if not w:
+                m4 = _re.search(r"^(.+?)(と|って)\s*(読み上げ|よみあげ|読んで|よんで|しゃべ|喋|知らせ|しらせ|通知)", text)
+                w = m4.group(1).strip("　 ") if m4 else None
+            if w:
+                slots["文"] = w
         if name == "アプリをひらく":
             for k, v in APPS.items():
                 if k in low:
