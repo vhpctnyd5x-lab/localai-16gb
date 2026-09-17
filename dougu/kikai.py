@@ -368,6 +368,55 @@ def m_reminder_add(slots):
     return f"リマインダーに入れました: {body[:60]}"
 
 
+_ATESAKI = re.compile(r"^(?P<to>[^\s「」『』、。]{1,40}?)\s*(さん|様|くん|ちゃん)?\s*(に|へ)\s*[「『](?P<body>.+?)[」』]\s*(と|を)?\s*(メール|めーる|メッセージ|めっせーじ|LINE)", re.S)
+_ATESAKI2 = re.compile(r"^[「『](?P<body>.+?)[」』]\s*(と|を)?\s*(?P<to>[^\s「」『』、。]{1,40}?)\s*(さん|様|くん|ちゃん)?\s*(に|へ)\s*(メール|めーる|メッセージ|めっせーじ)", re.S)
+
+
+def _atesaki(text):
+    m = _ATESAKI.search(text) or _ATESAKI2.search(text)
+    return (m.group("to"), m.group("body")) if m else (None, None)
+
+
+def _renrakusaki(name, nani):
+    """連絡先.app から メール（nani="メール"）か 電話（"電話"）を1つ引く。@ や数字ならそのまま"""
+    if "@" in name or re.fullmatch(r"[+\d-]{6,}", name):
+        return name
+    zoku = "emails" if nani == "メール" else "phones"
+    scr = 'tell application "Contacts" to get value of %s of (first person whose name contains "%s")' % (zoku, name.replace('"', "'"))
+    out = _M()._run(["osascript", "-e", scr], timeout=30)
+    saki = [x.strip() for x in out.split(",") if x.strip()]
+    if not saki:
+        raise Exception("連絡先に「%s」の%sが見つかりません（アドレスを直接書いてください）" % (name, nani))
+    return saki[0]
+
+
+def m_mail_send(slots):
+    """メールを送る : メール.app で送る（必ず承認のあと）"""
+    to, body = slots.get("宛先"), slots.get("文")
+    addr = _renrakusaki(to, "メール")
+    dai = body.splitlines()[0][:30]
+    scr = '''
+tell application "Mail"
+  set m to make new outgoing message with properties {subject:"%s", content:"%s", visible:false}
+  tell m to make new to recipient at end of to recipients with properties {address:"%s"}
+  send m
+end tell''' % (dai.replace('"', "'"), body.replace('"', "'"), addr.replace('"', "'"))
+    _M()._run(["osascript", "-e", scr], timeout=60)
+    return f"{to}（{addr}）にメールを送りました: {dai}"
+
+
+def m_message_send(slots):
+    """メッセージを送る : メッセージ.app（iMessage/SMS）で送る（必ず承認のあと）"""
+    to, body = slots.get("宛先"), slots.get("文")
+    saki = _renrakusaki(to, "電話")
+    scr = '''
+tell application "Messages"
+  send "%s" to participant "%s" of (first account whose service type is iMessage)
+end tell''' % (body.replace('"', "'"), saki.replace('"', "'"))
+    _M()._run(["osascript", "-e", scr], timeout=60)
+    return f"{to}（{saki}）にメッセージを送りました: {body[:40]}"
+
+
 def m_restart(slots):
     """再起動 : Mac を再起動する（保存していないものは消える）"""
     _M()._osa('tell application "System Events" to restart')
@@ -403,6 +452,8 @@ OPS = {
     "消音":               (m_mute,           True),
     "メモを書く":         (m_memo_write,     True),
     "リマインダーに入れる": (m_reminder_add, True),
+    "メールを送る":       (m_mail_send,      True),
+    "メッセージを送る":   (m_message_send,   True),
     "再起動":             (m_restart,        True),
     "電源を切る":         (m_shutdown,       True),
 }
@@ -412,6 +463,8 @@ KIKEN = {
     "音楽": "外", "タイマー": "外", "画面ロック": "外", "明るさ": "外", "設定を開く": "外", "辞書": "外", "消音": "外",
     "メモを書く": "跡",            # メモが増える（消せるが、勝手に増やさない）
     "リマインダーに入れる": "跡",
+    "メールを送る": "跡",          # 送ったものは取り消せない。札に「誰に何を」を書く
+    "メッセージを送る": "跡",
     "再起動": "跡",                # 保存していないものは消える
     "電源を切る": "跡",
 }
@@ -439,6 +492,8 @@ PATTERNS_MAE = [
     (r"(設定|環境設定).{0,12}(開い|ひらい|出し|だし|見せ|みせ)", "設定を開く"),
     (r"辞書.{0,4}(で|を).{0,12}(引い|ひい|調べ|しらべ|見|み)", "辞書"),
     (r"(ミュート|消音|音を消し|音をけし|音を戻し|音をもどし|ミュート解除)", "消音"),
+    (r"[「『].+[」』].{0,12}(メール|めーる)(を)?(し|して|送|おく)|(に|へ)\s*メール(し|して|を送|をおく)", "メールを送る"),
+    (r"[「『].+[」』].{0,12}(メッセージ|めっせーじ)(を)?(し|して|送|おく)|(に|へ)\s*メッセージ(し|して|を送|をおく)", "メッセージを送る"),
     (r"再起動", "再起動"),
     (r"(電源を切|電源をき|シャットダウン)", "電源を切る"),
 ]
@@ -448,10 +503,12 @@ def slots_hook(name, text, slots) -> bool:
     """用件ごとの材料の取り出し。False を返すと その用件ではない（次を見る）"""
     M = _M()
     if name in ("メモを探す", "ファイルを探す", "辞書"):
-        w = M._quoted(text) or M._word_for(text, name)
+        w = M._quoted(text)
         if not w:
-            m = re.search(r"([^\s「」、。]{1,30})(という|って|の)?(ファイル|書類|画像|写真|動画|メモ|ノート|名前)", text)
-            w = m.group(1) if m and m.group(1) not in ("大きい", "重い", "選んで") else None
+            m = re.search(r"([^\s「」、。]{1,30}?)(という|っていう|って|の)?(ファイル|書類|画像|写真|動画|pdf|フォルダ|メモ|ノート|名前)", text, re.I)
+            w = m.group(1) if m and m.group(1) not in ("大きい", "重い", "選んで", "その", "この") else None
+        if not w:
+            w = M._word_for(text, name)
         if not w:
             return False
         # 「ポチというファイル」「請求書のPDF」→ 語だけに
@@ -459,6 +516,12 @@ def slots_hook(name, text, slots) -> bool:
         if not w:
             return False
         slots["語"] = w
+    if name in ("メールを送る", "メッセージを送る"):
+        to, body = _atesaki(text)
+        if not to or not body:
+            return False           # 誰に何を、が読めないなら この用件ではない（頭脳に回す）
+        slots["宛先"], slots["文"] = to, body
+        slots["_札"] = "%sさんに「%s」を%sで送る" % (to, body[:40], "メール" if name == "メールを送る" else "メッセージ")
     if name in ("メモを書く", "リマインダーに入れる"):
         w = M._quoted(text)
         if not w:

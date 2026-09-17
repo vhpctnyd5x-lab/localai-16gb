@@ -1161,7 +1161,7 @@ def run(name, slots, confirm=None):
                 # ASK_BEFORE に関係なく実行しない」としているのと同じ考え
                 return (f"「{name}」は、跡が残って戻せない操作です。\n"
                         f"確認を切った状態では実行しません。")
-        elif not confirm(name):
+        elif not confirm(slots.get("_札") or name):     # 部品が「誰に何を」まで札に書けるように（メールを送る）
             return "やめました"
 
     ans = fn(slots)
