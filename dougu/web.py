@@ -210,11 +210,60 @@ def _ddg_no_saki(href: str) -> str:
     return href.strip()
 
 
+# DuckDuckGo は機械の検索とみなすと「あひるを選べ」の関門（CAPTCHA）を出す（2026-09-17 に実際に出た。
+# 答えず、10分は叩かずに Wikipedia の検索 API へ回る。関門は本人が解くもの）。
+_FUSAGARI = [0.0]           # DDG が関門を出した時刻
+_FUSAGARI_BYOU = 600
+_WIKI_UA = "kernel-ai/1.0 (local research; +https://github.com/vhpctnyd5x-lab/localai-16gb)"
+_TOI_GO = re.compile(r"(は|が|を|で|に|の)?(何|なに|どこ|誰|だれ|いつ|どの|どれ|どう|いくら|いくつ|なぜ)[^、。]*$")
+
+
+def _toi_seiri(q: str) -> str:
+    """「富士山の標高は何メートル？」→「富士山の標高」。百科事典の検索は問いの語が邪魔になる。"""
+    q = re.sub(r"[？?。]+$", "", (q or "").strip())
+    q2 = _TOI_GO.sub("", q).strip()
+    q2 = re.sub(r"(ですか|でしょうか|ますか|か|は)$", "", q2).strip()
+    return q2 or q
+
+
+def _wiki_sagasu(query: str, timeout: int = 20, lang: str = "ja") -> list[tuple[str, str, str]]:
+    """Wikipedia の検索 API（鍵なし・機械向けに開いている）で上位5件の (題, URL, 冒頭) を返す。"""
+    import json
+    from urllib.parse import urlencode
+    u = ("https://%s.wikipedia.org/w/api.php?" % lang) + urlencode({
+        "action": "query", "generator": "search", "gsrsearch": _toi_seiri(query),
+        "gsrlimit": SAGASU_KAZU, "gsrnamespace": 0, "prop": "extracts", "exintro": 1,
+        "explaintext": 1, "exchars": SAGASU_BATSU_JI, "exlimit": SAGASU_KAZU, "format": "json", "utf8": 1})
+    req = urllib.request.Request(u, headers={"User-Agent": _WIKI_UA})
+    try:
+        with _OPENER.open(req, timeout=timeout) as f:
+            d = json.loads(f.read(SAGASU_BYTE).decode("utf-8", "replace"))
+    except Exception:
+        return []
+    pages = sorted((d.get("query", {}).get("pages", {}) or {}).values(), key=lambda p: p.get("index", 99))
+    kekka = []
+    for pg in pages:
+        dai = str(pg.get("title") or "").strip()
+        if not dai:
+            continue
+        url = "https://%s.wikipedia.org/wiki/%s" % (lang, quote(dai.replace(" ", "_")))
+        kekka.append((dai, url, re.sub(r"\s+", " ", str(pg.get("extract") or ""))[:SAGASU_BATSU_JI]))
+    return kekka[:SAGASU_KAZU]
+
+
 def sagasu(query: str, timeout: int = 20) -> list[tuple[str, str, str]]:
-    """DuckDuckGo HTML を読み、上位5件の (題, URL, 抜粋) を返す。"""
+    """上位5件の (題, URL, 抜粋) を返す。DuckDuckGo HTML → 関門や空なら Wikipedia（日→英）。"""
     query = re.sub(r"\s+", " ", (query or "")).strip()[:500]
     if not query:
         return []
+    kekka = [] if time.time() < _FUSAGARI[0] + _FUSAGARI_BYOU else _ddg_sagasu(query, timeout)
+    if not kekka:
+        kekka = _wiki_sagasu(query, timeout, "ja") or _wiki_sagasu(query, timeout, "en")
+    return kekka
+
+
+def _ddg_sagasu(query: str, timeout: int = 20) -> list[tuple[str, str, str]]:
+    """DuckDuckGo HTML を読み、上位5件の (題, URL, 抜粋) を返す。関門が出たら [] にして時刻を覚える。"""
     url = "https://html.duckduckgo.com/html/?q=" + quote_plus(query)
     req = urllib.request.Request(
         url,
@@ -227,6 +276,9 @@ def sagasu(query: str, timeout: int = 20) -> list[tuple[str, str, str]]:
     except Exception:
         return []
     if len(raw) > SAGASU_BYTE:
+        return []
+    if b"anomaly.js" in raw or b"challenge-form" in raw:
+        _FUSAGARI[0] = time.time()
         return []
     enc = "utf-8"
     m = re.search(r"charset=([\w-]+)", ctype)
@@ -270,6 +322,9 @@ def yomu(url: str, timeout: int = 20) -> dict:
         return {"url": url, "題": "", "本文": "", "文字数": 0, "error": "%s: %s" % (type(e).__name__, e)}
     if len(raw) > SAIDAI_BYTE:
         return {"url": url, "題": "", "本文": "", "文字数": 0, "error": "大きすぎる（6MB超）"}
+    if b"anomaly.js" in raw or b"challenge-form" in raw:
+        _FUSAGARI[0] = time.time()
+        return []
     enc = "utf-8"
     m = re.search(r"charset=([\w-]+)", ctype) or re.search(rb"charset=[\"']?([\w-]+)", raw[:4000])
     if m:
