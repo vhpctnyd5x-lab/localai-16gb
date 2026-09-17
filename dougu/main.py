@@ -379,6 +379,28 @@ def route(text, ctx):
     if rep.get("error"):
         print(f"  返事を作れませんでした： {rep['error']}")
         return
+    # ★ 2026-09-17: 頭脳が「道具: 言い方」と答えたら、その言い方を 決まった道（machine）に通す。承認の札も同じ
+    if rep.get("道具"):
+        name, mslots = rep["道具"]
+        if name:
+            print(f"\n  （頭脳が道具を選びました: {name}）")
+            _k = machine.kiken(name)
+            import shounin as _shounin
+            _shounin.hajimeru()
+            try:
+                ans = machine.run(name, mslots, confirm=_machine_ask(_k, cfg) if _k != "読" else None)
+            except Exception as e:
+                ans = f"できませんでした： {e}"
+            finally:
+                _shounin.owaru()
+            body = str(ans)
+            print(f"\n  【{name}】")
+            print("  " + body.replace("\n", "\n  "))
+            _say(ctx, "assistant", f"{name}: {ans}")
+            if cfg["覚える"]: mem.add("assistant", f"{name}: {ans}")
+            return
+        print(f"\n  （頭脳は道具を使おうとしましたが、言い方が読めませんでした: {mslots}）")
+        rep["text"] = re.sub(r"^\s*道具\s*[:：].*$", "", rep["text"], flags=re.M).strip() or "すみません、その頼みは道具では受けられませんでした。"
     print(f"\n  {rep['text']}")
     if cfg["詳しく"]:
         print(f"  （{rep['teacher']} / {rep['ms']}ms / "
