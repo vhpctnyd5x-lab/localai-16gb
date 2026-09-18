@@ -885,6 +885,8 @@ PATTERNS = [
     (r"(暗く|くらく|明るく|あかるく).{0,4}(し|して)", "見た目をかえる"),
     (r"(⌘|コマンド|シフト|オプション|コントロール).{0,6}(を)?\s*"
      r"(押し|おし|送っ|打っ)", "キーをおす"),
+    # ★ 2026-09-18: 「ダウンロードのフォルダを開いて」（erabu の例文）が アプリをひらく に横取りされて None だった → 場所つきは先に
+    (r"(デスクトップ|ダウンロード|書類|ドキュメント)\s*(の)?\s*フォルダ.*(開|ひら)", "フォルダをひらく"),
     (r"(ファイル|書類).{0,10}(を)?\s*(ふだんの|いつもの|既定の)?"
      r"\s*(アプリで)?\s*(開い|ひらい)", "ファイルをひらく"),
     (r"(アプリ|ソフト)?.*(を)?(ひらい|開い|起動|立ち上げ)", "アプリをひらく"),
@@ -1048,93 +1050,108 @@ def match(text):
 
         # 元の文をそのまま持たせる。
         # 部品側でも「何を頼まれたか」を見られるようにするため
-        slots = {"_文": text}
-        m = _NUM.search(text)
-        if m:
-            slots["数"] = int(m.group(1))
-        if name == "こよみ":
-            import koyomi
-            if koyomi.kotae(text) is None:
-                continue          # 暦の形で読めないなら、この用件ではない（頭脳に回す）
-        if name in _kikai.OPS and not _kikai.slots_hook(name, text, slots):
+        slots = _zairyou(name, text, low)
+        if slots is None:
             continue
-        if name in ("読み上げる", "知らせる"):
-            # 「「休憩」と知らせて」「おはようと読み上げて」の中身。無いと部品が「何を読むか分かりません」と言う
-            w = _quoted(text)
-            if not w:
-                m4 = _re.search(r"^(.+?)(と|って)\s*(読み上げ|よみあげ|読んで|よんで|しゃべ|喋|知らせ|しらせ|通知)", text)
-                w = m4.group(1).strip("　 ") if m4 else None
-            if w:
-                slots["文"] = w
-        if name == "アプリをひらく":
-            for k, v in APPS.items():
-                if k in low:
-                    slots["アプリ"] = v
-                    break
-            else:
-                continue          # どのアプリか分からないなら、この用件ではない
-        if name in ("画像をみる", "音をきく", "動画をみる", "ききとる"):
-            kinds = {
-                "ききとる":   r"aiff?|wav|m4a|mp3|caf|aac|flac",
-                "画像をみる": r"jpe?g|png|gif|heic|webp|bmp|tiff?",
-                "音をきく":   r"aiff?|wav|m4a|mp3|caf|aac|flac",
-                "動画をみる": r"mp4|mov|m4v|avi|mkv|webm",
-            }[name]
-            got = _path_of(text, kinds)
-            if not got:
-                continue
-            slots["パス"] = got
-        if name == "うごかす":
-            # ``` で囲まれていれば、その中身が動かす対象
-            m2 = _re.search(r"```(\w+)?\s*\n?(.*?)```", text, _re.S)
-            if m2:
-                slots["コード"] = m2.group(2).strip()
-                if m2.group(1):
-                    slots["言語"] = m2.group(1)
-            else:
-                # 「python で ◯◯ を動かして」の ◯◯
-                m3 = _re.search(
-                    r"(?:python|パイソン|javascript|ジャバスクリプト|js|node|"
-                    r"シェル|shell|bash|applescript)\s*(?:で|を)?\s*(.+?)"
-                    r"\s*(?:を)?\s*(?:うごか|動か|実行|走らせ|試し)", text, _re.I)
-                if not m3:
-                    continue
-                slots["コード"] = m3.group(1).strip()
-            low2 = text.lower()
-            for k, v in (("javascript", "javascript"), ("ジャバスクリプト", "javascript"),
-                         ("node", "javascript"), ("js", "javascript"),
-                         ("シェル", "shell"), ("bash", "shell"), ("shell", "shell"),
-                         ("applescript", "applescript"),
-                         ("パイソン", "python"), ("python", "python")):
-                if k in low2:
-                    slots.setdefault("言語", v)
-                    break
-            slots.setdefault("言語", "python")
-        if name == "ページを動かす":
-            slots["向き"] = "上" if _re.search(r"(上|うえ)", text) else "下"
-        if name == "リンクをおす":
-            w = _quoted(text)
-            if not w:
-                continue          # どのリンクか分からないなら、この用件ではない
-            slots["語"] = w
-        if name in ("おす", "うちこむ", "画面でさがす"):
-            w = _quoted(text) or _word_for(text, name)
-            if not w:
-                continue          # なにを押すのか分からないなら、この用件ではない
-            slots["語"] = w
-        if name in ("タブを探す", "ネットで調べる", "ウィキペディア"):
-            w = _word_for(text, name)
-            if not w:
-                continue          # 何を調べるか分からないなら、この用件ではない
-            slots["語"] = w
-        if name == "フォルダをひらく":
-            for k, v in (("デスクトップ", "Desktop"), ("ダウンロード", "Downloads"),
-                         ("書類", "Documents"), ("ドキュメント", "Documents")):
-                if k in text:
-                    slots["場所"] = v
-                    break
         return name, slots
     return None
+
+
+def _zairyou(name, text, low):
+    """用件が決まっているとき、その用件の材料を文から取る。取れない（この用件ではない）なら None。
+    ★ 2026-09-18: match() の中にあった取り出しを外に出した。頭脳が 1トークンで用件を選ぶ（kimeru）とき、
+      言い方が決まった形でなくても 同じ取り出しを通せるように。"""
+    slots = {"_文": text}
+    m = _NUM.search(text)
+    if m:
+        slots["数"] = int(m.group(1))
+    if name == "こよみ":
+        import koyomi
+        if koyomi.kotae(text) is None:
+            return None          # 暦の形で読めないなら、この用件ではない（頭脳に回す）
+    if name in _kikai.OPS and not _kikai.slots_hook(name, text, slots):
+        return None
+    if name in ("読み上げる", "知らせる"):
+        # 「「休憩」と知らせて」「おはようと読み上げて」の中身。無いと部品が「何を読むか分かりません」と言う
+        w = _quoted(text)
+        if not w:
+            m4 = _re.search(r"^(.+?)(と|って)\s*(読み上げ|よみあげ|読んで|よんで|しゃべ|喋|知らせ|しらせ|通知)", text)
+            w = m4.group(1).strip("　 ") if m4 else None
+        if w:
+            slots["文"] = w
+    if name == "アプリをひらく":
+        for k, v in APPS.items():
+            if k in low:
+                slots["アプリ"] = v
+                break
+        else:
+            return None          # どのアプリか分からないなら、この用件ではない
+    if name in ("画像をみる", "音をきく", "動画をみる", "ききとる"):
+        kinds = {
+            "ききとる":   r"aiff?|wav|m4a|mp3|caf|aac|flac",
+            "画像をみる": r"jpe?g|png|gif|heic|webp|bmp|tiff?",
+            "音をきく":   r"aiff?|wav|m4a|mp3|caf|aac|flac",
+            "動画をみる": r"mp4|mov|m4v|avi|mkv|webm",
+        }[name]
+        got = _path_of(text, kinds)
+        if not got:
+            return None
+        slots["パス"] = got
+    if name == "うごかす":
+        # ``` で囲まれていれば、その中身が動かす対象
+        m2 = _re.search(r"```(\w+)?\s*\n?(.*?)```", text, _re.S)
+        if m2:
+            slots["コード"] = m2.group(2).strip()
+            if m2.group(1):
+                slots["言語"] = m2.group(1)
+        else:
+            # 「python で ◯◯ を動かして」の ◯◯
+            m3 = _re.search(
+                r"(?:python|パイソン|javascript|ジャバスクリプト|js|node|"
+                r"シェル|shell|bash|applescript)\s*(?:で|を)?\s*(.+?)"
+                r"\s*(?:を)?\s*(?:うごか|動か|実行|走らせ|試し)", text, _re.I)
+            if not m3:
+                return None
+            slots["コード"] = m3.group(1).strip()
+        low2 = text.lower()
+        for k, v in (("javascript", "javascript"), ("ジャバスクリプト", "javascript"),
+                     ("node", "javascript"), ("js", "javascript"),
+                     ("シェル", "shell"), ("bash", "shell"), ("shell", "shell"),
+                     ("applescript", "applescript"),
+                     ("パイソン", "python"), ("python", "python")):
+            if k in low2:
+                slots.setdefault("言語", v)
+                break
+        slots.setdefault("言語", "python")
+    if name == "ページを動かす":
+        slots["向き"] = "上" if _re.search(r"(上|うえ)", text) else "下"
+    if name == "リンクをおす":
+        w = _quoted(text)
+        if not w:
+            return None          # どのリンクか分からないなら、この用件ではない
+        slots["語"] = w
+    if name in ("おす", "うちこむ", "画面でさがす"):
+        w = _quoted(text) or _word_for(text, name)
+        if not w:
+            return None          # なにを押すのか分からないなら、この用件ではない
+        slots["語"] = w
+    if name in ("タブを探す", "ネットで調べる", "ウィキペディア"):
+        w = _word_for(text, name)
+        if not w:
+            return None          # 何を調べるか分からないなら、この用件ではない
+        slots["語"] = w
+    if name == "フォルダをひらく":
+        for k, v in (("デスクトップ", "Desktop"), ("ダウンロード", "Downloads"),
+                     ("書類", "Documents"), ("ドキュメント", "Documents")):
+            if k in text:
+                slots["場所"] = v
+                break
+    return slots
+
+
+def zairyou(name, text):
+    """用件名 → 材料（外向き）。取れなければ None"""
+    return _zairyou(name, text, text.lower())
 
 
 def run(name, slots, confirm=None):

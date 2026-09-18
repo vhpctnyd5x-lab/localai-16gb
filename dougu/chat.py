@@ -467,6 +467,10 @@ NARABI = os.environ.get("KERNEL_ZATSUDAN_NARABI", "会話が先")
 # ★ 2026-09-17: 頭脳が自分で道具を選ぶ（erabu.py）。一覧は system の末尾＝頼み文の頭に来るので、使い回しが効く。
 #   KERNEL_DOUGU_ERABI=0 で前の形（道具を見せない）。
 DOUGU_ERABI = os.environ.get("KERNEL_DOUGU_ERABI", "1") != "0"
+# ★ 2026-09-18: 道具か雑談かを 1トークンの確率で先に決める（kimeru・Jev の真似）。**既定は切**:
+#   物差し（dougu/hakaru_kimeru.py・36問）で 最良 22/36、返事に「道具: 言い方」を書かせる元の形は 約30/36。
+#   はい/いいえ の確かめも当てにならなかった（正しい道具に p=0.001、似た語だけの雑談に 0.88）。KERNEL_KIMERU=1 で試せる
+KIMERU = os.environ.get("KERNEL_KIMERU", "0") == "1"
 
 
 def sys_dougu() -> str:
@@ -474,7 +478,7 @@ def sys_dougu() -> str:
         return SYS
     try:
         import erabu
-        return SYS + "\n\n" + erabu.oshie()
+        return SYS + "\n\n" + erabu.oshie(kaku=not KIMERU)
     except Exception:
         return SYS
 
@@ -543,6 +547,33 @@ def reply(text: str, history: list, memory: "Memory") -> dict:
         return out
 
     prompt = _build_prompt(text, history, memory)
+
+    # ★ 2026-09-18: 先に **1トークンで** 道具か雑談かを決める（kimeru・Jev の System One の真似）。
+    #   道具なら 返事を書かせずに済む（2〜3秒 → 1秒）。自信が線より低ければ 今まで通り 雑談の返事へ。
+    #   材料が文から取れない用件（探す・書く・送る…）だけ、頭脳に「言い方」を 1行書かせる。
+    if DOUGU_ERABI and KIMERU:
+        try:
+            import erabu
+            k = erabu.kimeru_dougu(sys_dougu(), prompt)
+            out["決め"] = k
+            name = k.get("用件")
+            if name and k.get("自信", 0.0) >= erabu.SEN:
+                slots = erabu.zairyou(name, text)
+                if slots is not None:
+                    out.update(text="", teacher="kimeru", ms=int((time.monotonic() - t0) * 1000), 道具=(name, slots))
+                    return out
+                rows = ask_panel(prompt + "\n\n" + (erabu.IIKATA_TOI % name), system=sys_dougu(), timeout=90, fukasa=0)
+                for r in rows:
+                    if not r.get("error") and (r.get("text") or "").strip():
+                        hit = erabu.yomu(r["text"], name)
+                        if hit and hit[0]:
+                            out.update(text=r["text"].strip(), teacher="kimeru+" + r["teacher"],
+                                       ms=int((time.monotonic() - t0) * 1000), 道具=hit)
+                            return out
+                        break
+                # 言い方が作れなかった → 雑談の返事へ（下）
+        except Exception as e:
+            out["決め"] = {"error": "%s: %s" % (type(e).__name__, e)}
 
     try:
         # ★ 2026-09-12: 手元の頭脳に聞くようになったので、雲の上向けの 20秒では足りない。

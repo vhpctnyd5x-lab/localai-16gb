@@ -11,6 +11,7 @@
     材料（語・数・宛先）の取り出しを machine の決まった読み方に任せるため。
 """
 from __future__ import annotations
+import os
 import re
 
 # 用件 → 例の言い方（頭脳に見せる。ここに無い用件は頭脳からは選べない＝わざと）
@@ -35,19 +36,41 @@ REI = [
     ("ショートカットを実行", "「○○」というショートカットを実行して"), ("再起動", "再起動して"), ("電源を切る", "電源を切って"),
 ]
 
-_ICHIRAN = None
+# 用件の群（kimeru の 2段選び: まず群を 1桁、次に群の中を 1桁）。各群 9 まで・群も 9 まで（数字 1桁で答えさせるため）
+GUN = [
+    ("時刻・暦・計算・天気", ["いま何時", "こよみ", "世界時計", "計算", "天気"]),
+    ("予定・リマインダー・メモ・タイマー", ["予定", "リマインダー一覧", "リマインダーに入れる", "メモを書く", "メモを探す", "タイマー", "知らせる"]),
+    ("ファイル・フォルダ", ["ファイルを探す", "最近のファイル", "大きいファイル", "フォルダの大きさ", "選んでいるファイル", "フォルダをひらく", "ゴミ箱", "最近のダウンロード"]),
+    ("メール・メッセージ", ["未読メール", "メールを送る", "メッセージを送る"]),
+    ("音楽・音・読み上げ", ["いまの曲", "音楽", "音量", "音量をかえる", "消音", "読み上げる"]),
+    ("パソコンの状態", ["重いアプリ", "電池", "空き容量", "メモリ", "バックアップ", "開いているアプリ", "IPアドレス"]),
+    ("ネット・調べもの", ["ネット", "ネットの速さ", "ネットで調べる", "ウィキペディア", "辞書"]),
+    ("画面・アプリ・設定", ["アプリをひらく", "アプリを閉じる", "明るさ", "画面ロック", "画面を消す", "見た目をかえる", "設定を開く", "スクリーンショット", "画面をよむ"]),
+    ("その他", ["クリップボード", "コピーする", "ショートカット一覧", "ショートカットを実行", "再起動", "電源を切る"]),
+]
+_REI = dict(REI)
+
+_ICHIRAN = {}
 
 
-def ichiran() -> str:
-    """頭脳に見せる一覧（用件が machine に実在するものだけ）。1回作って使い回す（頼み文の頭に置くので、変えると読み直しになる）"""
-    global _ICHIRAN
-    if _ICHIRAN is None:
+def ichiran(gun: bool = False) -> str:
+    """頭脳に見せる一覧（用件が machine に実在するものだけ）。1回作って使い回す（頼み文の頭に置くので、変えると読み直しになる）。
+    gun=True は 群ごと・番号つき（kimeru 用）。返事に「道具: 言い方」を書かせる元の形は 平らな一覧のまま（測った時の形を変えない）"""
+    if gun not in _ICHIRAN:
         import machine
-        gyou = ["%s: %s" % (na, rei) for na, rei in REI if na in machine.OPS]
-        _ICHIRAN = "\n".join(gyou)
-    return _ICHIRAN
+        if gun:
+            gyou = []
+            for gi, (gna, names) in enumerate(GUN, 1):
+                gyou.append("%d %s" % (gi, gna))
+                for ni, na in enumerate([n for n in names if n in machine.OPS], 1):
+                    gyou.append(" %d-%d %s: %s" % (gi, ni, na, _REI[na]))
+        else:
+            gyou = ["%s: %s" % (na, rei) for na, rei in REI if na in machine.OPS]
+        _ICHIRAN[gun] = "\n".join(gyou)
+    return _ICHIRAN[gun]
 
 
+# 元の教え（9/17 に測った文そのまま。返事の中に「道具: 言い方」と書かせる）
 OSHIE = ("【使える道具】（用件: 例の言い方）\n%s\n"
          "相手の頼みが上の道具で済むなら、返事を書かず 1行だけ「道具: <例のような言い方>」と書く"
          "（例: 道具: 5分後に「休憩」と知らせて）。相手が言った名前・数・言葉はそのまま言い方に入れる。"
@@ -56,24 +79,35 @@ OSHIE = ("【使える道具】（用件: 例の言い方）\n%s\n"
          "5分はかって→道具: 5分後に「時間です」と知らせて、まぶしい→道具: 画面の明るさを下げて、遅い・重い→道具: 重いアプリは？、"
          "あとどれくらい持つ→道具: 電池は？）。"
          "雑談・意見・説明・相談・思い出話は道具を使わず ふつうに答える。")
+# kimeru 用（一覧は群ごと・番号つき。「道具: 言い方」は書かせない＝
+#   ★ 2026-09-18 実測: これが在ると 番号を聞いても「道具」と書きたがり、数字に確率が乗らない（かさ 0.0〜0.2））
+OSHIE_ICHIRAN = ("【使える道具】（番号 用件: 例の言い方）\n%s\n"
+                 "あなたは今の日付・曜日・時刻・天気・電池・メール・ファイル・アプリの状態を知らず、計算も間違える。"
+                 "それらは自分で答えず道具で調べる。")
 
 _DOUGU_GYOU = re.compile(r"^\s*道具\s*[:：]\s*(.+?)\s*$", re.M)
 
 
-def oshie() -> str:
-    return OSHIE % ichiran()
+def oshie(kaku: bool = True) -> str:
+    """頭脳に見せる教え。kaku=False は kimeru が番号で決める形（「道具: 言い方」を書かせない）"""
+    return (OSHIE if kaku else OSHIE_ICHIRAN) % ichiran(gun=not kaku)
 
 
-def yomu(text: str):
-    """頭脳の返事から「道具: 言い方」を取り出し、machine.match に通す。無ければ None、当たらなければ ("", 言い方)"""
+def yomu(text: str, name: str = None):
+    """頭脳の返事から「道具: 言い方」を取り出し、machine.match に通す。無ければ None、当たらなければ ("", 言い方)。
+    name（kimeru で決まった用件）があれば、言い方が決まった形でなくても その用件の材料取り（machine.zairyou）を通す"""
     m = _DOUGU_GYOU.search(text or "")
     if not m:
         return None
     iikata = m.group(1).strip().strip("「」『』\"'")
     import machine
     hit = machine.match(iikata)
-    if hit:
+    if hit and (not name or hit[0] == name):
         return hit
+    if name:
+        slots = zairyou(name, iikata)
+        if slots is not None:
+            return (name, slots)
     # 頭脳が「道具: 計算: 1234×56は？」と用件名を頭に付けることがある（実測 2/24）。用件名を外してもう一度
     m2 = re.match(r"^\s*([^:：\s]{1,14})\s*[:：]\s*(.+)$", iikata)
     if m2 and m2.group(1) in machine.OPS:
@@ -92,3 +126,92 @@ def yomu(text: str):
             return ("", iikata)      # 材料の形が要るものは 決まった言い方でないと動かさない
         return (na, slots)
     return ("", iikata)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 1トークンで選ぶ（kimeru・2026-09-18）── Jev の「System One」を手元の頭脳で
+#   ① 群を 1桁で選ぶ（0 = 道具は要らない）  ② 群の中を 1桁で選ぶ（0 = どれでもない）
+#   自信 = p1 × p2。線（SEN）より低ければ 雑談として返事を作る（誤発動より取りこぼしを選ぶ）
+#   ③ 材料: 文からそのまま取れれば（machine.zairyou）すぐ動かす。取れなければ 頭脳に「言い方」を 1行だけ書かせる
+# ══════════════════════════════════════════════════════════════════
+SEN = float(os.environ.get("KERNEL_KIMERU_SEN", "0.5"))       # 線。物差し（hakaru_kimeru）で測って決める
+
+TOI_GUN = "上の【今の発言】は、道具の群のどれで済む？"
+NASHI_GUN = "道具は要らない（雑談・意見・説明・相談・思い出話・相手が自分でする話）"
+TOI_NAKA = "群「%s」の中のどれ？"
+NASHI_NAKA = "どれでもない"
+TOI_BANGOU = ("上の【今の発言】は、一覧のどの道具で済む？番号だけを書く（例 8-3）。"
+              "道具が要らない（雑談・意見・説明・相談・思い出話・相手が自分でする話）なら 0。")
+IIKATA_TOI = ("【言い方】上の【今の発言】は 道具「%s」で済む。相手の言った名前・数・言葉をそのまま入れて、"
+              "一覧の例のような言い方に直し、1行だけ「道具: <言い方>」と書く。返事や説明は書かない。")
+
+
+TOI_NAMAE = ("上の【今の発言】は、一覧のどの道具で済む？用件の名前を1つだけ書く。"
+             "道具が要らない（雑談・意見・説明・相談・思い出話・相手が自分でする話）なら なし。")
+NASHI = "なし"
+OSHIRI = os.environ.get("KERNEL_KIMERU_OSHIRI", "")     # 答えの書き出し（「用件:」は空白を呼ぶので 空のまま）
+KENSA = os.environ.get("KERNEL_KIMERU_KENSA", "1") != "0"     # 名前が出たら「本当にその道具を頼んでいる？」を はい/いいえ で確かめる
+TOI_KENSA = "相手は今、道具「%s」（例: %s）を使ってほしいと頼んでいる？ 言葉が似ているだけ・雑談・意見・相談なら いいえ。"
+HOU = os.environ.get("KERNEL_KIMERU_HOU", "名前")          # 名前（文法で縛る）／ 番号（群-番 1回）／ 2段（群→中）
+
+
+def kimeru_dougu(system: str, user: str, timeout: int = 180, hou: str = None) -> dict:
+    """道具か雑談かと、道具ならどの用件かを、返事を書かせずに決める。
+    戻り値 {"用件", "群", "p1", "p2", "自信", "かさ1", "かさ2", "出た", "ms", "tokens"}（用件 None = 道具なし）"""
+    import kimeru
+    hou = hou or HOU
+    if hou == "名前":
+        names = [NASHI] + [n for _, ns in GUN for n in ns]
+        r = kimeru.namae(system, user, TOI_NAMAE, names, timeout=timeout, oshiri=OSHIRI)
+        na = r["名"]
+        out = {"用件": None if na in (None, NASHI) else na, "群": None, "p1": r["p"], "p2": None,
+               "自信": r["p"] if na else 0.0, "かさ1": r["かさ"], "かさ2": None, "出た": r["出た"][:12], "ms": r["ms"], "tokens": r.get("tokens")}
+        if out["用件"]:
+            out["群"] = next((g for g, ns in GUN if na in ns), None)
+            if KENSA:
+                r2 = kimeru.hai_iie(system, user, TOI_KENSA % (na, _REI.get(na, "")), timeout=timeout)
+                out.update({"p2": round(r2["はい"], 3), "かさ2": round(r2["かさ"], 3), "ms": r["ms"] + r2["ms"],
+                            "自信": round(r["p"] * r2["はい"], 3) if r2["かさ"] > 0 else 0.0})
+        return out
+    if hou == "2段":
+        gnames = [g for g, _ in GUN]
+        r1 = kimeru.n_taku(system, user, TOI_GUN, gnames, nashi=NASHI_GUN, timeout=timeout)
+        out = {"用件": None, "群": r1["名"], "p1": round(r1["p"], 3), "p2": None, "自信": 0.0,
+               "かさ1": round(r1["かさ"], 3), "かさ2": None, "出た": r1["先頭"][:12], "ms": r1["ms"], "tokens": r1.get("tokens")}
+        if r1["名"] is None:
+            out["自信"] = round(r1["p"], 3)
+            return out
+        names = GUN[gnames.index(r1["名"])][1]
+        r2 = kimeru.n_taku(system, user, TOI_NAKA % r1["名"], names, nashi=NASHI_NAKA, timeout=timeout)
+        out.update({"p2": round(r2["p"], 3), "ms": r1["ms"] + r2["ms"], "かさ2": round(r2["かさ"], 3)})
+        if r2["名"] is None:
+            return out
+        out["用件"] = r2["名"]
+        out["自信"] = round(r1["p"] * r2["p"], 3)
+        return out
+    # 番号（群-番）1回
+    r = kimeru.bangou(system, user, TOI_BANGOU, timeout=timeout)
+    out = {"用件": None, "群": None, "p1": r["p1"], "p2": r["p2"], "自信": 0.0, "かさ1": r["かさ1"], "かさ2": r["かさ2"],
+           "出た": (r.get("出た") or "").strip()[:12], "ms": r["ms"], "tokens": r.get("tokens")}
+    g, b = r["群"], r["番"]
+    if g is None:
+        out["自信"] = r["p1"]
+        return out
+    if not (1 <= g <= len(GUN)):
+        return out
+    out["群"] = GUN[g - 1][0]
+    names = GUN[g - 1][1]
+    if b is None or not (1 <= b <= len(names)):
+        return out
+    out["用件"] = names[b - 1]
+    out["自信"] = round(r["p1"] * (r["p2"] or 0.0), 3)
+    return out
+
+
+def zairyou(name: str, text: str):
+    """用件が決まった後の材料。文からそのまま取れれば辞書、取れなければ None（→ 頭脳に言い方を作らせる）"""
+    import machine
+    try:
+        return machine.zairyou(name, text)
+    except Exception:
+        return None
