@@ -25,7 +25,7 @@ import unicodedata
 HERE = os.path.dirname(os.path.abspath(__file__))
 OMOMI = os.path.join(HERE, "chokkan_omomi.json")
 ZATSUDAN = "雑談"
-SEN = float(os.environ.get("KERNEL_CHOKKAN_SEN", "0.5"))       # 線。物差しで決めた（9/18: 0.5 で 私の36問 30/36・頭脳の91問 道具 57/61・誤発動 2/30）
+SEN = float(os.environ.get("KERNEL_CHOKKAN_SEN", "0.5"))       # 線の既定。学習時に校正用で決めた値（重みの sen）があればそちら
 
 _Q = re.compile(r"[「『\"“](.*?)[」』\"”]")
 _NUM = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
@@ -63,11 +63,12 @@ def tokuchou(text: str) -> dict:
 
 
 class Model:
-    def __init__(self, classes=None, w=None, b=None, T=1.0):
+    def __init__(self, classes=None, w=None, b=None, T=1.0, sen=None):
         self.classes = list(classes or [])
         self.w = w or {}          # 特徴 → [重み × クラス数]
         self.b = b or [0.0] * len(self.classes)
         self.T = T
+        self.sen = sen            # 校正用で決めた線（None なら SEN）
 
     # ── 推論 ──
     def logits(self, f: dict) -> list:
@@ -139,14 +140,17 @@ class Model:
 
     # ── 保存・読み込み ──
     def save(self, path: str = OMOMI):
-        json.dump({"classes": self.classes, "w": {k: [round(x, 4) for x in v] for k, v in self.w.items()},
-                   "b": [round(x, 4) for x in self.b], "T": self.T, "made": time.strftime("%Y-%m-%d %H:%M")},
-                  open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        """原子的に書く（途中で落ちても前の重みが残る）。丸めは 6桁（4桁だと測った値と読み直した値がずれる・Codex の審査）"""
+        tmp = path + ".tmp"
+        json.dump({"classes": self.classes, "w": {k: [round(x, 6) for x in v] for k, v in self.w.items()},
+                   "b": [round(x, 6) for x in self.b], "T": self.T, "sen": self.sen, "made": time.strftime("%Y-%m-%d %H:%M")},
+                  open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: str = OMOMI):
         d = json.load(open(path, encoding="utf-8"))
-        return cls(d["classes"], d["w"], d["b"], d.get("T", 1.0))
+        return cls(d["classes"], d["w"], d["b"], d.get("T", 1.0), d.get("sen"))
 
 
 _MODEL = None
@@ -166,9 +170,9 @@ def kimeru(text: str, sen: float = None) -> dict:
     p = m.kakuritsu(tokuchou(text))
     order = sorted(range(len(p)), key=lambda i: -p[i])
     top = [(m.classes[i], round(p[i], 3)) for i in order[:3]]
-    na, pa = top[0]
-    sen = SEN if sen is None else sen
-    out = {"用件": None, "自信": pa, "上位": top, "ms": int((time.monotonic() - t0) * 1000)}
+    na, pa = m.classes[order[0]], p[order[0]]          # ★ 線の判定は丸める前の値で（Codex の審査 9/18）
+    sen = (m.sen if m.sen is not None else SEN) if sen is None else sen
+    out = {"用件": None, "自信": round(pa, 3), "上位": top, "ms": int((time.monotonic() - t0) * 1000)}
     if na != ZATSUDAN and pa >= sen:
         out["用件"] = na
     return out
@@ -180,10 +184,28 @@ def _ngram2(s: str) -> set:
     return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
 
 
+def monosashi_no_bun() -> list:
+    """物差し（dougu/hakaru_erabu.py の DOUGU・BETSU・ZATSUDAN）の文。見つからなければ空。
+    ★ Codex の審査（9/18）: --train が物差しを除かずに学習できてしまっていた → いつも除く"""
+    for d in (os.path.join(HERE, "..", "koukai", "dougu"), os.path.join(HERE, "..", "dougu"), os.path.expanduser("~/LocalAI_mirror/koukai/dougu")):
+        f = os.path.join(d, "hakaru_erabu.py")
+        if os.path.isfile(f):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("hakaru_erabu", f)
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+            except Exception:
+                continue
+            return [t for t, _ in mod.DOUGU] + [t for t, _ in mod.BETSU] + list(mod.ZATSUDAN)
+    return []
+
+
 def kyouzai(nozoku: list = None, quiet: bool = False) -> list:
-    """教材 → [(文, 用件)]。nozoku（物差しの文）と 2-gram の重なりが 0.5 以上の文は落とす（丸暗記を測らないため）"""
+    """教材 → [(文, 用件)]。物差しの文（自動で集める＋nozoku）と 2-gram の重なりが 0.5 以上の文は落とす（丸暗記を測らないため）"""
     import chokkan_kyouzai as K
     import machine
+    nozoku = list(nozoku or []) + monosashi_no_bun()
     rei = []
     for na, bun in K.KYOUZAI.items():
         if na not in machine.OPS:
@@ -212,27 +234,48 @@ def kyouzai(nozoku: list = None, quiet: bool = False) -> list:
 
 
 def gakushuu(nozoku: list = None, seed: int = 0, quiet: bool = False) -> Model:
-    """学習: 85% で学習 → 15% で温度を校正 → 全部で学習し直して保存"""
+    """学習: 用件ごとに層化して 6/7 で学習 → 残り 1/7（校正用）で温度と線（SEN）を決める → **その模型を保存**。
+    ★ 前は校正のあと全部で学習し直していた（校正が保存した模型のものでない・Codex の審査 9/18）。
+    線は 校正用で「雑談の誤発動 0 のまま 道具を最も拾う値」。物差し（held-out）は線を決めるのに使わない。"""
     rei = kyouzai(nozoku, quiet=quiet)
     classes = sorted({c for _, c in rei})
     rnd = random.Random(seed)
-    rei2 = list(rei)
-    rnd.shuffle(rei2)
-    n = len(rei2)
-    kensho, gaku = rei2[: n // 7], rei2[n // 7:]
+    by = {}
+    for t, c in rei:
+        by.setdefault(c, []).append(t)
+    gaku, kensho = [], []
+    for c, ts in by.items():
+        ts = list(ts)
+        rnd.shuffle(ts)
+        k = max(1, len(ts) // 7) if len(ts) >= 3 else 0
+        kensho += [(t, c) for t in ts[:k]]
+        gaku += [(t, c) for t in ts[k:]]
     m = Model(classes).train(gaku, quiet=quiet)
     T = m.ondo(kensho)
-    ok = sum(1 for t, c in kensho if m.classes[max(range(len(classes)), key=lambda i: m.kakuritsu(tokuchou(t))[i])] == c)
+    # 線: 校正用で 雑談を道具と間違えない範囲で いちばん道具を拾う値
+    best = (0.5, -1)
+    for sen in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
+        ok = gobatsu = 0
+        for t, c in kensho:
+            p = m.kakuritsu(tokuchou(t))
+            i = max(range(len(classes)), key=lambda j: p[j])
+            na, pa = classes[i], p[i]
+            if c == ZATSUDAN:
+                gobatsu += (na != ZATSUDAN and pa >= sen)
+            else:
+                ok += (na == c and pa >= sen)
+        if gobatsu == 0 and ok > best[1]:
+            best = (sen, ok)
+    m.sen = best[0]
+    ok = sum(1 for t, c in kensho if classes[max(range(len(classes)), key=lambda j: m.kakuritsu(tokuchou(t))[j])] == c)
     if not quiet:
-        print("  検証 %d/%d（教材の 1/7 を除けて測った）・温度 T=%.2f" % (ok, len(kensho), T))
-    m2 = Model(classes).train(rei, quiet=True)
-    m2.T = T
-    m2.save()
+        print("  校正用 %d文（用件ごとに 1/7）: 当たり %d/%d・温度 T=%.2f・線 SEN=%.1f" % (len(kensho), ok, len(kensho), T, m.sen))
+    m.save()
     if not quiet:
-        print("  教材 %d 文・用件 %d・特徴 %d → %s" % (len(rei), len(classes), len(m2.w), os.path.relpath(OMOMI, HERE)))
+        print("  教材 %d 文（学習 %d）・用件 %d・特徴 %d → %s" % (len(rei), len(gaku), len(classes), len(m.w), os.path.relpath(OMOMI, HERE)))
     global _MODEL
-    _MODEL = m2
-    return m2
+    _MODEL = Model.load()          # 読み直した模型を使う（保存した物と測る物を同じにする）
+    return _MODEL
 
 
 if __name__ == "__main__":
