@@ -404,6 +404,15 @@ def _ugokasu(te: dict, g: dict, say) -> tuple[bool, str]:
         return False, "できない手: %s" % e
     if not shounin.kiku(bun, iu=say):
         raise _Yameta(bun)
+    # ★ 2026-09-18 実測: 画面を見てから手を決めるまでの 40秒の間に、別のアプリ（Claude）が前に来て、cmd+n がそちらへ届いていた
+    #   （記録「届いた先: Claude」）。押す・打つ・キー は **送る直前に** 目当てを前に出し直す（front は前に出たのを見てから返る）。
+    if kind in ("押す", "打つ", "キー") and g.get("目当て"):
+        try:
+            import hands as _h
+            if (_h.mae_no_app() or "") != g["目当て"]:
+                _h.front(g["目当て"])
+        except Exception as e:
+            return False, "目当て %s を前に出し直せなかった: %s" % (g["目当て"], e)
     try:
         res = computer.execute(pre["id"])
     except Exception as e:
@@ -444,6 +453,9 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
         for ban in range(1, SAIDAI_TE + 1):
             if time.time() - t0 > SAIDAI_BYOU:
                 return {"できた": False, "報告": "時間切れ（%d秒）" % SAIDAI_BYOU, "手": rireki, "ミリ秒": int((time.time() - t0) * 1000)}
+            # ★ 2026-09-18: 画面がロックされていたら止める（point も動かないが、輪は待たずに終わる）
+            if hands.locked():
+                return {"できた": False, "報告": "画面がロックされているので操作しません", "手": rireki, "ミリ秒": int((time.time() - t0) * 1000)}
             # 承認ずみの目当てのアプリが裏に回っていたら、前に出し直す（押した拍子に別の窓が前に来ることがある）
             if nerai and nerai in yurushita and (hands.mae_no_app() or "") != nerai:
                 try:

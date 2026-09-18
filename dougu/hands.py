@@ -84,11 +84,37 @@ def scroll(amount, x=None, y=None):
     return _run(*a)
 
 
-def type_text(t):
+def locked() -> bool:
+    """画面がロックされているか（point locked）。分からなければ False"""
+    try:
+        return bool(_run("locked").get("locked"))
+    except Exception:
+        return False
+
+
+def type_text(t, haritsuke=None):
+    """文字を打つ。
+    ★ 2026-09-18: 日本語（ASCII 以外）を含む文は **貼り付け**（クリップボードに入れて cmd+v、終わったら元に戻す）。
+      unicode の打鍵は 日本語入力（ひらがな）が生きている欄では組み立て中の字に取られ、メモに「カーネル試験0913」が 1字も入らなかった
+      （GUI 本番 0/3・9/18）。ABC への切り替えは点の側では効いて見えても、アプリごとの入力ソースには効かないことがある。
+      貼り付けは入力ソースに関係なく入る。ASCII だけの文（電卓の 12*34 など）は今まで通り打鍵（貼り付けが効かないアプリがある）。
+      haritsuke=True/False で強制。★ 未検証（画面がロックされ 9/18 は試せなかった）→ 次の GUI 本番で確かめる"""
     t = str(t)
     if len(t) > MAX_TYPE:
         raise Exception(f"一度に打つには長すぎます（{len(t)} 文字）")
-    return _run("type", t, timeout=max(30, len(t) // 8))
+    if haritsuke is None:
+        haritsuke = any(ord(ch) > 127 for ch in t)
+    if not haritsuke:
+        return _run("type", t, timeout=max(30, len(t) // 8))
+    import subprocess as _sp
+    moto = _sp.run(["pbpaste"], capture_output=True, text=True).stdout
+    _sp.run(["pbcopy"], input=t, text=True)
+    try:
+        r = _run("key", "v", "--cmd")
+        time.sleep(0.3 + min(2.0, len(t) / 500))
+    finally:
+        _sp.run(["pbcopy"], input=moto, text=True)      # 元のクリップボード（文字だけ）に戻す
+    return {"ok": True, "文字数": len(t), "道": "貼り付け"} if isinstance(r, dict) else r
 
 
 def key(name, cmd=False, shift=False, opt=False, ctrl=False):
