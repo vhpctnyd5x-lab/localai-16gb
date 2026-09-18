@@ -57,7 +57,8 @@ def _fukasa_wo_kimeru(kazu: dict, tsumazuki: int, ng: str = "") -> int:
 
 SYSTEM = ("あなたは Mac を操作する係。目当てを達成するために、**次の1手だけ** を JSON で書く。\n"
           "JSON には必ず 先に \"済み\" を書く: これまでの手で目当てがもう済んでいれば true、まだなら false。\n"
-          "  済み が true なら 手 は できた。例: {\"済み\":true,\"手\":\"できた\",\"報告\":\"…\"} ／ {\"済み\":false,\"手\":\"キー\",\"名前\":\"cmd+t\"}\n"
+          "  済み が true なら 手 は できた で、報告 には 画面から読んだ答え（数字なら その数字）を書く。「済み」とだけ書かない。\n"
+          "  例: {\"済み\":true,\"手\":\"できた\",\"報告\":\"408\"} ／ {\"済み\":false,\"手\":\"キー\",\"名前\":\"cmd+t\"}\n"
           "使える手:\n"
           '  {"手":"アプリ","名前":"<アプリ名>"}     … アプリを前に出す（無ければ起動する）。名前は **目当てに書いてあるアプリ名** をそのまま\n'
           '  {"手":"押す","文字":"<見えている文字>"}  … 画面に見えている文字を押す。**見えている文字の一覧にある文字だけ**\n'
@@ -173,8 +174,20 @@ def _te_no_iikae(te: dict) -> dict:
         te["手"] = _IIKAE[k]
     if te.get("済み") is True and te.get("手") != "できた":
         te["手"] = "できた"
-        te.setdefault("報告", "済み")
+    # ★ 2026-09-18: 報告 が無い／「済み」だけ の時は 空にしておき、輪が画面の答え（数字）で埋める（9/17: 「答えを教えて」に「済み」と返していた）
+    if te.get("手") == "できた" and str(te.get("報告") or "").strip() in ("", "済み", "できた", "完了"):
+        te["報告"] = ""
     return te
+
+
+def _gamen_no_kotae(g: dict, mae_moji: set | None = None) -> str:
+    """画面から「答えらしいもの」を拾う: 新しく見えた数字（桁区切り込み）を優先、無ければ 新しく見えた短い行。無ければ 空"""
+    atarashii = [m["文"] for m in (g or {}).get("文字", []) if not mae_moji or m["文"] not in mae_moji]
+    suuji = [t for t in atarashii if re.fullmatch(r"-?[0-9][0-9,]*(\.[0-9]+)?", t)]
+    if suuji:
+        return suuji[-1]
+    mijikai = [t for t in atarashii if len(t) <= 20]
+    return mijikai[-1] if mijikai else ""
 
 
 _TOKEI = re.compile(r"\d{1,2}[:：]\d{2}|\d+月\d+日")
@@ -198,8 +211,9 @@ def _yakunitatsu(t: str) -> bool:
     """
     if len(t) < 2 or _TOKEI.search(t):
         return False
-    if t.isdigit():
-        return len(t) <= 12
+    # ★ 2026-09-18: 「13,872」「1,003.5」のような桁区切りも数字として残す（9/17 の本番で 計算機の答えが落ちていた）
+    if re.fullmatch(r"-?[0-9][0-9,]*(\.[0-9]+)?", t):
+        return 2 <= sum(ch.isdigit() for ch in t) <= 12
     return bool(re.search(r"[A-Za-z\u3040-\u30ff\u4e00-\u9fff]", t))
 
 
@@ -396,6 +410,15 @@ def _ugokasu(te: dict, g: dict, say) -> tuple[bool, str]:
         return False, "動かせなかった: %s" % e
     if isinstance(res, dict) and res.get("error"):
         return False, "動かせなかった: %s" % res["error"]
+    # ★ 2026-09-18: 打つ・キー は「どこへ届いたか」を記録に残す（メモに cmd+n が届かない件を追うため）
+    if kind in ("打つ", "キー"):
+        try:
+            import hands as _h
+            mae = _h.mae_no_app() or "不明"
+            if mae != (g.get("アプリ") or ""):
+                bun += "（届いた先: %s）" % mae
+        except Exception:
+            pass
     return True, bun
 
 
@@ -454,7 +477,9 @@ def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
             say("    頭脳の手: %s" % json.dumps(te, ensure_ascii=False)[:120])
             kind = te.get("手")
             if kind == "できた":
-                return {"できた": True, "報告": str(te.get("報告") or "できました。"), "手": rireki, "ミリ秒": int((time.time() - t0) * 1000)}
+                # ★ 2026-09-18: 報告 が空なら 画面の答え（新しく見えた数字など）で埋める。それも無ければ「できました。」
+                houkoku = str(te.get("報告") or "").strip() or _gamen_no_kotae(g, set(furui)) or "できました。"
+                return {"できた": True, "報告": houkoku, "手": rireki, "ミリ秒": int((time.time() - t0) * 1000)}
             if kind == "できない":
                 return {"できた": False, "報告": "できませんでした: " + str(te.get("理由") or ""), "手": rireki, "ミリ秒": int((time.time() - t0) * 1000)}
             if kind == "待つ":

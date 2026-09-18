@@ -383,7 +383,7 @@ def route(text, ctx):
     if rep.get("道具"):
         name, mslots = rep["道具"]
         if name:
-            print(f"\n  （頭脳が道具を選びました: {name}）")
+            print(f"\n  （{'直感' if str(rep.get('teacher', '')).startswith('直感') else '頭脳'}が道具を選びました: {name}）")
             _k = machine.kiken(name)
             import shounin as _shounin
             _shounin.hajimeru()

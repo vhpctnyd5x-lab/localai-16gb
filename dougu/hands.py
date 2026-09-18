@@ -136,7 +136,12 @@ def front(app):
             raise Exception(shippai or (r2.stderr or "").strip()[:160] or f"{app} を前に出せません")
         time.sleep(1.0)
         return {"ok": True, "アプリ": app, "道": "open -a（activate が駄目だった）"}
-    time.sleep(0.5)
+    # ★ 2026-09-18: 前に出たのを見てから返す（最大 2秒）。決め打ちの 0.5秒だと、出きる前に最初のキーを送って落とすことがある
+    for _ in range(20):
+        time.sleep(0.1)
+        if (mae_no_app() or "") == app:
+            break
+    time.sleep(0.3)
     return {"ok": True, "アプリ": app}
 
 

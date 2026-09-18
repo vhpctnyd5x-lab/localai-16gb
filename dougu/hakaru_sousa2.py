@@ -38,6 +38,15 @@ def _junbi_file():
         os.remove(q)
 
 
+def _junbi_dentaku():
+    """計算機を前に出して AC（esc を 2回: 1回目 C・2回目 AC）。前の課題の数字が残っていると「12」が消えたように見える（9/17）"""
+    try:
+        hands.front("Calculator"); time.sleep(0.5)
+        hands.key("esc"); time.sleep(0.2); hands.key("esc"); time.sleep(0.3)
+    except Exception as e:
+        print("   （計算機の下ごしらえに失敗: %s）" % e)
+
+
 def _mieru(kotoba: str) -> bool:
     """画面に その言葉が見えているか（輪と同じ目で見る）"""
     try:
@@ -65,7 +74,7 @@ MONDAI = [
 
     ("計算機: 12×34 を計算して 答えを読む",
      "計算機を開いて 12×34 を計算して、答えを教えて",
-     None,
+     _junbi_dentaku,
      lambda: _mieru("408")),
 ]
 
