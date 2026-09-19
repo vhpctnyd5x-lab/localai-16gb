@@ -40,7 +40,7 @@
 | Colab・Lightning・Codespaces・Azure・AWS・Railway | ある | GUI 専用か上と重なる → 後回し | — |
 
 ## Google Cloud
-- `~/google-cloud-sdk/bin/gcloud`、アカウント miura.13.ryoudai@gmail.com、プロジェクト `project-33e6be3b-57e3-4568-b34`、既定 `us-central1-a`、通貨 JPY。
+- `~/google-cloud-sdk/bin/gcloud`、アカウントは gcloud に設定済み（`gcloud config get account`）、プロジェクト `project-33e6be3b-57e3-4568-b34`、既定 `us-central1-a`、通貨 JPY。
 - 借りられる GPU: `g2-standard-8`（L4 24GB）1台。**必ず** `--max-run-duration=Nh --instance-termination-action=DELETE --boot-disk-auto-delete`。長い仕事は SPOT でなく STANDARD。
 - 予算アラートは知らせるだけで止めない。終わったら `gcloud compute instances list` と `disks list` が空なのを確かめる。
 
