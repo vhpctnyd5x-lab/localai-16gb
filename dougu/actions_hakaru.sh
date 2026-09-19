@@ -45,17 +45,35 @@ mv "$M.part" "$M"; log "頭脳 11.3GB 落とした（sha256 一致）"
 log "速さ測った"
 
 # 5. 頭脳を立てて 7段の物差し（指定は kernel/server.py の local:main と同じ。-t だけ runner の数）
-"$B/llama-server" -m "$M" -t "$NP" -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off \
-  --reasoning-format none --spec-type ngram-simple --host 127.0.0.1 --port 8080 > "$W/llama.log" 2>&1 &
-P=$!
-OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
-  curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
-[ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない" >> "$OUT"; exit 1; }
+#    HENKA_FILE があれば 1行ずつ「名前|投機・KV の指定」を差し替えて同じ問題を測り、表にする（起動指定の比べ）
+tateru(){ # $1=差し替える指定
+  "$B/llama-server" -m "$M" -t "$NP" -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off \
+    --reasoning-format none $1 --host 127.0.0.1 --port 8080 > "$W/llama.log" 2>&1 &
+  P=$!
+  OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
+    curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
+  [ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない: $1" >> "$OUT"; exit 1; }
+}
+hakaru(){ # $1=名札の付け足し
+  python3 -u "$K/monosashi/hakaru.py" --mondai "$K/monosashi/mondai_7dan.jsonl" --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
+    --nafuda "actions-$NAFUDA$1" --out "$K/kekka_actions/7dan_${NAFUDA}$1.json" > "$W/7dan$1.log" 2>&1 \
+    || { tail -20 "$W/7dan$1.log" | tee -a "$OUT"; echo '```' >> "$OUT"; exit 1; }
+}
 export LLAMA_URL=http://127.0.0.1:8080
-{ echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
-python3 -u "$K/monosashi/hakaru.py" --mondai "$K/monosashi/mondai_7dan.jsonl" --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
-    --nafuda "actions-$NAFUDA" --out "$K/kekka_actions/7dan_${NAFUDA}.json" > "$W/7dan.log" 2>&1 \
-  || { tail -20 "$W/7dan.log" | tee -a "$OUT"; echo '```' >> "$OUT"; exit 1; }
-{ tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"
-kill $P; wait $P 2>/dev/null || true; P=""
+if [ -n "${HENKA_FILE:-}" ] && [ -f "$HENKA_FILE" ]; then
+  { echo; echo "## 起動指定の比べ（7段 深さ${FUKASA} ${KAGIRI}問ずつ、同じ問題）"; echo "| 名前 | 指定 | 正解率 | 平均秒 |"; echo "|---|---|---|---|"; } >> "$OUT"
+  while IFS='|' read -r NA SHITEI; do
+    [ -n "$NA" ] || continue
+    tateru "$SHITEI"; hakaru "_$NA"; kill $P; wait $P 2>/dev/null || true; P=""
+    python3 - "$K/kekka_actions/7dan_${NAFUDA}_$NA.json" "$NA" "$SHITEI" >> "$OUT" <<'PY'
+import json,sys; d=json.load(open(sys.argv[1])); print("| %s | `%s` | %s | %s |" % (sys.argv[2], sys.argv[3], d.get("正解率"), d.get("平均秒")))
+PY
+    log "$NA 測った"
+  done < <(grep -v '^#' "$HENKA_FILE")
+else
+  tateru "--spec-type ngram-simple"
+  { echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
+  hakaru ""; { tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"
+  kill $P; wait $P 2>/dev/null || true; P=""
+fi
 echo "所要 $(( $(date +%s) - T0 ))秒" >> "$OUT"; log "おわり"; cat "$OUT"

@@ -215,8 +215,12 @@ def kyouzai(nozoku: list = None, quiet: bool = False) -> list:
     for b in K.ZATSUDAN:
         rei.append((b, ZATSUDAN))
     # 頭脳が作った言い方（dougu/tsukuru_iikata.py）。組=学習 だけ入れる（組=物差し は独立した物差しに使う）
-    nou = os.path.join(HERE, "chokkan_kyouzai_nou.jsonl")
-    if os.path.exists(nou):
+    # 雲の先生が作った言い方（dougu/tsukuru_iikata_kumo.py）も 組=学習 だけ（9/19 測って差なし 27→28・誤発動 2→3 → 既定は入れない。KERNEL_KUMO=1 で入れる）
+    files = ["chokkan_kyouzai_nou.jsonl"] + (["chokkan_kyouzai_kumo.jsonl"] if os.environ.get("KERNEL_KUMO", "0") == "1" else [])
+    for fn in files:
+        nou = os.path.join(HERE, fn)
+        if not os.path.exists(nou):
+            continue
         for l in open(nou, encoding="utf-8"):
             d = json.loads(l)
             if d.get("組") == "学習" and (d["用件"] == ZATSUDAN or d["用件"] in machine.OPS):

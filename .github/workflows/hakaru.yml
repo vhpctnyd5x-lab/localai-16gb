@@ -24,7 +24,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: 走らせる
         env:
-          KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || '3') }}
+          KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || (startsWith(github.ref_name, 'hakaru-henka') && '16' || '3')) }}
+          HENKA_FILE: ${{ startsWith(github.ref_name, 'hakaru-henka') && 'dougu/actions_henka.txt' || '' }}
           FUKASA: ${{ endsWith(github.ref_name, '-f2') && '2' || (endsWith(github.ref_name, '-f1') && '1' || '0') }}
         timeout-minutes: 340
         run: bash dougu/actions_hakaru.sh "${{ matrix.os }}"
