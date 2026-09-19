@@ -4,10 +4,10 @@
 # 環境: KAGIRI=問題数（0=全部）  LLAMA_COMMIT=手元と同じ commit
 # 途中で落ちた結果には末尾の「所要」の行が無い（＝正式な数字ではない）。
 set -Eeuo pipefail; export LANG=C.UTF-8
-NAFUDA="${1:-$(uname -m)}"; KAGIRI="${KAGIRI:-3}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
-[[ "$KAGIRI" =~ ^[0-9]+$ ]] || { echo "KAGIRI は整数: $KAGIRI"; exit 2; }
+NAFUDA="${1:-$(uname -m)}"; KAGIRI="${KAGIRI:-3}"; FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
+[[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
-OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
+NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
 W="${RUNNER_TEMP:-/tmp}/hakaru"; mkdir -p "$W"; M="$W/Qwen3-30B-A3B-Q2_K.gguf"
 # 頭脳は HF の revision と sha256 で固定（手元の物と同じ 11,258,610,240 バイト）
 HF_REV=d5b1d57bd0b504ac62ae6c725904e96ef228dc74
@@ -52,8 +52,8 @@ OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
   curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
 [ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない" >> "$OUT"; exit 1; }
 export LLAMA_URL=http://127.0.0.1:8080
-{ echo; echo "## 7段 深さ0 ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
-python3 -u "$K/monosashi/hakaru.py" --mondai "$K/monosashi/mondai_7dan.jsonl" --fukasa 0 --kagiri "$KAGIRI" --narabi 1 \
+{ echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
+python3 -u "$K/monosashi/hakaru.py" --mondai "$K/monosashi/mondai_7dan.jsonl" --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
     --nafuda "actions-$NAFUDA" --out "$K/kekka_actions/7dan_${NAFUDA}.json" > "$W/7dan.log" 2>&1 \
   || { tail -20 "$W/7dan.log" | tee -a "$OUT"; echo '```' >> "$OUT"; exit 1; }
 { tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"

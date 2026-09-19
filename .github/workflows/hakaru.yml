@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: [hakaru, hakaru-zenbu]
+    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ
 permissions:
   contents: write
 jobs:
@@ -19,12 +19,14 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 330
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
       - name: 走らせる
         env:
-          KAGIRI: ${{ github.event.inputs.kagiri || (github.ref_name == 'hakaru-zenbu' && '0' || '3') }}
+          KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || '3') }}
+          FUKASA: ${{ endsWith(github.ref_name, '-f2') && '2' || (endsWith(github.ref_name, '-f1') && '1' || '0') }}
+        timeout-minutes: 340
         run: bash dougu/actions_hakaru.sh "${{ matrix.os }}"
       - uses: actions/upload-artifact@v4
         if: always()
