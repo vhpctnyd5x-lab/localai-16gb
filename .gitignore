@@ -12,3 +12,4 @@ kekka/
 *.log
 .DS_Store
 ._*
+kekka_actions/

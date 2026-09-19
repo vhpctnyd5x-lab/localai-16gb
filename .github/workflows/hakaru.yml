@@ -1,11 +1,15 @@
 name: hakaru
-# 公開 repo なので runner は無料・無制限。枝 hakaru への push か手動で走る。結果は枝 kekka の kekka/ に積む。
+# 公開 repo なので runner は無料・無制限。枝 hakaru（3問）か hakaru-zenbu（全128問）への push、または手動で走る。
+# 各 runner は結果を artifact に上げ、最後の 1つの job がまとめて枝 kekka の kekka/ に積む（同時 push の競合を避ける）。
 on:
   workflow_dispatch:
     inputs:
-      kagiri: { description: "問題数（0=全部）", default: "3" }
+      kagiri:
+        description: "問題数（0=全部）"
+        default: "3"
+        type: string
   push:
-    branches: [hakaru]
+    branches: [hakaru, hakaru-zenbu]
 permissions:
   contents: write
 jobs:
@@ -15,23 +19,36 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 300
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - name: 走らせる
         env:
-          KAGIRI: ${{ github.event.inputs.kagiri || '3' }}
+          KAGIRI: ${{ github.event.inputs.kagiri || (github.ref_name == 'hakaru-zenbu' && '0' || '3') }}
         run: bash dougu/actions_hakaru.sh "${{ matrix.os }}"
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: "kekka-${{ matrix.os }}", path: kekka_actions/ }
-      - name: 結果を枝 kekka へ
-        if: always()
+        with:
+          name: kekka-${{ matrix.os }}
+          path: kekka_actions/
+  tsumu:
+    needs: hakaru
+    if: always()
+    runs-on: ubuntu-24.04
+    concurrency: kekka
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kekka-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/k
+      - name: 枝 kekka へ
         run: |
           set -e
-          cp -r kekka_actions "$RUNNER_TEMP/k"
+          ls "$RUNNER_TEMP/k" || { echo "結果なし"; exit 0; }
           git config user.name hakaru-bot; git config user.email hakaru-bot@users.noreply.github.com
           if git fetch -q origin kekka; then git checkout -q -B kekka origin/kekka; else git checkout -q --orphan kekka; git rm -rfq .; fi
           mkdir -p kekka; cp "$RUNNER_TEMP"/k/* kekka/
-          git add -f kekka; git commit -qm "kekka: ${{ matrix.os }} run ${{ github.run_number }}" || exit 0
-          for i in 1 2 3 4 5; do git push -q origin kekka && break; git pull -q --rebase origin kekka; done
+          git add -f kekka; git commit -qm "kekka: run ${{ github.run_number }} (${{ github.ref_name }})" || { echo "変わりなし"; exit 0; }
+          git push -q origin kekka
