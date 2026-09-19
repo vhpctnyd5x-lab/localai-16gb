@@ -35,9 +35,8 @@
 | ★Oracle Always Free | ARM 4コア 24GB をずっと無料（+ 200GB 盤） | 同じ頭脳を Mac の外で常時（PC の資源を使わない） | **未**（カード要・GUI。空きが無い地域あり） |
 | Kaggle | GPU T4×2 を週 30時間、TPU も。`kaggle kernels push` で無人実行 | Modal の予備 | **未**（電話認証） |
 | Cloudflare Workers AI | 日 1万ニューロン（gpt-oss-120b なら入力 30万 tok／日ほど） | Groq が枠切れの時の先生 | **未**（メール） |
-| Hugging Face | Spaces CPU 2コア 16GB は常時無料。ZeroGPU は要確認 | 頭脳の公開デモ（遅い） | 未（ログイン無し） |
-| TPU（Kaggle・Colab・TRC） | ある | **今は無し**（llama.cpp は TPU で動かない。学習をやる時に） | — |
-| Colab・Lightning・Codespaces・Azure・AWS・Railway | ある | GUI 専用か上と重なる → 後回し | — |
+| Hugging Face | Spaces CPU 2コア 16GB 常時無料 | 頭脳の公開デモ（遅い） | 未 |
+| TPU・Colab・Lightning・Codespaces・Azure・AWS・Railway | ある | TPU は llama.cpp が動かない。他は上と重なる → 後回し | — |
 
 ## Google Cloud
 - `~/google-cloud-sdk/bin/gcloud`、アカウントは gcloud に設定済み（`gcloud config get account`）、プロジェクト `project-33e6be3b-57e3-4568-b34`、既定 `us-central1-a`、通貨 JPY。
