@@ -20,7 +20,13 @@ def held_out():
             d = json.loads(l)
             if d.get("組") == "物差し":
                 q2.append((d["文"], None if d["用件"] == "雑談" else d["用件"]))
-    return q, q2
+    q3 = []
+    f3 = os.path.join(KERNEL, "chokkan_monosashi2_ok.jsonl")
+    if os.path.exists(f3):
+        for l in open(f3, encoding="utf-8"):
+            d = json.loads(l)
+            q3.append((d["文"], None if d["用件"] == "雑談" else d["用件"]))
+    return q, q2, q3
 
 def hakaru(mod, toi, sen, shouko=None):
     """線 sen での (道具の正答, 道具の件数, 雑談の誤発動, 雑談の件数, 頭脳に回した割合)"""
@@ -53,8 +59,8 @@ def main():
         print("== いまの chokkan を学習"); chokkan.gakushuu(nozoku=nozoku)
         print("== chokkan2 を学習"); chokkan2.gakushuu(nozoku=nozoku)
     chokkan._MODEL = chokkan2._MODEL = None
-    q36, q88 = held_out()
-    for na, toi in (("手作り 36問", q36), ("頭脳作り 88文", q88)):
+    q36, q88, q280 = held_out()
+    for na, toi in (("手作り 36問", q36), ("頭脳作り 88文", q88), ("独立 物差し2（別の先生・検品つき）", q280)):
         if not toi: continue
         print("\n===== %s（道具 %d・雑談 %d）=====" % (na, sum(1 for _, k in toi if k), sum(1 for _, k in toi if not k)))
         print("| 線 | いま 道具 | いま 誤発動 | 新 道具 | 新 誤発動 | いま 頭脳へ | 新 頭脳へ |"); print("|---|---|---|---|---|---|---|")

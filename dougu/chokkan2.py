@@ -198,7 +198,7 @@ def gakushuu(nozoku=None, seed=0, quiet=False, K=5):
         return [x / s for x in e]
     bestsen = None
     for sen in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95):
-        for sho_min in (0.0, 0.3, 0.5, 0.6, 0.7, 0.8):
+        for sho_min in (0.0,):   # 証拠の下限は 独立した物差し2 で 149問中 3問しか拾えず（移らない）→ 使わない（2026-09-22 実測）
             ok = go = 0
             for p, sho, y, cls in oof:
                 q = naosu(p, T)
