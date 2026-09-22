@@ -12,7 +12,7 @@
 4. 手元の頭脳（llama-server）は 1本だけ・8080。GCP の VM は自動消滅で作る。GUI は最後の手段。
 
 ## 頭脳の土台
-Qwen3-30B-A3B Q2_K（unsloth・11.3GB）、`-t 6 -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple`。7段 深さ0 92/128。
+Qwen3-30B-A3B Q2_K（unsloth・11.3GB）、`-t 6 -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple --spec-ngram-simple-size-m 16`。7段 深さ0 92/128（深さ1・2 は下がる＝深さ0 固定）。
 
 ## 二人で回す（Claude Code ＋ Codex）
 作る → 測る → Codex 審査 → 直す → 測る。`dougu/shinsa.sh <名> "<頼み>"`（terra・max・読み取り専用、約6分・100万トークンだが 9割キャッシュ）。指摘は資料（測って採用）。

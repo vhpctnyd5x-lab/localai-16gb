@@ -1,5 +1,5 @@
 # 起動指定の比べ（枝 hakaru-henka で走る）。1行 = 名前|置き換える投機・KV の指定（空=そのまま）。土台の指定は actions_hakaru.sh。
-moto|--spec-type ngram-simple
+moto|--spec-type ngram-simple --spec-ngram-simple-size-m 16
 m16|--spec-type ngram-simple --spec-ngram-simple-size-m 16
 m8|--spec-type ngram-simple --spec-ngram-simple-size-m 8
 n8m16|--spec-type ngram-simple --spec-ngram-simple-size-n 8 --spec-ngram-simple-size-m 16

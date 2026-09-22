@@ -66,7 +66,7 @@ if [ -n "${HENKA_FILE:-}" ] && [ -f "$HENKA_FILE" ]; then
     [ -n "$NA" ] || continue
     tateru "$SHITEI"; hakaru "_$NA"; kill $P; wait $P 2>/dev/null || true; P=""
     python3 - "$K/kekka_actions/7dan_${NAFUDA}_$NA.json" "$NA" "$SHITEI" >> "$OUT" <<'PY'
-import json,sys; d=json.load(open(sys.argv[1])); print("| %s | `%s` | %s | %s |" % (sys.argv[2], sys.argv[3], d.get("正解率"), d.get("平均秒")))
+import json,sys; d=json.load(open(sys.argv[1])).get("まとめ", {}); print("| %s | `%s` | %s | %s |" % (sys.argv[2], sys.argv[3], d.get("正解率"), d.get("平均秒")))
 PY
     log "$NA 測った"
   done < <(grep -v '^#' "$HENKA_FILE")

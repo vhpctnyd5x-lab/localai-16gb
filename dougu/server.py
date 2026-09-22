@@ -71,11 +71,15 @@ _MODELS = os.path.join(os.path.expanduser("~"), "LocalAI_mirror", "models")
 #   おまけに llama-server は自分の道連れ（.dylib）の場所を焼き込んで持っている
 #   ので、見つけた bin を DYLD_LIBRARY_PATH にも入れてやる必要がある。
 def _SPEC_OPTS():
-    """投機デコードの指定。既定は ngram-simple（実測で最良）。"""
+    """投機デコードの指定。既定は ngram-simple + size-m 16（2026-09-22 実測: x64/ARM/Mac の3台で
+    正解率同じ・8〜12% 速い。m8・n8m16・ngram-mod・KV q8_0 は得なし）。"""
     v = os.environ.get("KERNEL_SPEC", "ngram-simple").strip()
     if not v or v == "none":
         return []
-    return ["--spec-type", v]
+    o = ["--spec-type", v]
+    if v == "ngram-simple":
+        o += ["--spec-ngram-simple-size-m", os.environ.get("KERNEL_SPEC_M", "16")]
+    return o
 
 
 def _sagasu_lsrv():
