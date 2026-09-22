@@ -71,7 +71,7 @@ PY
     log "$NA 測った"
   done < <(grep -v '^#' "$HENKA_FILE")
 else
-  tateru "--spec-type ngram-simple"
+  tateru "--spec-type ngram-simple --spec-ngram-simple-size-m 16"
   { echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
   hakaru ""; { tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"
   kill $P; wait $P 2>/dev/null || true; P=""
