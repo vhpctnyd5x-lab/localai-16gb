@@ -20,6 +20,7 @@ else  # 手元の物と同じ 11,258,610,240 バイト
 fi
 M="$W/$MF"
 [ "${KERNEL_KAZOERU:-}" = 1 ] && NAFUDA="${NAFUDA}_k"
+[ "${KERNEL_TEHON:-}" = 1 ] && NAFUDA="${NAFUDA}_t"
 NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 NP=$(nproc); P=""; DL=""

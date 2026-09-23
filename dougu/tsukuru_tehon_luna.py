@@ -22,6 +22,12 @@ def luna(tanomi):
     return open(out, encoding="utf-8").read() if os.path.exists(out) else ""
 
 
+def rei(k=2):
+    L = [json.loads(l) for l in open(T.OUT, encoding="utf-8")]
+    return "\n".join(json.dumps({"種類": d["種類"], "問": d["問"], "解き方": d["解き方"], "答": d["答"]}, ensure_ascii=False)
+                     for d in random.sample(L, k))
+
+
 def main():
     for kai in range(KAI):
         shurui = random.sample(T.SHURUI, 10)
@@ -29,6 +35,7 @@ def main():
                   f"種類はこの10種から各5問: {'、'.join(shurui)}。\n"
                   f"各問に次の仕掛けのどれかを入れる: {' / '.join(T.WANA)}。答えは整数1つ。\n"
                   "解き方は次の手順書どおり、400字以内、最後の行は `答え: <値>`。\n手順書:\n" + T.TEJUN +
+                  "\n\n良い例（形と長さをまねる。内容はまねない）:\n" + rei() +
                   "\n\n出力は JSON Lines だけ（1行1問、説明なし）: {\"種類\": ..., \"問\": ..., \"解き方\": ..., \"答\": \"数値\"}")
         rows = []
         for ln in luna(tanomi).splitlines():

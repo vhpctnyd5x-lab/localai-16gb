@@ -143,6 +143,27 @@ def _kazu_onaji(a, b):
         return a == b
 
 
+_TEHON = None
+
+
+def _bi(s):
+    s = re.sub(r"\s", "", s)
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _tehon(toi, k=2):
+    global _TEHON
+    if _TEHON is None:
+        p = os.environ.get("KERNEL_TEHON_FILE") or os.path.expanduser("~/LocalAI_mirror/kernel/tehon.jsonl")
+        if not os.path.exists(p):
+            p = os.path.join(HERE, "tehon.jsonl")      # Actions では 写しを使う
+        _TEHON = [(json.loads(l), None) for l in open(p, encoding="utf-8")]
+        _TEHON = [(d, _bi(d["問"])) for d, _ in _TEHON]
+    b = _bi(toi)
+    yoi = sorted(_TEHON, key=lambda x: -len(b & x[1]) / max(1, len(b | x[1])))[:k]
+    return "参考の解き方（似た問題）:\n" + "\n\n".join("問: %s\n%s" % (d["問"], d["解き方"]) for d, _ in yoi)
+
+
 def hitotsu(deta, fukasa, timeout):
     """1問。★ モデルの読み込み中(503)なら 待って やり直す。
 
@@ -167,8 +188,12 @@ def hitotsu(deta, fukasa, timeout):
                     "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
         except Exception as e:
             dentaku = "読めず: " + str(e)[:40]
+    system = SYSTEM
+    # 似た手本（2026-09-23）: KERNEL_TEHON=1 で kernel/tehon.jsonl から 2字の重なりが大きい手本を 2つ system に添える。
+    if os.environ.get("KERNEL_TEHON") == "1":
+        system += "\n\n" + _tehon(deta["問"])
     for kai in range(6):
-        r = KF.kiku(deta["問"], system=SYSTEM, fukasa=fukasa, timeout=timeout,
+        r = KF.kiku(deta["問"], system=system, fukasa=fukasa, timeout=timeout,
                     kotae_cap=KOTAE_CAP)
         e = r.get("error") or ""
         if not ("503" in e or "Loading model" in e or "つながりません" in e):

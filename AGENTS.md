@@ -8,7 +8,7 @@
 1. **held-out で測って、良くなければ入れない**。物差しを見ながら設定を選ばない（＝物差しに合わせるだけになる）。
 2. Codex は main に push しない・kernel/ を書き換えない。同じファイルを同時に触らない。
 3. 鍵は `~/.groq.env`・`~/.nvidia.env`・キーチェーン（台本が読む。値を出さない）。
-4. 頭脳（llama-server）は 1本だけ・8080。GCP の VM は自動消滅で作る。GUI は最後の手段。
+4. 頭脳（llama-server）は 1本だけ・8080。**裏の処理は `dougu/ura.sh` で一覧**。置き換えたら古い方をその場で止める。報告の前に必ず見る（本人 9/23: 隠れた処理を残さない）。GCP の VM は自動消滅で作る。GUI は最後の手段。
 
 ## 頭脳の土台
 Qwen3-30B-A3B Q2_K（unsloth・11.3GB）、`-t 6 -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple --spec-ngram-simple-size-m 16`。7段 深さ0 92/128。深さ1・2 は下がる＝深さ0 固定。
