@@ -53,6 +53,8 @@ git clone -q --filter=blob:none https://github.com/ggml-org/llama.cpp && git -C 
 HF_HUB_ENABLE_HF_TRANSFER=1 python3 -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-30B-A3B', local_dir='/root/base', allow_patterns=['*.json','*.safetensors','*.txt','*.jinja'], max_workers=8)"
 echo "落とした $(date +%T)"; du -sh /root/base; status manabu "教材 $(wc -l < lora/lora_data.jsonl)件 ${EP}エポック"
 cd /root/lora
+# 9/23: 読み込み中に「9.8GB 使用・12GB 予約だけ」で OOM（断片化）→ 伸びる区画にする
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 python3 -u manabu.py --base /root/base --data lora_data.jsonl --out /root/lora_out --epochs "$EP" --gcs "$B/lora_out" > /root/manabu.log 2>&1 || { tail -30 /root/manabu.log; status shippai "manabu"; exit 1; }
 tail -8 /root/manabu.log; test -s /root/lora_out/adapter_model.safetensors
 python3 /root/llama.cpp/convert_lora_to_gguf.py /root/lora_out --base /root/base --outfile "/root/$TAG.gguf" --outtype f16 > /root/conv.log 2>&1 || { tail -15 /root/conv.log; status shippai "convert"; exit 1; }

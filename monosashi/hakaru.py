@@ -175,7 +175,7 @@ def hitotsu(deta, fukasa, timeout):
     dentaku = None
     # 数え上げ電卓（2026-09-23）: KERNEL_KAZOERU=1 で「何通り」の問いだけ 式を書かせて こちらで数える。
     #   式が読めなかったら いつもどおり解かせる（電卓の失敗で落とさない）。
-    if os.environ.get("KERNEL_KAZOERU") == "1" and "何通り" in deta["問"]:
+    if os.environ.get("KERNEL_KAZOERU") == "1" and "何通り" in deta["問"] and not re.search(r"並べ|並び|隣|列に|一列|席", deta["問"]):
         import kazoeru
         r = KF.kiku(deta["問"], system=kazoeru.SYSTEM, fukasa=fukasa, timeout=timeout, kotae_cap=300)
         try:
