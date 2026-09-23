@@ -25,6 +25,7 @@ M="$W/$MF"
 [ "${KERNEL_JIKAN:-}" = 1 ] && NAFUDA="${NAFUDA}_j"
 [ "${KERNEL_NARABE:-}" = 1 ] && NAFUDA="${NAFUDA}_n"
 [ "${KERNEL_ERABI:-}" = 1 ] && NAFUDA="${NAFUDA}_s"
+LORA=""; [ "${KERNEL_LORA:-}" = 1 ] && { NAFUDA="${NAFUDA}_l"; LORA="--lora $K/lora/tehon-lora.gguf"; }
 DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 QF="$K/monosashi/mondai_${DAN}dan.jsonl"; [ -f "$QF" ] || QF="$K/monosashi/mondai_${DAN}.jsonl"   # 公式の物差し（gsm8k 等）
 [ -n "${BUBUN:-}" ] && NAFUDA="${NAFUDA}_b${BUBUN/\//of}"
@@ -65,7 +66,7 @@ log "速さ測った"
 #    HENKA_FILE があれば 1行ずつ「名前|投機・KV の指定」を差し替えて同じ問題を測り、表にする（起動指定の比べ）
 tateru(){ # $1=差し替える指定
   "$B/llama-server" -m "$M" -t "$NP" -ngl 0 -dev none -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off \
-    --reasoning-format none $1 --host 127.0.0.1 --port 8080 > "$W/llama.log" 2>&1 &
+    --reasoning-format none $LORA $1 --host 127.0.0.1 --port 8080 > "$W/llama.log" 2>&1 &
   P=$!
   OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
     curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
