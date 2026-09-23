@@ -173,49 +173,20 @@ def hitotsu(deta, fukasa, timeout):
     """
     t0 = time.time()
     dentaku = None
-    # 数え上げ電卓（2026-09-23）: KERNEL_KAZOERU=1 で「何通り」の問いだけ 式を書かせて こちらで数える。
-    #   式が読めなかったら いつもどおり解かせる（電卓の失敗で落とさない）。
-    if os.environ.get("KERNEL_KAZOERU") == "1" and "何通り" in deta["問"] and not re.search(r"並べ|並び|隣|列に|一列|席", deta["問"]):
+    # 道具（2026-09-23）: 型に合う道具を kazoeru.erabu が 1つ選び、ローカル LLM は書き出すだけ・計算は Python。
+    #   本番の kernel/kikai.py も 同じ kazoeru.toku を呼ぶ（測った物と本番を ずらさない）。
+    tsukau = tuple(n for n, e in (("kazoeru", "KERNEL_KAZOERU"), ("jikan", "KERNEL_JIKAN"), ("narabe", "KERNEL_NARABE"))
+                   if os.environ.get(e) == "1")
+    if tsukau:
         import kazoeru
-        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM, fukasa=fukasa, timeout=timeout, kotae_cap=300)
-        try:
-            n = kazoeru.kazoeru(r.get("text") or "")
-            if n == 0:   # 「何通り」で 0 は まず式の書き違い（関係ない数を条件にした等）→ 普通に解かせる
-                raise ValueError("0通り")
-            out = (r.get("text") or "").strip() + "\n答え: %d" % n
+        v, na, kaki = kazoeru.toku(deta["問"], lambda q, sy, cap: KF.kiku(q, system=sy, fukasa=fukasa, timeout=timeout,
+                                                                          kotae_cap=cap).get("text"), tsukau)
+        if v is not None:
+            out = kaki.strip() + "\n答え: %s" % v
             return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
                     "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
-                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
-        except Exception as e:
-            dentaku = "読めず: " + str(e)[:40]
-    # 並べ方・順位の電卓（2026-09-23）: KERNEL_NARABE=1 で「並べ方の数」「何位・何番目」の問いだけ 条件を書かせて 全部の並びを試す。
-    if (os.environ.get("KERNEL_NARABE") == "1" and re.search(r"並|隣|列|席|順位|順番", deta["問"])
-            and re.search(r"何通り|何位|何番目", deta["問"])):
-        import kazoeru
-        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM_NARABE, fukasa=fukasa, timeout=timeout, kotae_cap=300)
-        try:
-            v = kazoeru.narabe(r.get("text") or "")
-            if v == 0:
-                raise ValueError("0通り")
-            out = (r.get("text") or "").strip() + "\n答え: %s" % v
-            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
-                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
-                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "並べ"}
-        except Exception as e:
-            dentaku = "並べが読めず: " + str(e)[:40]
-    # 時刻電卓（2026-09-23）: KERNEL_JIKAN=1 で「時刻が 2つ以上 ＋ 何分/何時間」の問いだけ 書き出させて こちらで引き算。
-    if (os.environ.get("KERNEL_JIKAN") == "1" and len(re.findall(r"\d+時(?:\d+分)?", deta["問"])) >= 2
-            and re.search(r"何分|何時間", deta["問"])):
-        import kazoeru
-        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM_JIKAN, fukasa=fukasa, timeout=timeout, kotae_cap=200)
-        try:
-            v = kazoeru.jikan(r.get("text") or "")
-            out = (r.get("text") or "").strip() + "\n答え: %s" % v
-            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
-                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
-                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "時刻"}
-        except Exception as e:
-            dentaku = "時刻が読めず: " + str(e)[:40]
+                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": na}
+        dentaku = na
     # 計算の電卓（2026-09-23）: KERNEL_KEISAN=1 で「何通り」以外も 式を書かせて こちらで計算する。読めなければ いつもどおり。
     if os.environ.get("KERNEL_KEISAN") == "1" and "何通り" not in deta["問"]:
         import kazoeru

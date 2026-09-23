@@ -180,6 +180,42 @@ def narabe(text):
     return ichi.pop()
 
 
+# ── 道具えらび（物差し monosashi/hakaru.py と 本番 kernel/kikai.py が 同じこれを呼ぶ）──────────
+# 型を見て 道具を 1つだけ選ぶ。合わない型に道具を使うと崩れる（9/23 自作テストB: 全部を式にすると 103→64）。
+# 採用は 測って決める: 環境変数 KERNEL_KAZOERU / KERNEL_JIKAN / KERNEL_NARABE（本番の既定は kernel/kikai.py 側で決める）。
+def erabu(toi, tsukau=("kazoeru", "jikan", "narabe")):
+    """問いに合う道具の名前を返す。合う物が無ければ None。"""
+    if "narabe" in tsukau and re.search(r"並|隣|列|席|順位|順番", toi) and re.search(r"何通り|何位|何番目", toi):
+        return "narabe"
+    if "jikan" in tsukau and len(re.findall(r"\d+時(?:\d+分)?", toi)) >= 2 and re.search(r"何分|何時間", toi):
+        return "jikan"
+    if "kazoeru" in tsukau and "何通り" in toi and not re.search(r"並べ|並び|隣|列に|一列|席", toi):
+        return "kazoeru"
+    return None
+
+
+DOUGU = {"kazoeru": (lambda: SYSTEM, lambda t: kazoeru(t), 300),
+         "jikan": (lambda: SYSTEM_JIKAN, lambda t: jikan(t), 200),
+         "narabe": (lambda: SYSTEM_NARABE, lambda t: narabe(t), 300)}
+
+
+def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe")):
+    """道具で解く。kiku(toi, system, kotae_cap) → ローカル LLM の出力文字列。
+    戻りは (答え, 道具名, 書き出し) か、道具が合わない／読めないとき (None, 理由, 書き出し)。"""
+    na = erabu(toi, tsukau)
+    if not na:
+        return None, None, ""
+    sys_, f, cap = DOUGU[na]
+    kaki = kiku(toi, sys_(), cap) or ""
+    try:
+        v = f(kaki)
+        if na in ("kazoeru", "narabe") and v == 0:
+            raise ValueError("0通り")     # 「何通り」で 0 は まず書き違い
+        return v, na, kaki
+    except Exception as e:
+        return None, "%s が読めず: %s" % (na, str(e)[:40]), kaki
+
+
 if __name__ == "__main__":
     print(narabe("並べる: A B C D E\n条件: (A-B)*(A-B) != 1\n問う: 数"))   # 72
     print(narabe("並べる: A B C\n条件: A < B\n条件: C == 1\n問う: B"))     # 3
