@@ -142,13 +142,13 @@ def jikan(text, nen=2026):
 
 
 SYSTEM_NARABE = ("あなたは並べ方・順位の問題を書き出す係です。数えたり解いたりしません。出力は次の行だけ（説明なし）:\n"
-                 "並べる: <並べる物の名前を空白区切り。問題文の呼び名をそのまま（さん・くん等は付けない）。全員書く>\n"
+                 "並べる: <並べる物の名前を空白区切り。問題文の呼び名をそのまま（さん・くん等は付けない）。名前の無い残りは まとめて 他<個数>。合計が並べる数になること>\n"
                  "条件: <式>   ← 1行に1つ。各名前は その物の位置（1番目=1）を表す整数\n"
                  "問う: 数   ← 並べ方の数を答えるとき\n問う: <名前>   ← その物の位置（何番目）を答えるとき\n"
                  "式に使えるのは 名前・整数・+ - * // %・== != < <= > >=・and or not・かっこ だけ。\n"
                  "隣り合う: (青木-井上)*(青木-井上) == 1 ／ 隣り合わない: (青木-井上)*(青木-井上) != 1 ／ 青木が井上より前: 青木 < 井上 ／ 両端: 青木 == 1 or 青木 == 5\n"
-                 "例: 赤井・石田・宇野・遠藤の4人を1列に並べる。赤井さんと石田さんは隣り合わない。宇野さんは先頭ではない。並べ方は何通り →\n"
-                 "並べる: 赤井 石田 宇野 遠藤\n条件: (赤井-石田)*(赤井-石田) != 1\n条件: 宇野 != 1\n問う: 数")
+                 "例: 6人を1列に並べる。赤井さんと石田さんは隣り合わない。宇野さんは先頭ではない。並べ方は何通り →\n"
+                 "並べる: 赤井 石田 宇野 他3\n条件: (赤井-石田)*(赤井-石田) != 1\n条件: 宇野 != 1\n問う: 数")
 
 
 def narabe(text):
@@ -156,8 +156,14 @@ def narabe(text):
     m = re.search(r"^\s*並べる\s*[:：]\s*(.+)$", text or "", re.M)
     if not m:
         raise ValueError("並べるが無い")
-    names = m.group(1).replace("、", " ").replace(",", " ").split()
-    if not (2 <= len(names) <= 9) or len(set(names)) != len(names) or not all(re.match(r"^[^\W\d]\w{0,7}$", x) for x in names):
+    names = []
+    for x in m.group(1).replace("、", " ").replace(",", " ").split():
+        h = re.match(r"^(?:他|ほか|その他)(\d+)$", x)
+        if h:
+            names += ["_他%d_%d" % (len(names), i) for i in range(int(h.group(1)))]   # 名前の無い残り（条件には出ない）
+        else:
+            names.append(x)
+    if not (2 <= len(names) <= 10) or len(set(names)) != len(names) or not all(re.match(r"^[^\W\d]\w{0,9}$", x) for x in names):
         raise ValueError("名前がおかしい")
     jouken = []
     for g in re.findall(r"^\s*条件\s*[:：]\s*(.+)$", text, re.M):
