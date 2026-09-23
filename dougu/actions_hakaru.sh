@@ -22,6 +22,7 @@ M="$W/$MF"
 [ "${KERNEL_KAZOERU:-}" = 1 ] && NAFUDA="${NAFUDA}_k"
 [ "${KERNEL_TEHON:-}" = 1 ] && NAFUDA="${NAFUDA}_t"
 [ "${KERNEL_KEISAN:-}" = 1 ] && NAFUDA="${NAFUDA}_c"
+[ "${KERNEL_JIKAN:-}" = 1 ] && NAFUDA="${NAFUDA}_j"
 DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 QF="$K/monosashi/mondai_${DAN}dan.jsonl"; [ -f "$QF" ] || QF="$K/monosashi/mondai_${DAN}.jsonl"   # 公式の物差し（gsm8k 等）
 [ -n "${BUBUN:-}" ] && NAFUDA="${NAFUDA}_b${BUBUN/\//of}"
