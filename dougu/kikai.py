@@ -333,6 +333,23 @@ def m_keisan(slots):
     return "%s = %s" % (shiki, format(v, ",") if isinstance(v, int) else round(v, 6))
 
 
+def m_kazoeru(slots):
+    """数え上げ : 「何通り」をローカル LLM が式に書き、電卓（kazoeru.py）が数える（2026-09-23。7段の数え上げ 9/32→31/32）"""
+    import kazoeru, teachers
+    t = slots.get("_文", "")
+    r = teachers.ask_one("local:main", t, system=kazoeru.SYSTEM, timeout=180, fukasa=0)
+    shiki = (r.get("text") or "").strip()
+    try:
+        n = kazoeru.kazoeru(shiki)
+        if n == 0:          # 「何通り」で 0 は まず式の書き違い
+            raise ValueError("0通り")
+        gyou = [g for g in shiki.splitlines() if g.strip().startswith(("変数", "条件"))]
+        return "%d 通り\n（ローカル LLM が式を書き、電卓が数えました）\n%s" % (n, "\n".join(gyou))
+    except Exception:
+        r2 = teachers.ask_one("local:main", t, timeout=240, fukasa=0)
+        return (r2.get("text") or r2.get("error") or "").strip() + "\n（式が読めなかったので、ふつうに解きました）"
+
+
 def _shortcuts():
     return [l.strip() for l in _M()._run(["shortcuts", "list"], timeout=20).splitlines() if l.strip()]
 
@@ -556,6 +573,7 @@ OPS = {
     "フォルダの大きさ":   (m_folder_size,    False),
     "世界時計":           (m_world_clock,    False),
     "計算":               (m_keisan,         False),
+    "数え上げ":           (m_kazoeru,        False),
     "ショートカット一覧": (m_shortcut_list,  False),
     "ショートカットを実行": (m_shortcut_run, True),
     "音楽":               (m_music,          True),
@@ -574,7 +592,7 @@ OPS = {
 }
 YOMU = {"予定", "リマインダー一覧", "メモを探す", "ファイルを探す", "いまの曲", "天気", "未読メール",
         "大きいファイル", "重いアプリ", "バックアップ", "選んでいるファイル", "IPアドレス",
-        "最近のファイル", "ネットの速さ", "フォルダの大きさ", "世界時計", "計算", "ショートカット一覧"}
+        "最近のファイル", "ネットの速さ", "フォルダの大きさ", "世界時計", "計算", "数え上げ", "ショートカット一覧"}
 KIKEN = {
     "音楽": "外", "タイマー": "外", "画面ロック": "外", "明るさ": "外", "設定を開く": "外", "辞書": "外", "消音": "外",
     "メモを書く": "跡",            # メモが増える（消せるが、勝手に増やさない）
@@ -588,6 +606,7 @@ KIKEN = {
 
 # machine.PATTERNS の **前** に置く（先に当たった方が勝つ）。語は絞って、既存の用件を奪わないように
 PATTERNS_MAE = [
+    (r"何通り|なんとおり", "数え上げ"),
     (r"^[\d０-９\s\+\-\*/×÷x\^\(\)（）\.．,，＋－]+[=＝は？?]*(を計算して|の答え|ください)?[？?。]*$", "計算"),
     (r"(最近|さいきん|昨日|きのう|今週).{0,6}(使った|つかった|開いた|ひらいた|見た|さわった|触った).{0,4}(ファイル|書類|もの)", "最近のファイル"),
     (r"(ネット|回線|wi-?fi|通信).{0,4}(速さ|はやさ|速度|スピード|速い|はやい|遅い|おそい)", "ネットの速さ"),

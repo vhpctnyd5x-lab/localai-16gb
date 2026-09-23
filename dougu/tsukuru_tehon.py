@@ -32,23 +32,21 @@ SYS_A = ("あなたは算数の教科書の著者です。小学校高学年〜�
 SYS_B = "算数の文章題を解きます。短く考え、最後の行に `答え: <数値>` とだけ書いてください。"
 
 
-def groq(p, s):
-    r = subprocess.run([GROQ, "-m", "openai/gpt-oss-120b", "-s", s, p], capture_output=True,
+def groq(p, s, model="openai/gpt-oss-120b"):
+    r = subprocess.run([GROQ, "-m", model, "-s", s, p], capture_output=True,
                        text=True, timeout=180, stdin=subprocess.DEVNULL)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError("groq: " + (r.stderr or "")[:80])
-    return r.stdout
+    return re.sub(r"<think>.*?</think>", "", r.stdout, flags=re.S)
 
 
 def nv(p, s):
-    # super は混むと 503 を返す（2026-09-23）。そのときは NVIDIA の別の先生へ。
-    e = None
-    for m in ("super", "z-ai/glm-5.3", "moonshotai/kimi-k3"):
-        try:
-            return nvidia.ask(p, model=m, system=s, timeout=180, max_tokens=1500)
-        except Exception as x:
-            e = x
-    raise e
+    # NVIDIA は混むと 503 や 読み取り時間切れ（2026-09-23 は 1回 3分×3人 待たされた）。
+    # 90秒で見切り、だめなら Groq の別系統（Qwen3.8-27B）へ。gpt-oss と系統が違うので検品役にもなる。
+    try:
+        return nvidia.ask(p, model="super", system=s, timeout=90, max_tokens=1500)
+    except Exception:
+        return groq(p, s, model="qwen/qwen3.8-27b")
 
 
 def bigram(s):
@@ -96,29 +94,44 @@ def hitotsu(n):
 
 
 def main():
+    # 先生は外なので 並べて待ち時間を重ねる（Mac はほぼ使わない）。KAZU=同時に作る数（既定 6）
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
     aru = sum(1 for _ in open(OUT, encoding="utf-8")) if os.path.exists(OUT) else 0
-    n, dame, renzoku = aru, {}, 0
+    st = {"n": aru, "dame": {}, "renzoku": 0, "k": 0}
+    lock = threading.Lock()
     print(f"すでに {aru} 件。目標 {MOKUHYOU}", flush=True)
-    while n < MOKUHYOU and not os.path.exists(STOP):
-        try:
-            r, why = hitotsu(n + sum(dame.values()))
-            renzoku = 0
-        except Exception as e:
-            r, why = None, "しくじり " + str(e)[:40]
-            renzoku += 1
-            time.sleep(min(600, 20 * renzoku))   # 429 などは待って続ける
-            if renzoku >= 30:
-                print("30回続けて失敗したので止めます", flush=True); break
-        if r:
-            with open(OUT, "a", encoding="utf-8") as w:
-                w.write(json.dumps(r, ensure_ascii=False) + "\n")
-            n += 1
-            if n % 10 == 0:
-                print(time.strftime("%H:%M"), n, "件", {k: v for k, v in dame.items()}, flush=True)
-        else:
-            k = why.split(" ")[0]
-            dame[k] = dame.get(k, 0) + 1
-    print("おわり", n, dame, flush=True)
+
+    def owari():
+        return st["n"] >= MOKUHYOU or os.path.exists(STOP) or st["renzoku"] >= 30
+
+    def ninau(_):
+        while not owari():
+            with lock:
+                st["k"] += 1; k = st["k"]
+            try:
+                r, why = hitotsu(k)
+                st["renzoku"] = 0
+            except Exception as e:
+                r, why = None, "しくじり " + str(e)[:40]
+                with lock:
+                    st["renzoku"] += 1; w = min(600, 20 * st["renzoku"])
+                time.sleep(w)   # 429・503 などは待って続ける
+            with lock:
+                if r:
+                    with open(OUT, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    st["n"] += 1
+                    if st["n"] % 10 == 0:
+                        print(time.strftime("%H:%M"), st["n"], "件", st["dame"], flush=True)
+                else:
+                    key = why.split(" ")[0]
+                    st["dame"][key] = st["dame"].get(key, 0) + 1
+
+    kazu_ = int(os.environ.get("KAZU", "6"))
+    with ThreadPoolExecutor(kazu_) as ex:
+        list(ex.map(ninau, range(kazu_)))
+    print("おわり", st["n"], st["dame"], "（30回続けて失敗）" if st["renzoku"] >= 30 else "", flush=True)
 
 
 if __name__ == "__main__":

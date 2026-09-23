@@ -151,6 +151,22 @@ def hitotsu(deta, fukasa, timeout):
     これは「数字が嘘になる」いちばん危ない形なので、ここで吸収する。
     """
     t0 = time.time()
+    dentaku = None
+    # 数え上げ電卓（2026-09-23）: KERNEL_KAZOERU=1 で「何通り」の問いだけ 式を書かせて こちらで数える。
+    #   式が読めなかったら いつもどおり解かせる（電卓の失敗で落とさない）。
+    if os.environ.get("KERNEL_KAZOERU") == "1" and "何通り" in deta["問"]:
+        import kazoeru
+        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM, fukasa=fukasa, timeout=timeout, kotae_cap=300)
+        try:
+            n = kazoeru.kazoeru(r.get("text") or "")
+            if n == 0:   # 「何通り」で 0 は まず式の書き違い（関係ない数を条件にした等）→ 普通に解かせる
+                raise ValueError("0通り")
+            out = (r.get("text") or "").strip() + "\n答え: %d" % n
+            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
+                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
+                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
+        except Exception as e:
+            dentaku = "読めず: " + str(e)[:40]
     for kai in range(6):
         r = KF.kiku(deta["問"], system=SYSTEM, fukasa=fukasa, timeout=timeout,
                     kotae_cap=KOTAE_CAP)
@@ -163,7 +179,7 @@ def hitotsu(deta, fukasa, timeout):
             "問": deta["問"], "答": deta["答"], "出力": out[:400],
             "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
             "考えた字数": r.get("考えた字数", 0), "回数": r.get("回数", 0),
-            "しくじり": r.get("error")}
+            "しくじり": r.get("error"), "電卓": dentaku}
 
 
 def main():
