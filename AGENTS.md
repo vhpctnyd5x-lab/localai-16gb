@@ -15,9 +15,10 @@ Qwen3-30B-A3B Q2_K（unsloth・11.3GB）、`-t 6 -ngl 0 -dev none -c 8192 -np 1 
 
 ## 物差し（2026-09-22 現在）
 7段 128問（`monosashi/mondai_7dan.jsonl`）／直感役は 手作り36問・頭脳作り88文・**独立280文**（`kernel/chokkan_monosashi2_ok.jsonl`、別の先生が作り別の先生が検品）＝ `dougu/hakaru_chokkan2.py`。**小さい物差しの数字は甘い**（88文 90% ↔ 独立280文 70%）。
+**目標＝GPT-6 Luna（max・道具なし）の 7段 124/128**（2026-09-23、`dougu/kekka/7dan_gpt-6-luna_max.tsv`）。カーネルは 90/128。差は 場合分け_切手 9↔28・同文脈_在庫 20↔32 に集中（わな 32↔32・後戻り 29↔32）。
 
 ## 二人で回す（Claude Code ＋ Codex）
-作る → 測る → Codex 審査 → 直す → 測る。`dougu/shinsa.sh <名> "<頼み>"`（terra・max・読み取り専用、約6分）。**Codex は repo を読めないことがある**ので、見せたいソースは頼み文に貼る。指摘は資料（測って採用）。
+作る → 測る → Codex 審査 → 直す → 測る。`dougu/shinsa.sh <名> "<頼み>"`（gpt-6-luna・max・読み取り専用、約6分）。**Codex は repo を読めないことがある**ので、見せたいソースは頼み文に貼る。指摘は資料（測って採用）。
 
 ## 外の計算資源
 | どこ | 使い方 | 実測 |
