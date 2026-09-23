@@ -188,6 +188,19 @@ def hitotsu(deta, fukasa, timeout):
                     "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
         except Exception as e:
             dentaku = "読めず: " + str(e)[:40]
+    # 時刻電卓（2026-09-23）: KERNEL_JIKAN=1 で「時刻が 2つ以上 ＋ 何分/何時間」の問いだけ 書き出させて こちらで引き算。
+    if (os.environ.get("KERNEL_JIKAN") == "1" and len(re.findall(r"\d+時(?:\d+分)?", deta["問"])) >= 2
+            and re.search(r"何分|何時間", deta["問"])):
+        import kazoeru
+        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM_JIKAN, fukasa=fukasa, timeout=timeout, kotae_cap=200)
+        try:
+            v = kazoeru.jikan(r.get("text") or "")
+            out = (r.get("text") or "").strip() + "\n答え: %s" % v
+            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
+                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
+                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "時刻"}
+        except Exception as e:
+            dentaku = "時刻が読めず: " + str(e)[:40]
     # 計算の電卓（2026-09-23）: KERNEL_KEISAN=1 で「何通り」以外も 式を書かせて こちらで計算する。読めなければ いつもどおり。
     if os.environ.get("KERNEL_KEISAN") == "1" and "何通り" not in deta["問"]:
         import kazoeru
@@ -231,9 +244,13 @@ def main():
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--nafuda", default="")            # 記録に残す名札（LoRAあり等）
     ap.add_argument("--kagiri", type=int, default=0)   # 試すときに件数を絞る
+    ap.add_argument("--bubun", default="")             # "i/n": n 等分の i 番目だけ（Actions で並べて測る）
     a = ap.parse_args()
 
     mondai = [json.loads(l) for l in open(a.mondai, encoding="utf-8") if l.strip()]
+    if a.bubun:
+        i, n = map(int, a.bubun.split("/"))
+        mondai = mondai[i::n]
     if a.kagiri:
         mondai = mondai[:a.kagiri]
     out = a.out or os.path.join(HERE, "kekka", "f%d%s.json" % (

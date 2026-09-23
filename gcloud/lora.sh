@@ -4,7 +4,8 @@
 #   作り方は 9/7 の LoRA（型C 12.5→75%）と同じ: 元の Qwen3-30B-A3B で attention(q/k/v/o) だけを QLoRA → 手元の Q2_K にそのまま乗る。
 #   使い方: gcloud/lora.sh [エポック=2] [時間=6]   → VM（g2-standard-16・自動消滅）を借り、焼いて GCS に置き、手元 models/ に落として VM を消す。
 #           gcloud/lora.sh --toru   → GCS の出来上がりを落とすだけ
-#   費用の目安: 約 $1.15/時 × 2〜4時間。落とし穴は 記憶 moe-qlora-jirai（transformers 4.57.1 固定 等）。
+#   速さ: 1歩（8件）130秒 → 1007件で 1エポック 4.6時間（9/23 実測）。表示の loss は 8回分の合計（÷8 が本当の値。15.6→1.95）。
+#   費用の目安: 約 $1.15/時 × 5時間。落とし穴は 記憶 moe-qlora-jirai（transformers 4.57.1 固定 等）。
 set -Eeuo pipefail
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"; export LANG=en_US.UTF-8
 P=project-33e6be3b-57e3-4568-b34; Z=us-central1-a; NAME=lora1; B=gs://$P-gguf; TAG=tehon-lora

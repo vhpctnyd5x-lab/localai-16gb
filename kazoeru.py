@@ -111,7 +111,38 @@ def keisan(text):
     return int(v) if v.denominator == 1 else float(round(v, 6))
 
 
+SYSTEM_JIKAN = ("あなたは時刻の問題を書き出す係です。計算はしません。出力は次の行だけ（説明なし）:\n"
+                "始め: <月>/<日> <時>:<分>\n終わり: <月>/<日> <時>:<分>\n"
+                "引く: <分>   ← 途中で止めた・休んだ分。無ければ 0。何回かあれば足した数\n"
+                "足す: <分>   ← 足す分。無ければ 0\n単位: 分 か 時間\n"
+                "日付が無い問題は 始めと終わりを同じ日付 1/1 にし、終わりが翌日なら 1/2 にする。\n"
+                "例: 9月8日21時35分に始め、9月10日0時20分に終えた。途中15分止めた。何分か →\n"
+                "始め: 9/8 21:35\n終わり: 9/10 0:20\n引く: 15\n足す: 0\n単位: 分")
+
+
+def jikan(text, nen=2026):
+    """時刻の書き出し → 分（または時間）。読めなければ ValueError。うるう年の 2/29 は扱わない。"""
+    import datetime as dt
+    def toru(k):
+        m = re.search(r"^\s*%s\s*[:：]\s*(\d{1,2})\s*/\s*(\d{1,2})\s+(\d{1,2})\s*[:：]\s*(\d{1,2})" % k, text or "", re.M)
+        if not m:
+            raise ValueError(k + "が無い")
+        mo, d, h, mi = map(int, m.groups())
+        return dt.datetime(nen, mo, d) + dt.timedelta(hours=h, minutes=mi)   # 24:00 も通す
+    def kazu(k):
+        m = re.search(r"^\s*%s\s*[:：]\s*(\d+)" % k, text or "", re.M)
+        return int(m.group(1)) if m else 0
+    a, b = toru("始め"), toru("終わり")
+    if b < a:
+        raise ValueError("終わりが始めより前")
+    fun = int((b - a).total_seconds() // 60) - kazu("引く") + kazu("足す")
+    if re.search(r"^\s*単位\s*[:：]\s*時間", text or "", re.M):
+        return fun // 60 if fun % 60 == 0 else round(fun / 60, 4)
+    return fun
+
+
 if __name__ == "__main__":
+    print(jikan("始め: 9/8 21:35\n終わり: 9/10 0:20\n引く: 15\n足す: 0\n単位: 分"))   # 1590
     print(keisan("使う: …\n使わない: 23個\n式: 121 + 9*7 - 116"))            # 68
     print(keisan("式: (8700 - 8700*25/100) * 108/100 = 7047"))              # 7047
     for bad in ("式: __import__('os')", "式: 2**99999", "式: 1 # x"):

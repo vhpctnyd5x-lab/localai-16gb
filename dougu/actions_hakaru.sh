@@ -23,12 +23,14 @@ M="$W/$MF"
 [ "${KERNEL_TEHON:-}" = 1 ] && NAFUDA="${NAFUDA}_t"
 [ "${KERNEL_KEISAN:-}" = 1 ] && NAFUDA="${NAFUDA}_c"
 DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
+QF="$K/monosashi/mondai_${DAN}dan.jsonl"; [ -f "$QF" ] || QF="$K/monosashi/mondai_${DAN}.jsonl"   # 公式の物差し（gsm8k 等）
+[ -n "${BUBUN:-}" ] && NAFUDA="${NAFUDA}_b${BUBUN/\//of}"
 NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 NP=$(nproc); P=""; DL=""
 trap 'kill $P $DL 2>/dev/null || true' EXIT
 { echo "# $NAFUDA  $(date -u +%FT%TZ)"; echo '```'
-  echo "llama.cpp $COMMIT / koukai $(git rev-parse --short HEAD) / 問題 $(sha256sum monosashi/mondai_${DAN:-7}dan.jsonl | cut -c1-12) / 頭脳 ${HF_SHA:0:12}"
+  echo "llama.cpp $COMMIT / koukai $(git rev-parse --short HEAD) / 問題 $(sha256sum "$QF" | cut -c1-12) / 頭脳 ${HF_SHA:0:12}"
   echo "runner $(grep -m1 VERSION= /etc/os-release | cut -d= -f2) $(gcc --version | head -1)"
   echo "cores $NP"; grep -m1 -i 'model name' /proc/cpuinfo || lscpu | grep -i 'model name\|vendor' | head -2
   free -g | head -2; df -h / | tail -1; echo '```'; } > "$OUT"
@@ -67,7 +69,7 @@ tateru(){ # $1=差し替える指定
   [ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない: $1" >> "$OUT"; exit 1; }
 }
 hakaru(){ # $1=名札の付け足し
-  python3 -u "$K/monosashi/hakaru.py" --mondai "$K/monosashi/mondai_${DAN}dan.jsonl" --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
+  python3 -u "$K/monosashi/hakaru.py" --mondai "$QF" ${BUBUN:+--bubun $BUBUN} --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
     --nafuda "actions-$NAFUDA$1" --out "$K/kekka_actions/7dan_${NAFUDA}$1.json" > "$W/7dan$1.log" 2>&1 \
     || { tail -20 "$W/7dan$1.log" | tee -a "$OUT"; echo '```' >> "$OUT"; exit 1; }
 }
