@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """解き方の手本（教材）を 外の無料の先生に作らせ続ける。Mac の CPU・メモリはほぼ使わない。
-1件 = 先生A（NVIDIA か Groq を交互）が「問題＋手順書どおりの解き方＋答え」を書く
-      → 先生B（もう一方）が 問題だけを見て別に解く → 答えが一致したものだけ残す。
+1件 = 先生A（5人の組から毎回選ぶ）が「問題＋手順書どおりの解き方＋答え」を書く
+      → 先生B（Aと別の人）が 問題だけを見て別に解く → 答えが一致したものだけ残す。
 7段 128問（物差し）と 2字の重なりが 0.45 以上のものは捨てる（物差しを汚さない）。
 → kernel/tehon.jsonl に 1件ずつ追記（途中で止めても続きから）。止めるときは kernel/tehon.stop を置く。
 使い方: python3 dougu/tsukuru_tehon.py [目標件数=2000]
@@ -32,21 +32,35 @@ SYS_A = ("あなたは算数の教科書の著者です。小学校高学年〜�
 SYS_B = "算数の文章題を解きます。短く考え、最後の行に `答え: <数値>` とだけ書いてください。"
 
 
-def groq(p, s, model="openai/gpt-oss-120b"):
+# 先生の組（2026-09-23）: 1人に頼ると 上限（Groq の 1日の枠）や混雑（NVIDIA の 503・時間切れ）で全部止まった。
+# 作る先生と確かめる先生を 毎回 別々に選び、断られた先生は 10分休ませる。
+SENSEI = ["nv:super", "groq:openai/gpt-oss-120b", "groq:qwen/qwen3.8-27b", "nv:z-ai/glm-5.3", "nv:moonshotai/kimi-k3"]
+YASUMI = {}
+
+
+def _groq(p, s, model):
     r = subprocess.run([GROQ, "-m", model, "-s", s, p], capture_output=True,
                        text=True, timeout=180, stdin=subprocess.DEVNULL)
     if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError("groq: " + (r.stderr or "")[:80])
-    return re.sub(r"<think>.*?</think>", "", r.stdout, flags=re.S)
+        raise RuntimeError("groq: " + (r.stderr or r.stdout or "")[:80])
+    return r.stdout
 
 
-def nv(p, s):
-    # NVIDIA は混むと 503 や 読み取り時間切れ（2026-09-23 は 1回 3分×3人 待たされた）。
-    # 90秒で見切り、だめなら Groq の別系統（Qwen3.8-27B）へ。gpt-oss と系統が違うので検品役にもなる。
+def kiku(sensei, p, s):
+    kind, model = sensei.split(":", 1)
     try:
-        return nvidia.ask(p, model="super", system=s, timeout=90, max_tokens=1500)
+        t = _groq(p, s, model) if kind == "groq" else nvidia.ask(p, model=model, system=s, timeout=120, max_tokens=4000)
     except Exception:
-        return groq(p, s, model="qwen/qwen3.8-27b")
+        YASUMI[sensei] = time.time() + 600
+        raise
+    return re.sub(r"<think>.*?</think>", "", t, flags=re.S)
+
+
+def futari():
+    ima = [x for x in SENSEI if YASUMI.get(x, 0) < time.time()]
+    if len(ima) < 2:
+        raise RuntimeError("手の空いた先生が 2人いない")
+    return random.sample(ima, 2)
 
 
 def bigram(s):
@@ -75,22 +89,27 @@ def kazu(t):
 
 def hitotsu(n):
     shurui, wana = random.choice(SHURUI), random.choice(WANA)
-    tsukuru, toku = (nv, groq) if n % 2 == 0 else (groq, nv)
+    tsukuru, toku = futari()
     p = f"種類: {shurui}\n仕掛け: {wana}\n答えは整数1つになるように。新しい場面・数値で。"
-    t = tsukuru(p, SYS_A)
+    t = kiku(tsukuru, p, SYS_A)
     m = re.search(r"\{.*\}", t, re.S)
-    d = json.loads(m.group(0))
+    if not m:
+        return None, "形が違う"
+    try:
+        d = json.loads(m.group(0))
+    except ValueError:
+        return None, "形が違う"
     q, kaiketsu = d["問"].strip(), d["解き方"].strip()
     a = kazu("答え: " + str(d["答"]))
     if a is None or kazu(kaiketsu) != a:
         return None, "自分の答えが合わない"
     if chikai(q):
         return None, "物差しに近い"
-    b = kazu(toku(q, SYS_B))
+    b = kazu(kiku(toku, q, SYS_B))
     if b != a:
         return None, f"検品で不一致 {a}≠{b}"
     return {"種類": shurui, "仕掛け": wana, "問": q, "解き方": kaiketsu, "答": str(a),
-            "作": tsukuru.__name__, "検": toku.__name__}, "ok"
+            "作": tsukuru, "検": toku}, "ok"
 
 
 def main():

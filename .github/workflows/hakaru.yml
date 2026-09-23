@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に
+    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり
 permissions:
   contents: write
 jobs:
@@ -26,6 +26,7 @@ jobs:
         env:
           KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || (startsWith(github.ref_name, 'hakaru-henka') && '16' || '3')) }}
           HENKA_FILE: ${{ startsWith(github.ref_name, 'hakaru-henka') && 'dougu/actions_henka.txt' || '' }}
+          KERNEL_KAZOERU: ${{ contains(github.ref_name, '-k') && '1' || '' }}
           ATAMA: ${{ contains(github.ref_name, '-m2507') && '2507' || '' }}
           FUKASA: ${{ endsWith(github.ref_name, '-f2') && '2' || (endsWith(github.ref_name, '-f1') && '1' || '0') }}
         timeout-minutes: 340
