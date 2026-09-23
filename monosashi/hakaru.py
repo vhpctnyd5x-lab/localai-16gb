@@ -175,7 +175,7 @@ def hitotsu(deta, fukasa, timeout):
     dentaku = None
     # 道具（2026-09-23）: 型に合う道具を kazoeru.erabu が 1つ選び、ローカル LLM は書き出すだけ・計算は Python。
     #   本番の kernel/kikai.py も 同じ kazoeru.toku を呼ぶ（測った物と本番を ずらさない）。
-    tsukau = tuple(n for n, e in (("kazoeru", "KERNEL_KAZOERU"), ("jikan", "KERNEL_JIKAN"), ("narabe", "KERNEL_NARABE"))
+    tsukau = tuple(n for n, e in (("kazoeru", "KERNEL_KAZOERU"), ("jikan", "KERNEL_JIKAN"), ("narabe", "KERNEL_NARABE"), ("erabi", "KERNEL_ERABI"))
                    if os.environ.get(e) == "1")
     if tsukau:
         import kazoeru

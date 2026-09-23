@@ -180,26 +180,77 @@ def narabe(text):
     return ichi.pop()
 
 
+SYSTEM_ERABI = ("あなたは選び方の問題を書き出す係です。数えません。出力は次の行だけ（説明なし）:\n"
+                "候補: <名前が出てくる物を空白区切り。名前の無い残りは まとめて 他<個数>>\n"
+                "選ぶ: <選ぶ個数>\n"
+                "条件: <式>   ← 1行に1つ。各名前は 選べば 1・選ばなければ 0\n"
+                "式に使えるのは 名前・整数・+ - * // %・== != < <= > >=・and or not・かっこ だけ。\n"
+                "必ず選ぶ: チーズ == 1 ／ 同時に選ばない: 健 + 美咲 <= 1 ／ 少なくとも1つ: ミント + バジル >= 1 ／ どちらか一方だけ: ミント + バジル == 1\n"
+                "例: 8種類の具から3種類を選ぶ。チーズは必ず選び、ハムとサラミは同時に選ばない →\n"
+                "候補: チーズ ハム サラミ 他5\n選ぶ: 3\n条件: チーズ == 1\n条件: ハム + サラミ <= 1")
+
+
+def erabi(text):
+    """候補から k 個を選ぶ組み合わせを全部試し、条件を満たす数を返す。"""
+    m = re.search(r"^\s*候補\s*[:：]\s*(.+)$", text or "", re.M)
+    k = re.search(r"^\s*選ぶ\s*[:：]\s*(\d+)", text or "", re.M)
+    if not m or not k:
+        raise ValueError("候補か選ぶが無い")
+    names, hoka = [], 0
+    for x in m.group(1).replace("、", " ").replace(",", " ").split():
+        h = re.match(r"^(?:他|ほか|その他)(\d+)$", x)
+        if h:
+            hoka += int(h.group(1))
+        elif re.match(r"^[^\W\d]\w{0,9}$", x) and x not in names:
+            names.append(x)
+        else:
+            raise ValueError("名前がおかしい: " + x)
+    n, k = len(names) + hoka, int(k.group(1))
+    if not (1 <= k <= n <= 30):
+        raise ValueError("数がおかしい")
+    from math import comb
+    if comb(n, k) > GENKAI:
+        raise ValueError("大きすぎる")
+    jouken = []
+    for g in re.findall(r"^\s*条件\s*[:：]\s*(.+)$", text, re.M):
+        c, src = _anzen(g.strip())
+        for nm in c.co_names:
+            if nm not in names:
+                raise ValueError("知らない名前: " + nm)
+        jouken.append(src)
+    f = eval("lambda %s: %s" % (",".join(names) or "_", " and ".join("(%s)" % j for j in jouken) or "True"), {"__builtins__": {}})
+    kosu = 0
+    for sel in itertools.combinations(range(n), k):
+        s_ = set(sel)
+        if f(*[1 if i in s_ else 0 for i in range(len(names))] if names else [0]):
+            kosu += 1
+    return kosu
+
+
 # ── 道具えらび（物差し monosashi/hakaru.py と 本番 kernel/kikai.py が 同じこれを呼ぶ）──────────
 # 型を見て 道具を 1つだけ選ぶ。合わない型に道具を使うと崩れる（9/23 自作テストB: 全部を式にすると 103→64）。
 # 採用は 測って決める: 環境変数 KERNEL_KAZOERU / KERNEL_JIKAN / KERNEL_NARABE（本番の既定は kernel/kikai.py 側で決める）。
-def erabu(toi, tsukau=("kazoeru", "jikan", "narabe")):
+def erabu(toi, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
     """問いに合う道具の名前を返す。合う物が無ければ None。"""
+    if "erabi" in tsukau and re.search(r"選", toi) and re.search(r"何通り", toi) and not re.search(r"並べ|並び|一列|順に並", toi):
+        return "erabi"          # 「n 個から k 個を選ぶ」（順番は関係ない）
     if "narabe" in tsukau and re.search(r"並|隣|列|席|順位|順番", toi) and re.search(r"何通り|何位|何番目", toi):
         return "narabe"
-    if "jikan" in tsukau and len(re.findall(r"\d+時(?:\d+分)?", toi)) >= 2 and re.search(r"何分|何時間", toi):
+    # 時刻は「9時20分」。「2時間15分」（長さ）は時刻ではない（9/23 自作テストB の単位問題で取り違えた）
+    if "jikan" in tsukau and len(re.findall(r"\d+時(?!間)(?:\d+分)?", toi)) >= 2 and re.search(r"何分|何時間", toi):
         return "jikan"
-    if "kazoeru" in tsukau and "何通り" in toi and not re.search(r"並べ|並び|隣|列に|一列|席", toi):
+    if "kazoeru" in tsukau and "何通り" in toi and not re.search(r"並べ|並び|隣|列に|一列|席|選", toi):
         return "kazoeru"
     return None
 
 
 DOUGU = {"kazoeru": (lambda: SYSTEM, lambda t: kazoeru(t), 300),
          "jikan": (lambda: SYSTEM_JIKAN, lambda t: jikan(t), 200),
-         "narabe": (lambda: SYSTEM_NARABE, lambda t: narabe(t), 300)}
+         "narabe": (lambda: SYSTEM_NARABE, lambda t: narabe(t), 300),
+         "erabi": (lambda: SYSTEM_ERABI, lambda t: erabi(t), 300)}
 
 
-def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe")):
+def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
     """道具で解く。kiku(toi, system, kotae_cap) → ローカル LLM の出力文字列。
     戻りは (答え, 道具名, 書き出し) か、道具が合わない／読めないとき (None, 理由, 書き出し)。"""
     na = erabu(toi, tsukau)
@@ -209,7 +260,7 @@ def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe")):
     kaki = kiku(toi, sys_(), cap) or ""
     try:
         v = f(kaki)
-        if na in ("kazoeru", "narabe") and v == 0:
+        if na in ("kazoeru", "narabe", "erabi") and v == 0:
             raise ValueError("0通り")     # 「何通り」で 0 は まず書き違い
         return v, na, kaki
     except Exception as e:

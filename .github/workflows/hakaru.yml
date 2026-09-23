@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり / -t で似た手本あり / -j で時刻電卓 / -n で並べ方・順位の電卓 / -c で計算も電卓 / -d8 で 8段（新しい物差し）
+    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり / -t で似た手本あり / -j で時刻電卓 / -n で並べ方・順位の電卓 / -s で選び方の電卓 / -d9 で自作テストC / -c で計算も電卓 / -d8 で 8段（新しい物差し）
 permissions:
   contents: write
 jobs:
@@ -26,10 +26,11 @@ jobs:
         env:
           KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || (startsWith(github.ref_name, 'hakaru-henka') && '16' || '3')) }}
           HENKA_FILE: ${{ startsWith(github.ref_name, 'hakaru-henka') && 'dougu/actions_henka.txt' || '' }}
+          KERNEL_ERABI: ${{ contains(github.ref_name, '-s') && '1' || '' }}
           KERNEL_NARABE: ${{ contains(github.ref_name, '-n') && '1' || '' }}
           KERNEL_JIKAN: ${{ contains(github.ref_name, '-j') && '1' || '' }}
           KERNEL_KEISAN: ${{ contains(github.ref_name, '-c') && '1' || '' }}
-          DAN: ${{ contains(github.ref_name, '-d8') && '8' || '7' }}
+          DAN: ${{ contains(github.ref_name, '-d9') && '9' || (contains(github.ref_name, '-d8') && '8' || '7') }}
           KERNEL_TEHON: ${{ contains(github.ref_name, '-t') && '1' || '' }}
           KERNEL_KAZOERU: ${{ contains(github.ref_name, '-k') && '1' || '' }}
           ATAMA: ${{ contains(github.ref_name, '-m2507') && '2507' || '' }}
