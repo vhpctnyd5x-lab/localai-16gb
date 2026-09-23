@@ -188,6 +188,21 @@ def hitotsu(deta, fukasa, timeout):
                     "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
         except Exception as e:
             dentaku = "読めず: " + str(e)[:40]
+    # 並べ方・順位の電卓（2026-09-23）: KERNEL_NARABE=1 で「並べ方の数」「何位・何番目」の問いだけ 条件を書かせて 全部の並びを試す。
+    if (os.environ.get("KERNEL_NARABE") == "1" and re.search(r"並|隣|列|席|順位|順番", deta["問"])
+            and re.search(r"何通り|何位|何番目", deta["問"])):
+        import kazoeru
+        r = KF.kiku(deta["問"], system=kazoeru.SYSTEM_NARABE, fukasa=fukasa, timeout=timeout, kotae_cap=300)
+        try:
+            v = kazoeru.narabe(r.get("text") or "")
+            if v == 0:
+                raise ValueError("0通り")
+            out = (r.get("text") or "").strip() + "\n答え: %s" % v
+            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
+                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
+                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "並べ"}
+        except Exception as e:
+            dentaku = "並べが読めず: " + str(e)[:40]
     # 時刻電卓（2026-09-23）: KERNEL_JIKAN=1 で「時刻が 2つ以上 ＋ 何分/何時間」の問いだけ 書き出させて こちらで引き算。
     if (os.environ.get("KERNEL_JIKAN") == "1" and len(re.findall(r"\d+時(?:\d+分)?", deta["問"])) >= 2
             and re.search(r"何分|何時間", deta["問"])):
