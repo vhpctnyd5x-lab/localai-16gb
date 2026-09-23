@@ -7,11 +7,19 @@ set -Eeuo pipefail; export LANG=C.UTF-8
 NAFUDA="${1:-$(uname -m)}"; KAGIRI="${KAGIRI:-3}"; FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
 [[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
+W="${RUNNER_TEMP:-/tmp}/hakaru"; mkdir -p "$W"
+# 頭脳は HF の revision と sha256 で固定。ATAMA=2507 で Instruct-2507 版（同じ unsloth の Q2_K・11,258,610,080 バイト）
+if [ "${ATAMA:-}" = 2507 ]; then
+  REPO=unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF; MF=Qwen3-30B-A3B-Instruct-2507-Q2_K.gguf; NAFUDA="${NAFUDA}_m2507"
+  HF_REV=eea7b2be5805a5f151f8847ede8e5f9a9284bf77
+  HF_SHA=50a46f567cf1f4d687f9d5b8d4641654e71a4cfb7b02baab479dedc0bd05d3d3
+else  # 手元の物と同じ 11,258,610,240 バイト
+  REPO=unsloth/Qwen3-30B-A3B-GGUF; MF=Qwen3-30B-A3B-Q2_K.gguf
+  HF_REV=d5b1d57bd0b504ac62ae6c725904e96ef228dc74
+  HF_SHA=db3ce897ccc9e7d9dbf17fe083cae7880a2092aa473b45eba8b77715aa9ca170
+fi
+M="$W/$MF"
 NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
-W="${RUNNER_TEMP:-/tmp}/hakaru"; mkdir -p "$W"; M="$W/Qwen3-30B-A3B-Q2_K.gguf"
-# 頭脳は HF の revision と sha256 で固定（手元の物と同じ 11,258,610,240 バイト）
-HF_REV=d5b1d57bd0b504ac62ae6c725904e96ef228dc74
-HF_SHA=db3ce897ccc9e7d9dbf17fe083cae7880a2092aa473b45eba8b77715aa9ca170
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 NP=$(nproc); P=""; DL=""
 trap 'kill $P $DL 2>/dev/null || true' EXIT
@@ -27,7 +35,7 @@ FREE=$(df -B1 --output=avail / | tail -1)
 
 # 2. 頭脳を落とす（作りながら並行。途中から再開できる .part → sha256 が合ったら名前を変える）
 ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$M.part" \
-  "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/$HF_REV/Qwen3-30B-A3B-Q2_K.gguf" ) &
+  "https://huggingface.co/$REPO/resolve/$HF_REV/$MF" ) &
 DL=$!
 
 # 3. llama.cpp を手元と同じ commit で作る

@@ -1,5 +1,5 @@
 # AGENTS.md — この仕事場（カーネル）の決めごと。全体は ~/.codex/AGENTS.md
-合言葉は **早い・安い・賢い**。Claude は横の `CLAUDE.md`（`@AGENTS.md`）から読む。
+合言葉は **早い・安い・賢い**。**呼び方（本人 9/23）: ローカル LLM＝頭（Qwen3-30B）、カーネル＝その手下の仕組み（直感役・道具・server.py）。**Claude は横の `CLAUDE.md`（`@AGENTS.md`）から読む。
 
 ## 場所
 正は内蔵 `~/LocalAI_mirror/{kernel,koukai,llama-latest,models,uta}`。SSD は写し（`dougu/utsusu.sh`）。`kernel/`=本体（git 外）、`koukai/`=公開の写し（kernel を直したら `koukai/dougu/` に写す）。物差し `dougu/hakaru_*.py`・`monosashi/hakaru.py`、台本 `hashiru_*.sh`、結果 `dougu/kekka/`（git 外）。
@@ -28,4 +28,4 @@ Qwen3-30B-A3B Q2_K（unsloth・11.3GB）、`-t 6 -ngl 0 -dev none -c 8192 -np 1 
 | Groq／NVIDIA（無料） | 教材と検品の先生。`~/.claude/scripts/groq.sh`、`kernel/nvidia.py`（`nv ask -m super`。承認ダイアログは廃止済み） | 頭脳の代わりにはならない |
 | Modal／Oracle・Kaggle・Cloudflare・HF・TPU | Modal は GPU にカード要（保留）。他は未登録。TPU は llama.cpp が動かない | — |
 
-**穴**: GCP は 既定 SA に GCS 権限が要る／`a && b` は set -e でも止まらない／CUDA は `/usr/local/cuda/bin`／合図が 12分来なければ VM を消す。llama.cpp 本家は Xing4.0（TeleChat 系）に未対応。
+**穴**: 裏で `codex exec` を呼ぶときは `< /dev/null`（無いと標準入力を待って固まる。9/23 に 48分止まった）／GCP は 既定 SA に GCS 権限が要る／`a && b` は set -e でも止まらない／CUDA は `/usr/local/cuda/bin`／合図が 12分来なければ VM を消す。llama.cpp 本家は Xing4.0（TeleChat 系）に未対応。

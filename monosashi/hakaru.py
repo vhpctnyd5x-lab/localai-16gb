@@ -33,6 +33,9 @@ import kangaeru_fukasa as KF
 SYSTEM = ("あなたは 算数と なぞときの係です。途中の考えや式を書いてかまいません。"
           "ただし**最後の行に必ず `答え: <値>` とだけ書いてください。**"
           "値は数字か語だけ。単位は書かないこと。")
+# 考える手順書（2026-09-23）: KERNEL_TEJUN=<ファイル> で SYSTEM の後ろに足す。既定は足さない。
+if os.environ.get("KERNEL_TEJUN"):
+    SYSTEM += "\n\n" + open(os.environ["KERNEL_TEJUN"], encoding="utf-8").read().strip()
 
 # 「答え:」の直後だけを見る。**これが取れなければ 形式違反として数える。**
 _STRICT = re.compile(r"答え\s*[:：]\s*([^\n]{1,40})\s*$", re.M)
