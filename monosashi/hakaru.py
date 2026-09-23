@@ -188,6 +188,21 @@ def hitotsu(deta, fukasa, timeout):
                     "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "数えた"}
         except Exception as e:
             dentaku = "読めず: " + str(e)[:40]
+    # 計算の電卓（2026-09-23）: KERNEL_KEISAN=1 で「何通り」以外も 式を書かせて こちらで計算する。読めなければ いつもどおり。
+    if os.environ.get("KERNEL_KEISAN") == "1" and "何通り" not in deta["問"]:
+        import kazoeru
+        sk = kazoeru.SYSTEM_KEISAN
+        if os.environ.get("KERNEL_TEHON") == "1":
+            sk += "\n\n" + _tehon(deta["問"])
+        r = KF.kiku(deta["問"], system=sk, fukasa=fukasa, timeout=timeout, kotae_cap=400)
+        try:
+            v = kazoeru.keisan(r.get("text") or "")
+            out = (r.get("text") or "").strip() + "\n答え: %s" % v
+            return {"id": deta["id"], "段": deta["段"], "型": deta["型"], "問": deta["問"], "答": deta["答"],
+                    "出力": out[:400], "○": _seikai(deta, out), "秒": round(time.time() - t0, 1),
+                    "考えた字数": 0, "回数": 1, "しくじり": None, "電卓": "計算した"}
+        except Exception as e:
+            dentaku = "式が読めず: " + str(e)[:40]
     system = SYSTEM
     # 似た手本（2026-09-23）: KERNEL_TEHON=1 で kernel/tehon.jsonl から 2字の重なりが大きい手本を 2つ system に添える。
     if os.environ.get("KERNEL_TEHON") == "1":

@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり / -t で似た手本あり
+    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり / -t で似た手本あり / -c で計算も電卓 / -d8 で 8段（新しい物差し）
 permissions:
   contents: write
 jobs:
@@ -26,6 +26,8 @@ jobs:
         env:
           KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || (startsWith(github.ref_name, 'hakaru-henka') && '16' || '3')) }}
           HENKA_FILE: ${{ startsWith(github.ref_name, 'hakaru-henka') && 'dougu/actions_henka.txt' || '' }}
+          KERNEL_KEISAN: ${{ contains(github.ref_name, '-c') && '1' || '' }}
+          DAN: ${{ contains(github.ref_name, '-d8') && '8' || '7' }}
           KERNEL_TEHON: ${{ contains(github.ref_name, '-t') && '1' || '' }}
           KERNEL_KAZOERU: ${{ contains(github.ref_name, '-k') && '1' || '' }}
           ATAMA: ${{ contains(github.ref_name, '-m2507') && '2507' || '' }}

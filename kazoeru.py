@@ -1,4 +1,5 @@
-"""閉じた数え上げ電卓（2026-09-23）。ローカル LLM は式を書くだけ、数えるのはこちら。
+"""閉じた電卓（2026-09-23）。ローカル LLM は式を書くだけ、数える・計算するのはこちら。
+数え上げ（kazoeru）と ふつうの計算（keisan）の 2つ。Python だけで動く（Mac の機能もネットも使わない）。
 
 ローカル LLM に渡すのはシェルではない。受け付けるのは次の形の文字だけ:
     変数: x 0 27        ← 名前・下限・上限（整数）
@@ -73,7 +74,49 @@ def kazoeru(text):
     return sum(1 for vals in itertools.product(*[range(lo, hi + 1) for _, lo, hi in hensu]) if f(*vals))
 
 
+SYSTEM_KEISAN = ("あなたは文章題を式にする係です。計算はしません。出力は次の3行だけ（説明なし）:\n"
+                 "使う: <計算に使う数と意味>\n使わない: <問いに関係ない数と理由。無ければ なし>\n"
+                 "式: <答えを出す1本の式>\n"
+                 "式に使えるのは 数・+ - * / // %・かっこ だけ（単位や文字は書かない）。\n"
+                 "例: 箱に40個。12個入りを3袋足し、25個売れた。隣の店は60個持っている →\n"
+                 "使う: 初め40個、12個×3袋を足す、25個売れた\n使わない: 60個（隣の店の数）\n式: 40 + 12*3 - 25")
+_KEISAN_YOI = (ast.Expression, ast.UnaryOp, ast.USub, ast.UAdd, ast.BinOp, ast.Add, ast.Sub, ast.Mult,
+               ast.Div, ast.FloorDiv, ast.Mod, ast.Constant, ast.Load)
+
+
+def keisan(text):
+    """ローカル LLM の出力の「式:」の行を 分数で正確に計算する。読めなければ ValueError。"""
+    from fractions import Fraction
+    m = re.findall(r"^\s*式\s*[:：]\s*(.+?)\s*$", text or "", re.M)
+    if not m:
+        raise ValueError("式が無い")
+    src = m[-1].translate(str.maketrans("０１２３４５６７８９（）×÷－＋．，", "0123456789()*/-+.,")).replace(",", "").rstrip("。")
+    src = re.sub(r"\s*[=＝].*$", "", src)                        # 「= 答え」まで書いたら式だけにする
+    if re.search(r"[#\n\r;\\]", src) or len(src) > 300:
+        raise ValueError("使えない字")
+    t = ast.parse(src, mode="eval")
+    for n in ast.walk(t):
+        if not isinstance(n, _KEISAN_YOI) or (isinstance(n, ast.Constant) and not isinstance(n.value, (int, float))):
+            raise ValueError("使えない書き方: " + type(n).__name__)
+
+    def ev(n):
+        if isinstance(n, ast.Expression): return ev(n.body)
+        if isinstance(n, ast.Constant): return Fraction(str(n.value))
+        if isinstance(n, ast.UnaryOp): return -ev(n.operand) if isinstance(n.op, ast.USub) else ev(n.operand)
+        a, b = ev(n.left), ev(n.right)
+        if isinstance(n.op, (ast.Mult,)) and (abs(a) > 10**12 or abs(b) > 10**12): raise ValueError("大きすぎる")
+        return {ast.Add: lambda: a + b, ast.Sub: lambda: a - b, ast.Mult: lambda: a * b, ast.Div: lambda: a / b,
+                ast.FloorDiv: lambda: a // b, ast.Mod: lambda: a % b}[type(n.op)]()
+    v = ev(t)
+    return int(v) if v.denominator == 1 else float(round(v, 6))
+
+
 if __name__ == "__main__":
+    print(keisan("使う: …\n使わない: 23個\n式: 121 + 9*7 - 116"))            # 68
+    print(keisan("式: (8700 - 8700*25/100) * 108/100 = 7047"))              # 7047
+    for bad in ("式: __import__('os')", "式: 2**99999", "式: 1 # x"):
+        try: keisan(bad); print("通ってしまった!", bad)
+        except (ValueError, SyntaxError) as e: print("断った:", str(e)[:30])
     t = "変数: x 0 27\n変数: y 0 16\n変数: z 0 10\n条件: 3*x+5*y+8*z == 83"
     print(kazoeru(t))   # 35（7段 の 3円・5円・8円で 83円）
     for bad in ("変数: x 0 3\n条件: x==1 #", "変数: x 0 3\n条件: __import__('os')", "変数: x 0 3\n条件: x.real == 1", "変数: x 0 9999\n変数: y 0 9999\n条件: x==y"):
