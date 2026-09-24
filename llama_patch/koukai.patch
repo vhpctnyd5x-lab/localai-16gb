@@ -62,7 +62,7 @@ index 87a329f26..ebf29b4ff 100644
  
  /////////////////////////////////
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 5855393ef..d2098fc0f 100644
+index 5855393ef..85dda9967 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -1,4 +1,5 @@
@@ -71,7 +71,15 @@ index 5855393ef..d2098fc0f 100644
  
  #include "llama-impl.h"
  #include "llama-model.h"
-@@ -24,6 +25,52 @@
+@@ -18,12 +19,149 @@
+ 
+ #include <cassert>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <numeric>
+ #include <sstream>
  #include <string>
  #include <unordered_set>
  
@@ -121,10 +129,99 @@ index 5855393ef..d2098fc0f 100644
 +    }
 +}
 +
++static bool koukai_layer_selected(const char * value, int layer) {
++    if (value == nullptr) return false;
++    std::stringstream items(value);
++    std::string item;
++    while (std::getline(items, item, ',')) {
++        char * end = nullptr;
++        const long first = std::strtol(item.c_str(), &end, 10);
++        if (end == item.c_str()) continue;
++        long last = first;
++        if (*end == '-') last = std::strtol(end + 1, nullptr, 10);
++        if (layer >= first && layer <= last) return true;
++    }
++    return false;
++}
++
++static bool koukai_head_selected(const char * value, int layer, int head) {
++    if (value == nullptr) return false;
++    std::stringstream items(value);
++    std::string item;
++    while (std::getline(items, item, ',')) {
++        const auto colon = item.find(':');
++        if (colon == std::string::npos) continue;
++        char * end = nullptr;
++        const long item_layer = std::strtol(item.c_str(), &end, 10);
++        if (end != item.c_str() && item_layer == layer) {
++            const char * first_text = item.c_str() + colon + 1;
++            const long first = std::strtol(first_text, &end, 10);
++            if (end == first_text) continue;
++            long last = first;
++            if (*end == '-') last = std::strtol(end + 1, nullptr, 10);
++            if (head >= first && head <= last) return true;
++        }
++    }
++    return false;
++}
++
++static void koukai_dump_head_magnitudes(ggml_tensor * dst, const ggml_tensor * src, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++    const int packed = (int) (intptr_t) userdata;
++    const int layer = packed >> 16;
++    const int head_dim = packed & 0xffff;
++    const char * path = std::getenv("KOUKAI_BI_DUMP");
++    if (path == nullptr || head_dim <= 0 || src->type != GGML_TYPE_F32) return;
++    std::memcpy(dst->data, src->data, ggml_nbytes(src));
++    const auto * values = (const float *) src->data;
++    const int64_t n_heads = src->ne[0] / head_dim;
++    const int64_t n_tokens = src->ne[1] * src->ne[2] * src->ne[3];
++    FILE * file = std::fopen(path, "a");
++    if (file == nullptr) return;
++    for (int64_t h = 0; h < n_heads; ++h) {
++        double sum = 0.0;
++        for (int64_t t = 0; t < n_tokens; ++t) {
++            for (int d = 0; d < head_dim; ++d) {
++                sum += std::abs(values[h * head_dim + d + t * src->ne[0]]);
++            }
++        }
++        const double mean = sum / std::max<int64_t>(1, n_tokens * head_dim);
++        std::fprintf(file, "%d,%lld,%.9g\n", layer, (long long) h, mean);
++    }
++    std::fclose(file);
++}
++
++static ggml_tensor * koukai_apply_swa_mask(ggml_context * ctx, ggml_tensor * mask, int layer) {
++    if (mask == nullptr) return nullptr;
++    if (!koukai_layer_selected(std::getenv("KOUKAI_SWA_LAYERS"), layer)) return mask;
++    const char * window_env = std::getenv("KOUKAI_SWA_WINDOW");
++    const int64_t window = window_env ? std::max<int64_t>(1, std::strtoll(window_env, nullptr, 10)) : 0;
++    if (window == 0) return mask;
++    const char * sink_env = std::getenv("KOUKAI_SWA_SINK");
++    const int64_t sink = sink_env ? std::max<int64_t>(0, std::strtoll(sink_env, nullptr, 10)) : 4;
++    ggml_tensor * extra = ggml_new_tensor(ctx, mask->type, GGML_MAX_DIMS, mask->ne);
++    for (int64_t i3 = 0; i3 < mask->ne[3]; ++i3) {
++        for (int64_t i2 = 0; i2 < mask->ne[2]; ++i2) {
++            for (int64_t iq = 0; iq < mask->ne[1]; ++iq) {
++                const int64_t qpos = mask->ne[0] - mask->ne[1] + iq;
++                const int64_t min_pos = qpos - window + 1;
++                for (int64_t ik = 0; ik < mask->ne[0]; ++ik) {
++                    const float value = (ik < sink || ik >= min_pos) ? 0.0f : -INFINITY;
++                    const int64_t index = ik + mask->ne[0] * (iq + mask->ne[1] * (i2 + mask->ne[2] * i3));
++                    if (mask->type == GGML_TYPE_F16) ((ggml_fp16_t *) extra->data)[index] = ggml_fp32_to_fp16(value);
++                    else ((float *) extra->data)[index] = value;
++                }
++            }
++        }
++    }
++    return ggml_add(ctx, mask, extra);
++}
++
  // dedup helpers
  
  static ggml_tensor * build_attn_inp_kq_mask(
-@@ -1622,12 +1669,13 @@ llm_graph_qkv llm_graph_context::build_qkv(
+@@ -1622,12 +1760,13 @@ llm_graph_qkv llm_graph_context::build_qkv(
                    int64_t   n_embd_head,
                    int64_t   n_head,
                    int64_t   n_head_kv,
@@ -140,7 +237,7 @@ index 5855393ef..d2098fc0f 100644
  }
  
  llm_graph_qkv llm_graph_context::build_qkv(
-@@ -1640,11 +1688,12 @@ llm_graph_qkv llm_graph_context::build_qkv(
+@@ -1640,11 +1779,12 @@ llm_graph_qkv llm_graph_context::build_qkv(
                    int64_t   n_embd_head_v,
                    int64_t   n_head_v,
                        int   il,
@@ -155,7 +252,7 @@ index 5855393ef..d2098fc0f 100644
  
      if (layer.wqkv) {
          // fused QKV path
-@@ -1700,45 +1749,47 @@ llm_graph_qkv llm_graph_context::build_qkv(
+@@ -1700,45 +1840,47 @@ llm_graph_qkv llm_graph_context::build_qkv(
              Qcur = ggml_clamp(ctx0, Qcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
              cb(Qcur, "Qcur_clamped", il);
          }
@@ -228,7 +325,7 @@ index 5855393ef..d2098fc0f 100644
      }
  
      return { Qcur, Kcur, Vcur };
-@@ -1965,7 +2016,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -1965,7 +2107,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
           ggml_tensor * up_exps_s,
           ggml_tensor * gate_exps_s,
           ggml_tensor * down_exps_s,
@@ -238,7 +335,7 @@ index 5855393ef..d2098fc0f 100644
      return build_moe_ffn(
          cur,
          gate_inp,  /* gate_inp_b  */ nullptr,
-@@ -1986,7 +2038,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -1986,7 +2129,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          up_exps_s,
          gate_exps_s,
          down_exps_s,
@@ -248,7 +345,7 @@ index 5855393ef..d2098fc0f 100644
      );
  }
  
-@@ -2014,7 +2067,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2014,7 +2158,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
           ggml_tensor * up_exps_s,
           ggml_tensor * gate_exps_s,
           ggml_tensor * down_exps_s,
@@ -258,7 +355,7 @@ index 5855393ef..d2098fc0f 100644
      const int64_t n_embd   = cur->ne[0];
      const int64_t n_tokens = cur->ne[1];
      const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
-@@ -2107,6 +2161,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2107,6 +2252,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
      ggml_tensor * selected_experts = selected_experts_in;
      if (selected_experts == nullptr) {
          selected_experts = ggml_argsort_top_k(ctx0, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
@@ -269,7 +366,7 @@ index 5855393ef..d2098fc0f 100644
          cb(selected_experts->src[0], "ffn_moe_argsort", il);
      }
      cb(selected_experts, "ffn_moe_topk", il);
-@@ -2121,6 +2179,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2121,6 +2270,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
      }
  
      ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
@@ -280,7 +377,40 @@ index 5855393ef..d2098fc0f 100644
      cb(weights, "ffn_moe_weights", il);
  
  
-@@ -2846,17 +2908,18 @@ ggml_tensor * llm_graph_context::build_attn(
+@@ -2599,6 +2752,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+              int64_t   n_kv_max,
+                float   kq_scale,
+                  int   il) const {
++    kq_mask = koukai_apply_swa_mask(ctx0, kq_mask, il);
+     const bool v_trans = v->nb[1] > v->nb[2];
+ 
+     // split the batch into streams if needed
+@@ -2721,6 +2875,24 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+         }
+     }
+ 
++    const int64_t head_dim = hparams.n_embd_head_v(il);
++    if (std::getenv("KOUKAI_BI_DUMP") != nullptr && head_dim > 0 && head_dim <= 0xffff && il < 0x7fff) {
++        ggml_tensor * dump_src = cur->type == GGML_TYPE_F32 ? cur : ggml_cast(ctx0, cur, GGML_TYPE_F32);
++        const int packed = (il << 16) | (int) head_dim;
++        cur = ggml_map_custom1(ctx0, dump_src, koukai_dump_head_magnitudes, 1, (void *) (intptr_t) packed);
++    }
++    const char * head_mask = std::getenv("KOUKAI_HEAD_MASK");
++    if (head_mask != nullptr && head_dim > 0 && cur->ne[0] % head_dim == 0) {
++        ggml_tensor * head_scale = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, cur->ne[0], 1, 1, 1);
++        auto * values = (float *) head_scale->data;
++        const int64_t n_heads = cur->ne[0] / head_dim;
++        for (int64_t head = 0; head < n_heads; ++head) {
++            const float scale = koukai_head_selected(head_mask, il, head) ? 0.0f : 1.0f;
++            for (int64_t d = 0; d < head_dim; ++d) values[head * head_dim + d] = scale;
++        }
++        cur = ggml_mul(ctx0, cur, head_scale);
++    }
++
+     ggml_build_forward_expand(gf, cur);
+ 
+     return cur;
+@@ -2846,17 +3018,18 @@ ggml_tensor * llm_graph_context::build_attn(
          ggml_tensor * v_cur,
          ggml_tensor * kq_b,
          ggml_tensor * sinks,
@@ -303,7 +433,7 @@ index 5855393ef..d2098fc0f 100644
          v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot);
      }
  
-@@ -2864,13 +2927,15 @@ ggml_tensor * llm_graph_context::build_attn(
+@@ -2864,13 +3037,15 @@ ggml_tensor * llm_graph_context::build_attn(
      // by doing so, the number of splits in the graph is reduced
      // expand k later to enable rope fusion which directly writes into k-v cache
      ggml_build_forward_expand(gf, q_cur);
