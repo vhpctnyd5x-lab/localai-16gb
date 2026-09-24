@@ -1,0 +1,1176 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 87a329f26..ebf29b4ff 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1572,6 +1572,8 @@ static void ggml_compute_forward_mul_mat_id(
+     // row groups
+     const int n_ids = ids->ne[0]; // n_expert_used
+     const int n_as  = ne02;       // n_expert
++    const char * expert_p_env = getenv("KOUKAI_EXPERT_P");
++    const bool koukai_deduplicate = expert_p_env && expert_p_env[0] != '\0';
+ 
+     void * wdata_cur = params->wdata;
+ 
+@@ -1648,6 +1650,18 @@ static void ggml_compute_forward_mul_mat_id(
+ 
+                 assert(i02 >= 0 && i02 < n_as);
+ 
++                if (koukai_deduplicate) {
++                    bool duplicate = false;
++                    for (int prev = 0; prev < id; ++prev) {
++                        const int32_t prev_id = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + prev*ids->nb[0]);
++                        if (prev_id == i02) {
++                            duplicate = true;
++                            break;
++                        }
++                    }
++                    if (duplicate) continue;
++                }
++
+                 MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = (struct mmid_row_mapping) {id, iid1};
+                 matrix_row_counts[i02] += 1;
+             }
+@@ -1729,6 +1743,30 @@ static void ggml_compute_forward_mul_mat_id(
+             current_chunk = atomic_fetch_add_explicit(current_chunk_ctr, 1, memory_order_relaxed);
+         }
+     }
++
++    if (koukai_deduplicate) {
++        ggml_barrier(params->threadpool);
++        const int64_t n_rows = ids->ne[0] * ids->ne[1];
++        const size_t row_bytes = ggml_row_size(dst->type, dst->ne[0]);
++        for (int64_t row = ith; row < n_rows; row += nth) {
++            const int64_t token = row / ids->ne[0];
++            const int rank = row % ids->ne[0];
++            const int32_t id = *(const int32_t *) ((const char *) ids->data + token*ids->nb[1] + rank*ids->nb[0]);
++            int first_rank = -1;
++            for (int prev = 0; prev < rank; ++prev) {
++                const int32_t prev_id = *(const int32_t *) ((const char *) ids->data + token*ids->nb[1] + prev*ids->nb[0]);
++                if (prev_id == id) {
++                    first_rank = prev;
++                    break;
++                }
++            }
++            if (first_rank >= 0) {
++                const size_t dst_off = rank*dst->nb[1] + token*dst->nb[2];
++                const size_t src_off = first_rank*dst->nb[1] + token*dst->nb[2];
++                memcpy((char *) dst->data + dst_off, (const char *) dst->data + src_off, row_bytes);
++            }
++        }
++    }
+ }
+ 
+ /////////////////////////////////
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 5855393ef..d2098fc0f 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-graph.h"
++#include "models/qwen3moe-koukai.h"
+ 
+ #include "llama-impl.h"
+ #include "llama-model.h"
+@@ -24,6 +25,52 @@
+ #include <string>
+ #include <unordered_set>
+ 
++static void qwen3moe_select_experts(
++        ggml_tensor * dst, const ggml_tensor * topk, const ggml_tensor * probs,
++        int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++
++    const auto * config = (const qwen3moe_koukai_config *) userdata;
++    const int64_t n_used = topk->ne[0];
++    for (int64_t token = 0; token < topk->ne[1]; ++token) {
++        const auto * ids = (const int32_t *) ((const uint8_t *) topk->data + token * topk->nb[1]);
++        const auto * p = (const float *) ((const uint8_t *) probs->data + token * probs->nb[1]);
++        int64_t n_selected = n_used;
++        double cumulative = 0.0;
++        for (int64_t rank = 0; rank < n_used; ++rank) {
++            cumulative += p[ids[rank]];
++            if (rank + 1 >= config->expert_min && cumulative >= config->expert_p) {
++                n_selected = rank + 1;
++                break;
++            }
++        }
++        for (int64_t rank = 0; rank < n_used; ++rank) {
++            const int32_t id = rank < n_selected ? ids[rank] : ids[0];
++            *(int32_t *) ((uint8_t *) dst->data + token * dst->nb[1] + rank * dst->nb[0]) = id;
++        }
++    }
++}
++
++static void qwen3moe_mask_duplicate_expert_weights(
++        ggml_tensor * dst, const ggml_tensor * weights, const ggml_tensor * ids,
++        int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    GGML_UNUSED(userdata);
++    if (ith != 0) return;
++
++    for (int64_t token = 0; token < ids->ne[1]; ++token) {
++        const auto * token_ids = (const int32_t *) ((const uint8_t *) ids->data + token * ids->nb[1]);
++        const auto * token_weights = (const float *) ((const uint8_t *) weights->data + token * weights->nb[2]);
++        bool padded = false;
++        for (int64_t rank = 0; rank < ids->ne[0]; ++rank) {
++            if (rank > 0 && token_ids[rank] == token_ids[0]) padded = true;
++            const float value = padded ? 0.0f : token_weights[rank * weights->nb[1] / sizeof(float)];
++            *(float *) ((uint8_t *) dst->data + token * dst->nb[2] + rank * dst->nb[1]) = value;
++        }
++    }
++}
++
+ // dedup helpers
+ 
+ static ggml_tensor * build_attn_inp_kq_mask(
+@@ -1622,12 +1669,13 @@ llm_graph_qkv llm_graph_context::build_qkv(
+                   int64_t   n_embd_head,
+                   int64_t   n_head,
+                   int64_t   n_head_kv,
+-                      int   il) const {
++                      int   il,
++                     bool   build_kv) const {
+     return build_qkv(layer, cur,
+             n_embd_head, n_head,
+             n_embd_head, n_head_kv,
+             n_embd_head, n_head_kv,
+-            il);
++            il, true, build_kv);
+ }
+ 
+ llm_graph_qkv llm_graph_context::build_qkv(
+@@ -1640,11 +1688,12 @@ llm_graph_qkv llm_graph_context::build_qkv(
+                   int64_t   n_embd_head_v,
+                   int64_t   n_head_v,
+                       int   il,
+-                     bool   reshape) const {
++                     bool   reshape,
++                     bool   build_kv) const {
+     const int64_t n_embd_q = n_embd_head_q * n_head_q;
+     const int64_t n_embd_k = n_embd_head_k * n_head_k;
+ 
+-    ggml_tensor * Qcur, * Kcur, * Vcur;
++    ggml_tensor * Qcur = nullptr, * Kcur = nullptr, * Vcur = nullptr;
+ 
+     if (layer.wqkv) {
+         // fused QKV path
+@@ -1700,45 +1749,47 @@ llm_graph_qkv llm_graph_context::build_qkv(
+             Qcur = ggml_clamp(ctx0, Qcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
+             cb(Qcur, "Qcur_clamped", il);
+         }
+-        Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+-        if (reshape) {
+-            cb(Kcur, "Kcur", il);
+-        }
+-        if (layer.wk_b) {
+-            Kcur = ggml_add(ctx0, Kcur, layer.wk_b);
++        if (build_kv) {
++            Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+             if (reshape) {
+                 cb(Kcur, "Kcur", il);
+             }
+-        }
+-        if (reshape && hparams.f_clamp_kqv > 0.0f) {
+-            Kcur = ggml_clamp(ctx0, Kcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
+-            cb(Kcur, "Kcur_clamped", il);
+-        }
+-        Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+-        if (reshape) {
+-            cb(Vcur, "Vcur", il);
+-        }
+-        if (layer.wv_b) {
+-            Vcur = ggml_add(ctx0, Vcur, layer.wv_b);
++            if (layer.wk_b) {
++                Kcur = ggml_add(ctx0, Kcur, layer.wk_b);
++                if (reshape) {
++                    cb(Kcur, "Kcur", il);
++                }
++            }
++            if (reshape && hparams.f_clamp_kqv > 0.0f) {
++                Kcur = ggml_clamp(ctx0, Kcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
++                cb(Kcur, "Kcur_clamped", il);
++            }
++            Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+             if (reshape) {
+                 cb(Vcur, "Vcur", il);
+             }
+-        }
+-        if (reshape && hparams.f_clamp_kqv > 0.0f) {
+-            Vcur = ggml_clamp(ctx0, Vcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
+-            cb(Vcur, "Vcur_clamped", il);
++            if (layer.wv_b) {
++                Vcur = ggml_add(ctx0, Vcur, layer.wv_b);
++                if (reshape) {
++                    cb(Vcur, "Vcur", il);
++                }
++            }
++            if (reshape && hparams.f_clamp_kqv > 0.0f) {
++                Vcur = ggml_clamp(ctx0, Vcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
++                cb(Vcur, "Vcur_clamped", il);
++            }
+         }
+         if (reshape) {
+             Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head_q, n_head_q, n_tokens);
+-            Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head_k, n_head_k, n_tokens);
+-            Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head_v, n_head_v, n_tokens);
++            if (Kcur) Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head_k, n_head_k, n_tokens);
++            if (Vcur) Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head_v, n_head_v, n_tokens);
+         }
+     }
+ 
+     if (reshape) {
+         cb(Qcur, "Qcur", il);
+-        cb(Kcur, "Kcur", il);
+-        cb(Vcur, "Vcur", il);
++        if (Kcur) cb(Kcur, "Kcur", il);
++        if (Vcur) cb(Vcur, "Vcur", il);
+     }
+ 
+     return { Qcur, Kcur, Vcur };
+@@ -1965,7 +2016,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+          ggml_tensor * up_exps_s,
+          ggml_tensor * gate_exps_s,
+          ggml_tensor * down_exps_s,
+-         ggml_tensor * selected_experts_in) const {
++         ggml_tensor * selected_experts_in,
++         const qwen3moe_koukai_config * koukai) const {
+     return build_moe_ffn(
+         cur,
+         gate_inp,  /* gate_inp_b  */ nullptr,
+@@ -1986,7 +2038,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         up_exps_s,
+         gate_exps_s,
+         down_exps_s,
+-        selected_experts_in
++        selected_experts_in,
++        koukai
+     );
+ }
+ 
+@@ -2014,7 +2067,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+          ggml_tensor * up_exps_s,
+          ggml_tensor * gate_exps_s,
+          ggml_tensor * down_exps_s,
+-         ggml_tensor * selected_experts_in) const {
++         ggml_tensor * selected_experts_in,
++         const qwen3moe_koukai_config * koukai) const {
+     const int64_t n_embd   = cur->ne[0];
+     const int64_t n_tokens = cur->ne[1];
+     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
+@@ -2107,6 +2161,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     ggml_tensor * selected_experts = selected_experts_in;
+     if (selected_experts == nullptr) {
+         selected_experts = ggml_argsort_top_k(ctx0, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
++        if (koukai && koukai->expert_p_enabled) {
++            selected_experts = ggml_map_custom2(ctx0, selected_experts, probs,
++                    qwen3moe_select_experts, 1, (void *) koukai);
++        }
+         cb(selected_experts->src[0], "ffn_moe_argsort", il);
+     }
+     cb(selected_experts, "ffn_moe_topk", il);
+@@ -2121,6 +2179,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+     }
+ 
+     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
++    if (koukai && koukai->expert_p_enabled) {
++        weights = ggml_map_custom2(ctx0, weights, selected_experts,
++                qwen3moe_mask_duplicate_expert_weights, 1, (void *) koukai);
++    }
+     cb(weights, "ffn_moe_weights", il);
+ 
+ 
+@@ -2846,17 +2908,18 @@ ggml_tensor * llm_graph_context::build_attn(
+         ggml_tensor * v_cur,
+         ggml_tensor * kq_b,
+         ggml_tensor * sinks,
+-        ggml_tensor * v_mla, // TODO: remove
++            ggml_tensor * v_mla, // TODO: remove
+             float     kq_scale,
+-            int       il) const {
++            int       il,
++            bool      reuse_kv) const {
+     GGML_ASSERT(v_mla == nullptr);
+ 
+     if (inp->self_k_rot) {
+         q_cur = llama_mul_mat_hadamard(ctx0, q_cur, inp->self_k_rot);
+-        k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
++        if (!reuse_kv) k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
+     }
+ 
+-    if (inp->self_v_rot) {
++    if (inp->self_v_rot && !reuse_kv) {
+         v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot);
+     }
+ 
+@@ -2864,13 +2927,15 @@ ggml_tensor * llm_graph_context::build_attn(
+     // by doing so, the number of splits in the graph is reduced
+     // expand k later to enable rope fusion which directly writes into k-v cache
+     ggml_build_forward_expand(gf, q_cur);
+-    ggml_build_forward_expand(gf, v_cur);
+-    ggml_build_forward_expand(gf, k_cur);
++    if (!reuse_kv) {
++        ggml_build_forward_expand(gf, v_cur);
++        ggml_build_forward_expand(gf, k_cur);
++    }
+ 
+     const auto * mctx_cur = inp->mctx;
+ 
+     // store to KV cache
+-    {
++    if (!reuse_kv) {
+         const auto & k_idxs = inp->get_k_idxs();
+         const auto & v_idxs = inp->get_v_idxs();
+ 
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index cc4110639..6e2067651 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++struct qwen3moe_koukai_config;
++
+ #include "llama-arch.h"
+ #include "llama-batch.h"
+ #include "llama-hparams.h"
+@@ -1078,7 +1080,8 @@ struct llm_graph_context {
+                   int64_t   n_embd_head,
+                   int64_t   n_head,
+                   int64_t   n_head_kv,
+-                      int   il) const;
++                      int   il,
++                     bool   build_kv = true) const;
+ 
+     // Set reshape to false to return contiguous projections before clamp/reshape.
+     llm_graph_qkv build_qkv(
+@@ -1091,7 +1094,8 @@ struct llm_graph_context {
+                   int64_t   n_embd_head_v,
+                   int64_t   n_head_v,
+                       int   il,
+-                     bool   reshape = true) const;
++                     bool   reshape = true,
++                     bool   build_kv = true) const;
+ 
+     ggml_tensor * build_ffn(
+              ggml_tensor * cur,
+@@ -1129,7 +1133,8 @@ struct llm_graph_context {
+              ggml_tensor * up_exps_s = nullptr,
+              ggml_tensor * gate_exps_s = nullptr,
+              ggml_tensor * down_exps_s = nullptr,
+-             ggml_tensor * selected_experts_in = nullptr) const;
++             ggml_tensor * selected_experts_in = nullptr,
++             const qwen3moe_koukai_config * koukai = nullptr) const;
+ 
+     ggml_tensor * build_moe_ffn(
+              ggml_tensor * cur,
+@@ -1155,7 +1160,8 @@ struct llm_graph_context {
+              ggml_tensor * up_exps_s = nullptr,
+              ggml_tensor * gate_exps_s = nullptr,
+              ggml_tensor * down_exps_s = nullptr,
+-             ggml_tensor * selected_experts_in = nullptr) const;
++             ggml_tensor * selected_experts_in = nullptr,
++             const qwen3moe_koukai_config * koukai = nullptr) const;
+ 
+     //
+     // inputs
+@@ -1219,7 +1225,8 @@ struct llm_graph_context {
+             ggml_tensor * sinks, // [n_head_q]
+             ggml_tensor * v_mla, // [n_embd_head_v_mla, n_embd_head_v, n_head_v] // TODO: remove
+                   float   kq_scale,
+-                    int   il) const;
++                    int   il,
++                   bool   reuse_kv = false) const;
+ 
+     llm_graph_input_attn_k  * build_attn_inp_k() const;
+ 
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index a342ee119..336d2b7a5 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -173,19 +173,33 @@ llama_kv_cache::llama_kv_cache(
+             continue;
+         }
+ 
+-        if (share && other) {
++        if (share) {
+             const int32_t il_share = share(il);
+ 
+             if (il_share >= 0) {
+-                const auto & layer_share = other->layers[other->map_layer_ids[il_share]];
+-
+-                LLAMA_LOG_WARN("%s: layer %3d: sharing with layer %d. k = %p, v = %p\n", __func__, il, il_share,
+-                        layer_share.k->data, layer_share.v->data);
+-
+-                map_layer_ids[il] = layers.size();
++                if (other) {
++                    const auto & layer_share = other->layers[other->map_layer_ids[il_share]];
++                    LLAMA_LOG_WARN("%s: layer %3d: sharing with layer %d. k = %p, v = %p\n", __func__, il, il_share,
++                            layer_share.k->data, layer_share.v->data);
++
++                    map_layer_ids[il] = layers.size();
++                    layers.push_back(layer_share);
++                    layers.back().il = il;
++                } else {
++                    if (il_share >= (int32_t) il || (uint32_t) il_share >= map_layer_ids.size()) {
++                        throw std::runtime_error("KV share must reference an earlier layer in the same cache");
++                    }
++                    const uint32_t shared_id = map_layer_ids[il_share];
++                    if (shared_id >= layers.size() || !layers[shared_id].k || !layers[shared_id].v) {
++                        throw std::runtime_error("KV share source layer has no allocated KV cache");
++                    }
++                    const auto & layer_share = layers[shared_id];
++                    LLAMA_LOG_WARN("%s: layer %3d: sharing KV with lower layer %d\n", __func__, il, il_share);
+ 
+-                layers.push_back(layer_share);
+-                layers.back().il = il;
++                    map_layer_ids[il] = layers.size();
++                    layers.push_back(layer_share);
++                    layers.back().il = il;
++                }
+ 
+                 continue;
+             }
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 91bb5e7cc..87df62dc7 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1111,9 +1111,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+     // set below, before buft_for_tensor() runs
+     bool is_lazy = false;
++    const auto row_selection_it = tensor_row_selections.find(tn.str());
++    const bool has_row_selection = row_selection_it != tensor_row_selections.end();
++    const bool is_compact = has_row_selection;
+ 
+     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
+-        const ctx_key key { buft, is_lazy };
++        const ctx_key key { buft, is_lazy, is_compact };
+ 
+         auto it = ctx_map.find(key);
+         if (it == ctx_map.end()) {
+@@ -1287,7 +1290,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             return nullptr;
+         }
+         ggml_type type = GGML_TYPE_F32;
+-        const int64_t tid = gguf_find_tensor(metadata, tn.str().c_str());
++        const std::string tensor_name = has_row_selection ? row_selection_it->second.source_name : tn.str();
++        const int64_t tid = gguf_find_tensor(metadata, tensor_name.c_str());
+         if (tid != -1) {
+             type = gguf_get_tensor_type(metadata, tid);
+         }
+@@ -1327,7 +1331,17 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+     }
+ 
+     LLAMA_LOG_DEBUG("%s: loading tensor %s\n", __func__, tn.str().c_str());
+-    const struct ggml_tensor * cur = check_tensor_dims(tn.str(), ne, !(flags & TENSOR_NOT_REQUIRED), flags & TENSOR_ALLOW_RESHAPE);
++    std::string source_name = tn.str();
++    std::vector<int64_t> source_ne(ne);
++    if (has_row_selection) {
++        const auto & selection = row_selection_it->second;
++        source_name = selection.source_name;
++        if (source_ne.size() != 2 || source_ne[1] != (int64_t) selection.rows.size()) {
++            throw std::runtime_error("row-selected tensor must be a 2D matrix with one selected row per vocabulary id");
++        }
++        source_ne[1] = selection.source_rows;
++    }
++    const struct ggml_tensor * cur = check_tensor_dims(source_name, source_ne, !(flags & TENSOR_NOT_REQUIRED), flags & TENSOR_ALLOW_RESHAPE);
+     if (cur == NULL) {
+         return NULL;
+     }
+@@ -1338,7 +1352,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+     }
+ 
+     ggml_tensor t_meta = *cur;
+-    if (flags & TENSOR_ALLOW_RESHAPE) {
++    if (has_row_selection) {
++        t_meta.ne[1] = (int64_t) row_selection_it->second.rows.size();
++        t_meta.nb[1] = ggml_row_size(t_meta.type, t_meta.ne[0]);
++        for (size_t dim = 2; dim < GGML_MAX_DIMS; dim++) {
++            t_meta.nb[dim] = t_meta.nb[dim - 1] * t_meta.ne[dim - 1];
++        }
++    } else if (flags & TENSOR_ALLOW_RESHAPE) {
+         for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
+             t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+             if (dim == 0) {
+@@ -1351,7 +1371,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         }
+     }
+ 
+-    GGML_ASSERT(ggml_nbytes(&t_meta) == ggml_nbytes(cur));
++    ggml_set_name(&t_meta, tn.str().c_str());
++    GGML_ASSERT(has_row_selection || ggml_nbytes(&t_meta) == ggml_nbytes(cur));
+ 
+     ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
+     if (buft == nullptr) {
+@@ -1435,7 +1456,12 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+ 
+     // compute the total size of all tensors for progress reporting
+     for (const auto & it : weights_map) {
+-        size_data += ggml_nbytes(it.second.tensor);
++        size_t tensor_size = ggml_nbytes(it.second.tensor);
++        const auto selection = tensor_row_selections.find(it.first);
++        if (selection != tensor_row_selections.end() && selection->second.source_name == it.first) {
++            tensor_size = ggml_row_size(it.second.tensor->type, it.second.tensor->ne[0]) * selection->second.rows.size();
++        }
++        size_data += tensor_size;
+     }
+ }
+ 
+@@ -1616,8 +1642,13 @@ bool llama_model_loader::load_all_data(
+     }
+ 
+     for (struct ggml_tensor * cur : tensors) {
+-        const auto * weight = get_weight(ggml_get_name(cur));
++        const auto row_selection_it = tensor_row_selections.find(ggml_get_name(cur));
++        const auto * weight = get_weight(row_selection_it == tensor_row_selections.end()
++                ? ggml_get_name(cur) : row_selection_it->second.source_name.c_str());
+         if (weight == nullptr) {
++            if (row_selection_it != tensor_row_selections.end()) {
++                throw std::runtime_error(format("missing source tensor '%s' for selected rows", row_selection_it->second.source_name.c_str()));
++            }
+             // this can happen with split experts models
+             continue;
+         }
+@@ -1630,6 +1661,35 @@ bool llama_model_loader::load_all_data(
+ 
+         size_t n_size = ggml_nbytes(cur);
+ 
++        if (row_selection_it != tensor_row_selections.end()) {
++            const auto & selection = row_selection_it->second;
++            const size_t row_size = ggml_row_size(cur->type, cur->ne[0]);
++            if (row_size * selection.rows.size() != n_size) {
++                throw std::runtime_error(format("row selection size mismatch for tensor '%s'", ggml_get_name(cur)));
++            }
++
++            std::vector<uint8_t> selected_rows(n_size);
++            if (use_mmap) {
++                const auto & mapping = mappings.at(weight->idx);
++                const uint8_t * source = (const uint8_t *) mapping->addr() + weight->offs;
++                for (size_t i = 0; i < selection.rows.size(); ++i) {
++                    std::memcpy(selected_rows.data() + i * row_size, source + (size_t) selection.rows[i] * row_size, row_size);
++                }
++            } else {
++                const auto & file = files.at(weight->idx);
++                for (size_t i = 0; i < selection.rows.size(); ++i) {
++                    file->seek(weight->offs + (size_t) selection.rows[i] * row_size, SEEK_SET);
++                    file->read_raw(selected_rows.data() + i * row_size, row_size);
++                }
++            }
++            ggml_backend_tensor_set(cur, selected_rows.data(), 0, n_size);
++            if (check_tensors && !ggml_validate_row_data(cur->type, selected_rows.data(), n_size)) {
++                throw std::runtime_error(format("tensor '%s' has invalid selected row data", ggml_get_name(cur)));
++            }
++            size_done += n_size;
++            continue;
++        }
++
+         const bool from_mapping = use_mmap || lazy.has(cur);
+ 
+         if (from_mapping) {
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 9e51d0ce7..2a32338d7 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -124,6 +124,12 @@ struct llama_model_loader {
+     llama_mmaps mappings;
+ 
+     std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;
++    struct tensor_row_selection {
++        std::string source_name;
++        int64_t source_rows;
++        std::vector<int32_t> rows;
++    };
++    std::unordered_map<std::string, tensor_row_selection> tensor_row_selections;
+     std::unordered_map<std::string, llama_model_kv_override> kv_overrides;
+     const llama_model_tensor_buft_override * tensor_buft_overrides;
+ 
+@@ -151,6 +157,7 @@ struct llama_model_loader {
+     struct ctx_key {
+         ggml_backend_buffer_type_t buft;
+         bool lazy;
++        bool compact;
+     };
+ 
+     struct ctx_key_comparator {
+@@ -158,6 +165,9 @@ struct llama_model_loader {
+             if (lhs.lazy != rhs.lazy) {
+                 return lhs.lazy < rhs.lazy;
+             }
++            if (lhs.compact != rhs.compact) {
++                return lhs.compact < rhs.compact;
++            }
+             return strcmp(ggml_backend_buft_name(lhs.buft), ggml_backend_buft_name(rhs.buft)) < 0;
+         }
+     };
+@@ -234,6 +244,21 @@ struct llama_model_loader {
+             bool required,
+             bool allow_reshape) const;
+ 
++    void set_tensor_row_selection(
++            const std::string & tensor_name,
++            const std::string & source_name,
++            int64_t source_rows,
++            const std::vector<int32_t> & rows) {
++        if (tensor_name.empty() || source_name.empty() || source_rows <= 0 || rows.empty()) {
++            throw std::runtime_error("invalid tensor row selection");
++        }
++        tensor_row_selections[tensor_name] = { source_name, source_rows, rows };
++    }
++
++    bool has_tensor_row_selection() const {
++        return !tensor_row_selections.empty();
++    }
++
+     struct ggml_tensor * create_tensor(
+         const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 0adc07449..e395ed21b 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1701,7 +1701,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
+-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
++    ml.init_mappings(!ml.has_tensor_row_selection(), use_mlock ? &pimpl->mlock_mmaps : nullptr);
+     pimpl->mappings.reserve(ml.mappings.size());
+ 
+     // create the backend buffers
+@@ -1743,7 +1743,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         // a lazy context is mapped whatever the load mode, but the memory-fit pass maps nothing
+         const bool is_lazy_mapped = ctx_key.lazy && !ml.no_alloc;
+ 
+-        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
++        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft && !ctx_key.compact) {
+             GGML_ASSERT(!ml.no_alloc);
+             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
+@@ -2651,6 +2651,16 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                         }
+                     }
+ 
++                    if (arch == LLM_ARCH_QWEN3MOE) {
++                        const auto & koukai = static_cast<const llama_model_qwen3moe &>(*this).koukai;
++                        if (!koukai.skip_attn.empty() || !koukai.skip_layer.empty()) {
++                            filter = [&koukai](int32_t il) { return !koukai.skip_attention(il); };
++                        }
++                        if (!koukai.kv_share.empty()) {
++                            share = [&koukai](int32_t il) { return koukai.shares_kv(il) ? il - 1 : -1; };
++                        }
++                    }
++
+                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
+                         GGML_ASSERT(hparams.is_swa_any());
+ 
+diff --git a/src/models/models.h b/src/models/models.h
+index 87195fddd..cd8d71afd 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -3,6 +3,7 @@
+ #include "llama-model.h"
+ #include "llama-graph.h"
+ #include "llama-model-loader.h"
++#include "qwen3moe-koukai.h"
+ 
+ // note: almost all graphs require at least sqrtf, so include cmath globally
+ #include <cmath>
+@@ -585,10 +586,12 @@ struct llama_model_qwen3 : public llama_model_base {
+ 
+ struct llama_model_qwen3moe : public llama_model_base {
+     llama_model_qwen3moe(const struct llama_model_params & params) : llama_model_base(params) {}
++    qwen3moe_koukai_config koukai;
+     void load_arch_hparams(llama_model_loader & ml) override;
+     void load_arch_tensors(llama_model_loader & ml) override;
+ 
+     struct graph : public llm_graph_context {
++        std::vector<qwen3moe_bi_tap_context> bi_tap_contexts;
+         graph(const llama_model & model, const llm_graph_params & params);
+     };
+ 
+diff --git a/src/models/qwen3moe-koukai.h b/src/models/qwen3moe-koukai.h
+new file mode 100644
+index 000000000..4fa5c6935
+--- /dev/null
++++ b/src/models/qwen3moe-koukai.h
+@@ -0,0 +1,148 @@
++#pragma once
++
++#include <cerrno>
++#include <cctype>
++#include <cmath>
++#include <cstdint>
++#include <cstdlib>
++#include <fstream>
++#include <set>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++struct qwen3moe_koukai_config {
++    std::set<int32_t> skip_attn;
++    std::set<int32_t> skip_ffn;
++    std::set<int32_t> skip_layer;
++    std::set<int32_t> kv_share;
++    std::vector<int32_t> vocab_keep;
++    float expert_p = 1.0f;
++    int32_t expert_min = 1;
++    bool expert_p_enabled = false;
++    std::string bi_dump;
++
++    static const char * env(const char * name) {
++        const char * value = std::getenv(name);
++        return value && value[0] != '\0' ? value : nullptr;
++    }
++
++    static int32_t parse_integer(const std::string & value, const char * name) {
++        errno = 0;
++        char * end = nullptr;
++        const long parsed = std::strtol(value.c_str(), &end, 10);
++        while (end && std::isspace((unsigned char) *end)) ++end;
++        if (errno || end == value.c_str() || !end || *end != '\0' || parsed < INT32_MIN || parsed > INT32_MAX) {
++            throw std::runtime_error(std::string("invalid ") + name + " value: " + value);
++        }
++        return (int32_t) parsed;
++    }
++
++    static std::set<int32_t> parse_layers(const char * name, int32_t n_layer) {
++        std::set<int32_t> result;
++        const char * raw = env(name);
++        if (!raw) return result;
++
++        std::string value(raw);
++        size_t begin = 0;
++        while (begin < value.size()) {
++            const size_t end = value.find(',', begin);
++            std::string item = value.substr(begin, end == std::string::npos ? end : end - begin);
++            const size_t first = item.find_first_not_of(" \t\r\n");
++            const size_t last  = item.find_last_not_of(" \t\r\n");
++            if (first == std::string::npos) {
++                throw std::runtime_error(std::string("invalid ") + name + " layer list");
++            }
++            item = item.substr(first, last - first + 1);
++
++            const size_t dash = item.find('-');
++            const int32_t lo = parse_integer(item.substr(0, dash), name);
++            const int32_t hi = dash == std::string::npos ? lo : parse_integer(item.substr(dash + 1), name);
++            if (lo < 0 || hi < lo || hi >= n_layer) {
++                throw std::runtime_error(std::string(name) + " layer is outside [0," + std::to_string(n_layer - 1) + "]");
++            }
++            for (int32_t il = lo; il <= hi; ++il) result.insert(il);
++            if (end == std::string::npos) break;
++            begin = end + 1;
++        }
++        return result;
++    }
++
++    static std::vector<int32_t> parse_vocab(const char * path, int64_t n_vocab) {
++        std::vector<int32_t> rows;
++        std::set<int32_t> seen;
++        std::ifstream input(path);
++        if (!input) throw std::runtime_error(std::string("cannot open KOUKAI_VOCAB_KEEP file: ") + path);
++
++        std::string line;
++        while (std::getline(input, line)) {
++            const size_t first = line.find_first_not_of(" \t\r\n");
++            if (first == std::string::npos || line[first] == '#') continue;
++            const size_t last = line.find_last_not_of(" \t\r\n");
++            const int32_t id = parse_integer(line.substr(first, last - first + 1), "KOUKAI_VOCAB_KEEP");
++            if (id < 0 || id >= n_vocab) {
++                throw std::runtime_error("KOUKAI_VOCAB_KEEP token id is outside the model vocabulary");
++            }
++            if (seen.insert(id).second) rows.push_back(id);
++        }
++        if (input.bad()) throw std::runtime_error(std::string("error reading KOUKAI_VOCAB_KEEP file: ") + path);
++        if (rows.empty()) throw std::runtime_error("KOUKAI_VOCAB_KEEP must contain at least one token id");
++        return rows;
++    }
++
++    static qwen3moe_koukai_config from_env(int32_t n_layer, int64_t n_vocab, int32_t n_expert_used) {
++        qwen3moe_koukai_config result;
++        result.skip_attn = parse_layers("KOUKAI_SKIP_ATTN", n_layer);
++        result.skip_ffn  = parse_layers("KOUKAI_SKIP_FFN", n_layer);
++        result.skip_layer = parse_layers("KOUKAI_SKIP_LAYER", n_layer);
++        result.kv_share = parse_layers("KOUKAI_KV_SHARE", n_layer);
++        for (int32_t il : result.kv_share) {
++            if (il == 0) throw std::runtime_error("KOUKAI_KV_SHARE layer 0 has no lower layer");
++            if (result.skip_attention(il - 1) && !result.skip_attention(il)) {
++                throw std::runtime_error("KOUKAI_KV_SHARE requires the lower layer to retain its KV cache");
++            }
++        }
++
++        if (const char * value = env("KOUKAI_EXPERT_P")) {
++            errno = 0;
++            char * end = nullptr;
++            const float parsed = std::strtof(value, &end);
++            if (errno || end == value || !end || *end != '\0' || !std::isfinite(parsed) || parsed < 0.0f || parsed > 1.0f) {
++                throw std::runtime_error("KOUKAI_EXPERT_P must be between 0.0 and 1.0");
++            }
++            result.expert_p = parsed;
++            result.expert_p_enabled = true;
++            result.expert_min = 1;
++            if (const char * minimum = env("KOUKAI_EXPERT_MIN")) {
++                result.expert_min = parse_integer(minimum, "KOUKAI_EXPERT_MIN");
++            }
++            if (result.expert_min < 1 || result.expert_min > n_expert_used) {
++                throw std::runtime_error("KOUKAI_EXPERT_MIN must be between 1 and the model's original expert count");
++            }
++        }
++
++        if (const char * path = env("KOUKAI_VOCAB_KEEP")) {
++            result.vocab_keep = parse_vocab(path, n_vocab);
++        }
++        if (const char * path = env("KOUKAI_BI_DUMP")) result.bi_dump = path;
++        return result;
++    }
++
++    bool skip_attention(int32_t il) const {
++        return skip_attn.count(il) != 0 || skip_layer.count(il) != 0;
++    }
++
++    bool skip_feed_forward(int32_t il) const {
++        return skip_ffn.count(il) != 0 || skip_layer.count(il) != 0;
++    }
++
++    bool shares_kv(int32_t il) const {
++        return kv_share.count(il) != 0;
++    }
++};
++
++struct qwen3moe_bi_tap_context {
++    const qwen3moe_koukai_config * config;
++    int32_t layer;
++    bool capture;
++};
+diff --git a/src/models/qwen3moe.cpp b/src/models/qwen3moe.cpp
+index a6a3381e5..672067833 100644
+--- a/src/models/qwen3moe.cpp
++++ b/src/models/qwen3moe.cpp
+@@ -1,5 +1,95 @@
+ #include "models.h"
+ 
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <mutex>
++
++static void qwen3moe_koukai_scatter_logits(ggml_tensor * dst, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++
++    const auto * config = (const qwen3moe_koukai_config *) userdata;
++    const ggml_tensor * selected = dst->src[0];
++    const int64_t n_vocab = dst->ne[0];
++    for (int64_t token = 0; token < dst->ne[1]; ++token) {
++        auto * output = (float *) ((uint8_t *) dst->data + token * dst->nb[1]);
++        const auto * input = (const float *) ((const uint8_t *) selected->data + token * selected->nb[1]);
++        std::fill(output, output + n_vocab, -INFINITY);
++        for (size_t i = 0; i < config->vocab_keep.size(); ++i) {
++            output[config->vocab_keep[i]] = input[i];
++        }
++    }
++}
++
++static const float * qwen3moe_koukai_row(const ggml_tensor * tensor, int64_t token) {
++    return (const float *) ((const uint8_t *) tensor->data + token * tensor->nb[1]);
++}
++
++static void qwen3moe_koukai_bi_tap(ggml_tensor * dst, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++
++    const auto * tap = (const qwen3moe_bi_tap_context *) userdata;
++    const ggml_tensor * block_out = dst->src[0];
++    const ggml_tensor * block_in  = dst->src[1];
++    const ggml_tensor * attn_add  = dst->src[2];
++    const ggml_tensor * attn_res  = dst->src[3];
++    const ggml_tensor * ffn_add   = dst->src[4];
++    const ggml_tensor * ffn_res   = dst->src[5];
++    std::memcpy(dst->data, block_out->data, ggml_nbytes(block_out));
++
++    static std::mutex file_mutex;
++    static std::map<std::string, bool> active_files;
++    std::lock_guard<std::mutex> lock(file_mutex);
++    bool & active = active_files[tap->config->bi_dump];
++    if (!tap->capture) {
++        active = false;
++        return;
++    }
++
++    std::ofstream out(tap->config->bi_dump, active ? std::ios::app : std::ios::trunc);
++    if (!out) {
++        std::fprintf(stderr, "cannot write KOUKAI_BI_DUMP file: %s\n", tap->config->bi_dump.c_str());
++        active = false;
++        return;
++    }
++    if (!active) {
++        out << "layer\ttoken\tcosine\tattn_add_over_residual\tffn_add_over_residual\n";
++    }
++    active = true;
++
++    if (block_out->type != GGML_TYPE_F32 || block_in->type != GGML_TYPE_F32 ||
++            attn_add->type != GGML_TYPE_F32 || attn_res->type != GGML_TYPE_F32 ||
++            ffn_add->type != GGML_TYPE_F32 || ffn_res->type != GGML_TYPE_F32) {
++        return;
++    }
++    const int64_t n_embd = block_in->ne[0];
++    for (int64_t token = 0; token < block_in->ne[1]; ++token) {
++        const float * x = qwen3moe_koukai_row(block_in, token);
++        const float * y = qwen3moe_koukai_row(block_out, token);
++        const float * a = qwen3moe_koukai_row(attn_add, token);
++        const float * ar = qwen3moe_koukai_row(attn_res, token);
++        const float * f = qwen3moe_koukai_row(ffn_add, token);
++        const float * fr = qwen3moe_koukai_row(ffn_res, token);
++        double dot = 0.0, x2 = 0.0, y2 = 0.0, a2 = 0.0, ar2 = 0.0, f2 = 0.0, fr2 = 0.0;
++        for (int64_t i = 0; i < n_embd; ++i) {
++            dot += (double) x[i] * y[i];
++            x2 += (double) x[i] * x[i];
++            y2 += (double) y[i] * y[i];
++            a2 += (double) a[i] * a[i];
++            ar2 += (double) ar[i] * ar[i];
++            f2 += (double) f[i] * f[i];
++            fr2 += (double) fr[i] * fr[i];
++        }
++        const double cosine = dot / std::sqrt(std::max(1e-30, x2 * y2));
++        const double attn_ratio = std::sqrt(a2) / std::max(1e-30, std::sqrt(ar2));
++        const double ffn_ratio = std::sqrt(f2) / std::max(1e-30, std::sqrt(fr2));
++        out << tap->layer << '\t' << token << '\t' << cosine << '\t' << attn_ratio << '\t' << ffn_ratio << '\n';
++    }
++}
++
+ void llama_model_qwen3moe::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, false);
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+@@ -11,17 +101,31 @@ void llama_model_qwen3moe::load_arch_hparams(llama_model_loader & ml) {
+     }
+ }
+ 
+-void llama_model_qwen3moe::load_arch_tensors(llama_model_loader &) {
++void llama_model_qwen3moe::load_arch_tensors(llama_model_loader & ml) {
+     LLAMA_LOAD_LOCALS;
+ 
++    koukai = qwen3moe_koukai_config::from_env(n_layer, n_vocab, n_expert_used);
++
+     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+ 
+     // output
+     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+-    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+-    // if output is NULL, init from the input tok embed
+-    if (output == NULL) {
+-        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
++    const auto output_tn = tn(LLM_TENSOR_OUTPUT, "weight");
++    if (!koukai.vocab_keep.empty()) {
++        const auto embd_tn = tn(LLM_TENSOR_TOKEN_EMBD, "weight");
++        const bool has_output_tensor = ml.get_tensor_meta(output_tn.str().c_str()) != nullptr;
++        ml.set_tensor_row_selection(output_tn.str(),
++                has_output_tensor ? output_tn.str() : embd_tn.str(), n_vocab, koukai.vocab_keep);
++        output = create_tensor(output_tn, {n_embd, (int64_t) koukai.vocab_keep.size()}, has_output_tensor ? 0 : TENSOR_DUPLICATED);
++        if (output == nullptr) {
++            throw std::runtime_error("KOUKAI_VOCAB_KEEP could not load the output matrix");
++        }
++    } else {
++        output = create_tensor(output_tn, {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
++        // if output is NULL, init from the input tok embed
++        if (output == NULL) {
++            output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
++        }
+     }
+ 
+     for (int i = 0; i < n_layer; ++i) {
+@@ -77,64 +181,102 @@ llama_model_qwen3moe::graph::graph(const llama_model & model, const llm_graph_pa
+ 
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
+ 
++    const auto & koukai = static_cast<const llama_model_qwen3moe &>(model).koukai;
++    if (!koukai.bi_dump.empty()) {
++        bi_tap_contexts.reserve(n_layer);
++    }
++    auto record_bi = [&](int il, ggml_tensor * block_out, ggml_tensor * block_in,
++            ggml_tensor * attn_add, ggml_tensor * attn_res, ggml_tensor * ffn_add, ggml_tensor * ffn_res) {
++        if (koukai.bi_dump.empty()) return block_out;
++        bi_tap_contexts.push_back({ &koukai, il, n_tokens > 1 });
++        ggml_tensor * args[] = { block_out, block_in, attn_add, attn_res, ffn_add, ffn_res };
++        return ggml_custom_4d(ctx0, block_out->type,
++                block_out->ne[0], block_out->ne[1], block_out->ne[2], block_out->ne[3],
++                args, 6, qwen3moe_koukai_bi_tap, 1, &bi_tap_contexts.back());
++    };
++
+     for (int il = 0; il < n_layer; ++il) {
+         res->t_layer_inp[il] = inpL;
+ 
+-        ggml_tensor * inpSA = inpL;
++        if (koukai.skip_layer.count(il)) {
++            if (!koukai.bi_dump.empty()) {
++                ggml_tensor * zero = ggml_scale(ctx0, inpL, 0.0f);
++                inpL = record_bi(il, inpL, inpL, zero, inpL, zero, inpL);
++            }
++            continue;
++        }
+ 
+-        // norm
+-        cur = build_norm(inpL,
+-                model.layers[il].attn_norm, NULL,
+-                LLM_NORM_RMS, il);
+-        cb(cur, "attn_norm", il);
+-
+-        // self_attention
+-        {
+-            // compute Q and K and RoPE them
+-            auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
+-                    n_embd_head, n_head, n_head_kv, il);
+-
+-            Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
+-            cb(Qcur, "Qcur_normed", il);
+-
+-            Qcur = ggml_rope_ext(
+-                    ctx0, Qcur, inp_pos, nullptr,
+-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+-                    ext_factor, attn_factor, beta_fast, beta_slow
+-                    );
+-
+-            Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, NULL, LLM_NORM_RMS, il);
+-            cb(Kcur, "Kcur_normed", il);
+-
+-            Kcur = ggml_rope_ext(
+-                    ctx0, Kcur, inp_pos, nullptr,
+-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+-                    ext_factor, attn_factor, beta_fast, beta_slow
+-                    );
+-
+-            cb(Qcur, "Qcur", il);
+-            cb(Kcur, "Kcur", il);
+-            cb(Vcur, "Vcur", il);
+-
+-            cur = build_attn(inp_attn,
+-                    model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
++        ggml_tensor * inpSA = inpL;
++        ggml_tensor * attn_add = nullptr;
++
++        if (koukai.skip_attention(il)) {
++            cur = ggml_scale(ctx0, inpSA, 0.0f);
++            attn_add = cur;
++        } else {
++            // norm
++            cur = build_norm(inpL,
++                    model.layers[il].attn_norm, NULL,
++                    LLM_NORM_RMS, il);
++            cb(cur, "attn_norm", il);
++
++            // self_attention
++            {
++                const bool share_kv = koukai.shares_kv(il);
++                auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
++                        n_embd_head, n_head, n_head_kv, il, !share_kv);
++
++                Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
++                cb(Qcur, "Qcur_normed", il);
++
++                Qcur = ggml_rope_ext(
++                        ctx0, Qcur, inp_pos, nullptr,
++                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                        ext_factor, attn_factor, beta_fast, beta_slow
++                        );
++
++                if (!share_kv) {
++                    Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, NULL, LLM_NORM_RMS, il);
++                    cb(Kcur, "Kcur_normed", il);
++
++                    Kcur = ggml_rope_ext(
++                            ctx0, Kcur, inp_pos, nullptr,
++                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
++                            ext_factor, attn_factor, beta_fast, beta_slow
++                            );
++
++                    cb(Kcur, "Kcur", il);
++                    cb(Vcur, "Vcur", il);
++                }
++
++                cb(Qcur, "Qcur", il);
++                cur = build_attn(inp_attn,
++                        model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
++                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il, share_kv);
++            }
++            attn_add = cur;
+         }
+         if (il == n_layer - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
++            if (!koukai.bi_dump.empty()) {
++                attn_add = ggml_get_rows(ctx0, attn_add, inp_out_ids);
++            }
+         }
+         ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+         cb(ffn_inp, "ffn_inp", il);
+ 
+-        // MoE branch
+-        cur = build_norm(ffn_inp,
+-                model.layers[il].ffn_norm, NULL,
+-                LLM_NORM_RMS, il);
+-        cb(cur, "ffn_norm", il);
+-
+-        ggml_tensor * moe_out =
+-            build_moe_ffn(cur,
++        ggml_tensor * moe_out;
++        if (koukai.skip_feed_forward(il)) {
++            moe_out = ggml_scale(ctx0, ffn_inp, 0.0f);
++            cur = ffn_inp;
++        } else {
++            // MoE branch
++            cur = build_norm(ffn_inp,
++                    model.layers[il].ffn_norm, NULL,
++                    LLM_NORM_RMS, il);
++            cb(cur, "ffn_norm", il);
++
++            moe_out = build_moe_ffn(cur,
+                     model.layers[il].ffn_gate_inp,
+                     model.layers[il].ffn_up_exps,
+                     model.layers[il].ffn_gate_exps,
+@@ -148,18 +290,23 @@ llama_model_qwen3moe::graph::graph(const llama_model & model, const llm_graph_pa
+                     nullptr, nullptr,
+                     model.layers[il].ffn_up_exps_s,
+                     model.layers[il].ffn_gate_exps_s,
+-                    model.layers[il].ffn_down_exps_s);
+-        cb(moe_out, "ffn_moe_out", il);
+-        cur = moe_out;
+-
+-        cur = ggml_add(ctx0, cur, ffn_inp);
++                    model.layers[il].ffn_down_exps_s,
++                    nullptr, &koukai);
++            cb(moe_out, "ffn_moe_out", il);
++            cur = ggml_add(ctx0, moe_out, ffn_inp);
++        }
+ 
+         cur = build_cvec(cur, il);
+         cb(cur, "l_out", il);
+ 
++        cur = record_bi(il, cur, inpSA, attn_add, inpSA, moe_out, ffn_inp);
++
+         // input for next layer
+         inpL = cur;
+     }
++    if (inp_out_ids && koukai.skip_layer.count(n_layer - 1)) {
++        inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
++    }
+     cur = inpL;
+ 
+     cur = build_norm(cur,
+@@ -170,7 +317,14 @@ llama_model_qwen3moe::graph::graph(const llama_model & model, const llm_graph_pa
+     res->t_embd = cur;
+ 
+     // lm_head
+-    cur = build_lora_mm(model.output, cur, model.output_s);
++    if (!koukai.vocab_keep.empty()) {
++        cur = build_lora_mm(model.output, cur, model.output_s);
++        ggml_tensor * args[] = { cur };
++        cur = ggml_custom_4d(ctx0, GGML_TYPE_F32, model.vocab.n_tokens(), cur->ne[1], 1, 1,
++                args, 1, qwen3moe_koukai_scatter_logits, 1, (void *) &koukai);
++    } else {
++        cur = build_lora_mm(model.output, cur, model.output_s);
++    }
+ 
+     cb(cur, "result_output", -1);
+     res->t_logits = cur;
