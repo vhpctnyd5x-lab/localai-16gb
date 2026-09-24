@@ -295,6 +295,68 @@ def erabi(text):
     return kosu
 
 
+SYSTEM_HAYASA = ("あなたは速さの問題を書き出す係です。計算はしません。出力は次の行だけ（説明なし）:\n"
+                 "間: <出発したときの二人の間の道のり>\n向き: 向かい合う か 追いかける\n"
+                 "一: <分> <速さ>, <分> <速さ>, 以後 <速さ>   ← 一人目の速さを 始めから順に。途中で変わらなければ 以後 <速さ> だけ\n"
+                 "二: 同じ書き方で二人目。追いかけるときは 一=追う方、二=前にいる方。遅れて出発するなら 最初に <分> 0\n"
+                 "問う: 分 か 一の道のり か 二の道のり   ← 出会う（追いつく）までの時間か、それまでに進んだ道のり\n"
+                 "道のりと速さの単位はそろえる（m と 毎分m など）。\n"
+                 "例: 2000m 離れた二人が向かい合って出発。Aは最初の4分を毎分90m、その後は毎分130m。Bは毎分110m。何分後に出会うか →\n"
+                 "間: 2000\n向き: 向かい合う\n一: 4 90, 以後 130\n二: 以後 110\n問う: 分")
+
+
+def hayasa(text):
+    """区切りごとの速さで二人を動かし、間が 0 になる時刻（分）か そこまでの道のりを分数で正確に出す。"""
+    from fractions import Fraction as F
+    def kazu(s):
+        return F(s.replace(",", ""))
+    m = re.search(r"^\s*間\s*[:：]\s*([\d.]+)", text or "", re.M)
+    muki = re.search(r"^\s*向き\s*[:：]\s*(\S+)", text or "", re.M)
+    if not m or not muki:
+        raise ValueError("間か向きが無い")
+    aida, oikake = kazu(m.group(1)), "追" in muki.group(1)
+    def kukan(k):
+        g = re.search(r"^\s*%s\s*[:：]\s*(.+)$" % k, text, re.M)
+        if not g:
+            raise ValueError(k + "が無い")
+        out = []
+        for p in re.split(r"[,、，]", g.group(1)):
+            p = p.strip()
+            a = re.match(r"^以後\s*([\d.]+)", p)
+            b = re.match(r"^([\d.]+)\s*分?\s+(?:毎分)?([\d.]+)", p)
+            if a: out.append((None, kazu(a.group(1)))); break
+            elif b: out.append((kazu(b.group(1)), kazu(b.group(2))))
+            elif p: raise ValueError("区切りが読めない: " + p[:20])
+        if not out or out[-1][0] is not None:
+            raise ValueError(k + "に 以後 が無い")
+        return out
+    ichi, ni = kukan("一"), kukan("二")
+    def hayasa_at(ks, t):   # 時刻 t から次の区切りまでの速さと、その区切りの時刻
+        s = F(0)
+        for d, v in ks:
+            if d is None or t < s + d:
+                return v, (None if d is None else s + d)
+            s += d
+    t, michi1, michi2 = F(0), F(0), F(0)
+    for _ in range(1000):
+        v1, e1 = hayasa_at(ichi, t); v2, e2 = hayasa_at(ni, t)
+        chijimu = v1 - v2 if oikake else v1 + v2
+        tsugi = min([e for e in (e1, e2) if e is not None], default=None)
+        if chijimu > 0 and (tsugi is None or aida / chijimu <= tsugi - t):
+            dt = aida / chijimu
+            t, michi1, michi2 = t + dt, michi1 + v1 * dt, michi2 + v2 * dt
+            break
+        if tsugi is None:
+            raise ValueError("出会わない")
+        dt = tsugi - t
+        aida -= chijimu * dt; michi1 += v1 * dt; michi2 += v2 * dt; t = tsugi
+    else:
+        raise ValueError("区切りが多すぎる")
+    q = re.search(r"^\s*問う\s*[:：]\s*(\S+)", text, re.M)
+    v = {"一の道のり": michi1, "二の道のり": michi2}.get(q.group(1) if q else "分", t)
+    return int(v) if v.denominator == 1 else float(round(v, 4))
+
+
 # ── 道具えらび（物差し monosashi/hakaru.py と 本番 kernel/kikai.py が 同じこれを呼ぶ）──────────
 # 型を見て 道具を 1つだけ選ぶ。合わない型に道具を使うと崩れる（9/23 自作テストB: 全部を式にすると 103→64）。
 # 採用は 測って決める: 環境変数 KERNEL_KAZOERU / KERNEL_JIKAN / KERNEL_NARABE（本番の既定は kernel/kikai.py 側で決める）。
@@ -309,6 +371,9 @@ def erabu(toi, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
     # 時刻は「9時20分」。「2時間15分」（長さ）は時刻ではない（9/23 自作テストB の単位問題で取り違えた）
     if "jikan" in tsukau and len(re.findall(r"\d+時(?!間)(?:\d+分)?", toi)) >= 2 and re.search(r"何分|何時間", toi):
         return "jikan"
+    # 速さ: 出会う・追いつく までの時間か道のり（9/24 自作テストE で 7/16。前半に相手も進むのを忘れる）。既定では使わない（測ってから）
+    if "hayasa" in tsukau and re.search(r"出会|追いつ|追い付|すれ違", toi) and re.search(r"何分後|何秒後|何時間後|何m|何メートル|何km|何キロ", toi):
+        return "hayasa"
     if "kazoeru" in tsukau and "何通り" in toi and not re.search(r"並べ|並び|隣|列に|一列|席|選", toi):
         return "kazoeru"
     return None
@@ -317,7 +382,8 @@ def erabu(toi, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
 DOUGU = {"kazoeru": (lambda: SYSTEM, lambda t: kazoeru(t), 300),
          "jikan": (lambda: SYSTEM_JIKAN, lambda t: jikan(t), 200),
          "narabe": (lambda: SYSTEM_NARABE, lambda t: narabe(t), 300),
-         "erabi": (lambda: SYSTEM_ERABI, lambda t: erabi(t), 300)}
+         "erabi": (lambda: SYSTEM_ERABI, lambda t: erabi(t), 300),
+         "hayasa": (lambda: SYSTEM_HAYASA, lambda t: hayasa(t), 300)}
 
 
 def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
@@ -330,7 +396,7 @@ def toku(toi, kiku, tsukau=("kazoeru", "jikan", "narabe", "erabi")):
     kaki = kiku(toi, sys_(), cap) or ""
     try:
         v = f(kaki)
-        if na in ("kazoeru", "narabe", "erabi") and v == 0:
+        if na in ("kazoeru", "narabe", "erabi", "hayasa") and v == 0:
             raise ValueError("0通り")     # 「何通り」で 0 は まず書き違い
         return v, na, kaki
     except Exception as e:

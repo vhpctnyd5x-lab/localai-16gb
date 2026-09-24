@@ -25,6 +25,7 @@ M="$W/$MF"
 [ "${KERNEL_JIKAN:-}" = 1 ] && NAFUDA="${NAFUDA}_j"
 [ "${KERNEL_NARABE:-}" = 1 ] && NAFUDA="${NAFUDA}_n"
 [ "${KERNEL_ERABI:-}" = 1 ] && NAFUDA="${NAFUDA}_s"
+[ "${KERNEL_HAYASA:-}" = 1 ] && NAFUDA="${NAFUDA}_v"
 LORA=""; [ "${KERNEL_LORA:-}" = 1 ] && { NAFUDA="${NAFUDA}_l"; LORA="--lora $K/lora/tehon-lora.gguf"; }
 DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 QF="$K/monosashi/mondai_${DAN}dan.jsonl"; [ -f "$QF" ] || QF="$K/monosashi/mondai_${DAN}.jsonl"   # 公式の物差し（gsm8k 等）
