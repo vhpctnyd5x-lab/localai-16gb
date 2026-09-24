@@ -1,20 +1,21 @@
-# ubuntu-24.04_g8_mlock_pplonly_f0  2026-09-24T15:12:00Z
+# ubuntu-24.04_g8_mlock_pplonly_f0  2026-09-24T16:16:47Z
 ```
-llama.cpp b31b71f / koukai b1fe459 / 問題 edcddf2ebec8 / 頭脳 db3ce897ccc9
+llama.cpp b31b71f / koukai bf4bd91 / 問題 edcddf2ebec8 / 頭脳 db3ce897ccc9
 llama patch sha256 fc146c2e6569
 メモリ上限 8 GB（swap なし、mmap ページキャッシュを含む）
+生成設定 temperature=0
 runner "24.04.5 LTS (Noble Numbat)" gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
 cores 4
-model name	: AMD EPYC 9V74 80-Core Processor
+model name	: AMD EPYC 7763 64-Core Processor
                total        used        free      shared  buff/cache   available
-Mem:              15           0          12           0           2          14
+Mem:              15           1          12           0           2          14
 /dev/root       145G   59G   86G  41% /
 ```
 ## 基準（同じ機械）pp512 / tg128
 | model                          |       size |     params | backend    | threads |            test |                  t/s |
 | ------------------------------ | ---------: | ---------: | ---------- | ------: | --------------: | -------------------: |
-| qwen3moe 30B.A3B Q2_K - Medium |  10.48 GiB |    30.53 B | CPU        |       4 |           pp512 |         23.49 ± 1.41 |
-| qwen3moe 30B.A3B Q2_K - Medium |  10.48 GiB |    30.53 B | CPU        |       4 |           tg128 |         17.44 ± 0.05 |
+| qwen3moe 30B.A3B Q2_K - Medium |  10.48 GiB |    30.53 B | CPU        |       4 |           pp512 |         19.54 ± 0.04 |
+| qwen3moe 30B.A3B Q2_K - Medium |  10.48 GiB |    30.53 B | CPU        |       4 |           tg128 |         14.72 ± 0.08 |
 
 build: b31b71f3a (10872)
 
@@ -84,45 +85,15 @@ or by specifying the parameter multiple times. Ranges can be given as
 'first-last' or 'first-last+step' or 'first-last*mult'.
 llama-bench 失敗: exit=1
 8 GB で落ちた（llama-bench）
-llama-bench cgroup memory.peak: 8949760 bytes; pgmajfault: 54
+llama-bench cgroup memory.peak: 8732672 bytes; pgmajfault: 48
 基準比 pp512: 算出できず（ベンチ値不足）
 基準比 tg128: 算出できず（ベンチ値不足）
 
 ## PPL（llama-perplexity -c 512 --chunks 16）
-8 GB で落ちた（llama-perplexity）
-0.00.005.511 W DEPRECATED: --mlock is deprecated. use --load-mode mlock instead
-0.00.339.901 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
-0.00.395.382 W warning: failed to mlock 4733906944-byte buffer (after previously locking 0 bytes): Cannot allocate memory
-Try increasing RLIMIT_MEMLOCK ('ulimit -l' as root).
-dougu/actions_hakaru.sh: line 181:  4964 Killed                  sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
-llama-perplexity cgroup memory.peak: 8589934592 bytes; pgmajfault: 92
+8GB に載らない（Killed、exit 137）
+llama-perplexity cgroup memory.peak: 8589934592 bytes; pgmajfault: 91
 8 GB で落ちた（llama-perplexity、OOM kill）
 PPL: 取れなかった
-失敗: exit=137 行=187 命令=sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
-llama-server の末尾:
-warning: no usable GPU found, --gpu-layers option will be ignored
-warning: one possible reason is that llama.cpp was compiled without GPU support
-warning: consult docs/build.md for compilation instructions
-0.00.004.518 W DEPRECATED: --mlock is deprecated. use --load-mode mlock instead
-0.00.004.829 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.006.097 W srv  llama_server: -----------------
-0.00.006.102 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
-0.00.006.103 W srv  llama_server: this can be a security risk (cross-origin attacks)
-0.00.006.103 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
-0.00.006.103 W srv  llama_server: -----------------
-0.00.007.787 I srv    load_model: loading model '/home/runner/work/_temp/hakaru/Qwen3-30B-A3B-Q2_K.gguf'
-0.00.326.375 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
-0.00.380.224 W warning: failed to mlock 4733906944-byte buffer (after previously locking 0 bytes): Cannot allocate memory
-Try increasing RLIMIT_MEMLOCK ('ulimit -l' as root).
-dougu/actions_hakaru.sh: line 181:  5009 Killed                  sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
-失敗: exit=137 行=187 命令=sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
-llama-perplexity の末尾:
-0.00.005.511 W DEPRECATED: --mlock is deprecated. use --load-mode mlock instead
-0.00.339.901 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
-0.00.395.382 W warning: failed to mlock 4733906944-byte buffer (after previously locking 0 bytes): Cannot allocate memory
-Try increasing RLIMIT_MEMLOCK ('ulimit -l' as root).
-dougu/actions_hakaru.sh: line 181:  4964 Killed                  sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
-頭脳が立たない: --spec-type ngram-simple --spec-ngram-simple-size-m 16
-llama-server cgroup memory.peak: 8589934592 bytes; pgmajfault: 117
+8GB に載らない（Killed、exit 137）
+llama-server cgroup memory.peak: 8589934592 bytes; pgmajfault: 112
 8 GB で落ちた（llama-server、OOM kill）
-8 GB で落ちた（llama-server 起動）
