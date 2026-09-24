@@ -8,6 +8,7 @@ parse_branch(){
   local b="$1" token
   has(){ [[ "$b" =~ (^|-)${1}(-|$) ]]; }
   DAN=7; FUKASA=0; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; JIKKEN=""; PPLONLY=""
+  KVK8V4=""; FA1=""; NOMMAP=""; MLOCK=""; SPD06=""
   KERNEL_KAZOERU=""; KERNEL_JIKAN=""; KERNEL_NARABE=""; KERNEL_ERABI=""
   KERNEL_HAYASA=""; KERNEL_KEISAN=""; KERNEL_TEHON=""; KERNEL_LORA=""; ATAMA=""
   for token in k j n s v c t l; do has "$token" && case "$token" in
@@ -23,6 +24,7 @@ parse_branch(){
   if [[ "$b" =~ (^|-)ub([1-9][0-9]*)(-|$) ]]; then UB="${BASH_REMATCH[2]}"; fi
   if [[ "$b" =~ (^|-)x([A-Za-z0-9_]+)(-|$) ]]; then JIKKEN="${BASH_REMATCH[2]}"; fi
   has kvq8 && KVQ=8; has kvq4 && KVQ=4; has pplonly && PPLONLY=1
+  has kvk8v4 && KVK8V4=1; has fa1 && FA1=1; has nommap && NOMMAP=1; has mlock && MLOCK=1; has spd06 && SPD06=1
   if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q and -m2507 cannot be combined' >&2; return 2; fi
   if [[ "${b:0:12}" == hakaru-henka && "$b" =~ (^|-)henka(-|$) ]]; then HENKA_FILE=dougu/actions_henka.txt; else HENKA_FILE=""; fi
   if [[ -z "${KAGIRI:-}" ]]; then
@@ -37,12 +39,12 @@ if [[ "${1:-}" == --parse-branch ]]; then
     "$DAN" "$FUKASA" "$EXPERTS" "$QUANT" "$MEM_GB" "$KAGIRI" "$ATAMA" \
     "${KERNEL_KAZOERU:-}" "${KERNEL_JIKAN:-}" "${KERNEL_NARABE:-}" "${KERNEL_ERABI:-}" \
     "${KERNEL_HAYASA:-}" "${KERNEL_KEISAN:-}" "${KERNEL_TEHON:-}" "${KERNEL_LORA:-}" "${HENKA_FILE:-}"
-  printf 'UB=%s KVQ=%s JIKKEN=%s PPLONLY=%s\n' "${UB:-}" "${KVQ:-}" "${JIKKEN:-}" "${PPLONLY:-}"
+  printf 'UB=%s KVQ=%s JIKKEN=%s PPLONLY=%s KVK8V4=%s FA1=%s NOMMAP=%s MLOCK=%s SPD06=%s\n' "${UB:-}" "${KVQ:-}" "${JIKKEN:-}" "${PPLONLY:-}" "${KVK8V4:-}" "${FA1:-}" "${NOMMAP:-}" "${MLOCK:-}" "${SPD06:-}"
   exit 0
 fi
 NAFUDA="${1:-$(uname -m)}"; REF_NAME="${GITHUB_REF_NAME:-hakaru}"
 # hakaru* の枝だけ 枝の名から読む。hyou.yml（GSM8K の錨）は DAN・KERNEL_* を環境で渡すので そのまま使う（9/24 Claude）
-if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; JIKKEN="${JIKKEN:-}"; PPLONLY="${PPLONLY:-}"; HENKA_FILE="${HENKA_FILE:-}"; fi
+if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; KVK8V4=""; FA1=""; NOMMAP=""; MLOCK=""; SPD06=""; JIKKEN="${JIKKEN:-}"; PPLONLY="${PPLONLY:-}"; HENKA_FILE="${HENKA_FILE:-}"; fi
 FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
 [[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
@@ -71,6 +73,16 @@ if [[ -n "${JIKKEN:-}" ]]; then
     [[ "$KOUKAI_QTT" =~ ^[A-Za-z0-9_.]+:[A-Za-z0-9_]+(,[A-Za-z0-9_.]+:[A-Za-z0-9_]+)*$ ]] || { echo "不正な KOUKAI_QTT" >&2; exit 2; }
   fi
   [[ -z "${KOUKAI_PRUNE_KEEP:-}" || "${KOUKAI_PRUNE_KEEP}" =~ ^[0-9]+$ ]] || { echo "不正な KOUKAI_PRUNE_KEEP" >&2; exit 2; }
+  [[ -z "${KOUKAI_PRUNE_NEURONS:-}" || "${KOUKAI_PRUNE_NEURONS}" =~ ^(0(\.[0-8][0-9]*)?|0\.9(0*)?)$ ]] || { echo "KOUKAI_PRUNE_NEURONS は 0〜0.9" >&2; exit 2; }
+  if [[ -n "${KOUKAI_PRUNE_NEURONS:-}" ]]; then
+    [[ -n "${KOUKAI_QTYPE:-}" ]] || { echo "PRUNE_NEURONS は QTYPE が必要" >&2; exit 2; }
+    [[ -f "$K/dougu/asshuku/prune_neurons.py" ]] || { echo "dougu/asshuku/prune_neurons.py がない" >&2; exit 2; }
+  fi
+  for key in KOUKAI_SWA_LAYERS KOUKAI_SWA_WINDOW KOUKAI_HEAD_MASK; do
+    if [[ -n "${!key:-}" ]]; then
+      grep -q "$key" "$K/llama_patch/koukai.patch" 2>/dev/null || { echo "$key を使うカーネル実装がない" >&2; exit 2; }
+    fi
+  done
   [[ -z "${KOUKAI_DROP_LAYERS:-}" || "${KOUKAI_DROP_LAYERS}" =~ ^[0-9]+(,[0-9]+)*$ ]] || { echo "不正な KOUKAI_DROP_LAYERS" >&2; exit 2; }
   if [[ -n "${KOUKAI_QOUT:-}${KOUKAI_QEMB:-}${KOUKAI_QTT:-}" && -z "${KOUKAI_QTYPE:-}" ]]; then
     echo "QOUT/QEMB/QTT は QTYPE（再量子化）が必要" >&2; exit 2
@@ -133,6 +145,11 @@ DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 [[ -n "${JIKKEN:-}" ]] && NAFUDA="${NAFUDA}_x$JIKKEN"
 [[ -n "${UB:-}" ]] && NAFUDA="${NAFUDA}_ub$UB"
 [[ -n "${KVQ:-}" ]] && NAFUDA="${NAFUDA}_kvq$KVQ"
+[[ -n "${KVK8V4:-}" ]] && NAFUDA="${NAFUDA}_kvk8v4"
+[[ -n "${FA1:-}" ]] && NAFUDA="${NAFUDA}_fa1"
+[[ -n "${NOMMAP:-}" ]] && NAFUDA="${NAFUDA}_nommap"
+[[ -n "${MLOCK:-}" ]] && NAFUDA="${NAFUDA}_mlock"
+[[ -n "${SPD06:-}" ]] && NAFUDA="${NAFUDA}_spd06"
 [[ -n "${PPLONLY:-}" ]] && NAFUDA="${NAFUDA}_pplonly"
 # ふるい（-pplonly）は x64 の 1台で足りる。ARM の台はすぐ終えて 同時 20台の枠を空ける（9/24）
 if [[ -n "${PPLONLY:-}" && "$(uname -m)" == aarch64 ]]; then echo "ふるいは x64 だけで測る（ARM は飛ばす）"; exit 0; fi
@@ -222,6 +239,30 @@ cmake -S "$W/llama.cpp" -B "$W/build" -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_
 TARGETS=(llama-server llama-bench llama-perplexity); [[ -z "${REBUILD_QTYPE:-}" ]] || TARGETS+=(llama-quantize)
 cmake --build "$W/build" -j"$NP" --target "${TARGETS[@]}" >/dev/null
 B="$W/build/bin"; log "作った"
+MMAP_ARGS=(); [[ -z "${NOMMAP:-}" ]] || MMAP_ARGS+=(--no-mmap)
+[[ -z "${MLOCK:-}" ]] || MMAP_ARGS+=(--mlock)
+if [[ -n "${SPD06:-}" ]]; then
+  DRAFT_REPO=Qwen/Qwen3-0.6B-GGUF; DRAFT_MF=Qwen3-0.6B-Q8_0.gguf
+  DRAFT_REV=$(curl -fsSL "https://huggingface.co/api/models/$DRAFT_REPO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')
+  [[ "$DRAFT_REV" =~ ^[0-9a-f]{40}$ ]] || { echo "草稿 revision が取れない" >&2; exit 1; }
+  DRAFT_SHA=$(curl -fsSL "https://huggingface.co/api/models/$DRAFT_REPO/tree/$DRAFT_REV?recursive=true&expand=true" | python3 -c 'import json,sys; rows=json.load(sys.stdin); name=sys.argv[1]; row=next((x for x in rows if x.get("path")==name), None); print(row.get("lfs",{}).get("oid", "") if row else "")' "$DRAFT_MF")
+  [[ "$DRAFT_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "草稿 lfs.oid が取れない" >&2; exit 1; }
+  DRAFT_M="$W/$DRAFT_MF"
+  curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$DRAFT_M.part" "https://huggingface.co/$DRAFT_REPO/resolve/$DRAFT_REV/$DRAFT_MF"
+  echo "$DRAFT_SHA  $DRAFT_M.part" | sha256sum -c --quiet || { echo "草稿の sha256 が違う" >&2; exit 1; }
+  mv "$DRAFT_M.part" "$DRAFT_M"
+  SERVER_HELP=$("$B/llama-server" --help 2>&1)
+  for option in '-md' '--draft-max' '--draft-min'; do grep -q -- "$option" <<< "$SERVER_HELP" || { echo "草稿指定に未対応: $option" >&2; exit 1; }; done
+  SPEC_ARGS=(-md "$DRAFT_M" --draft-max 8 --draft-min 1)
+  if grep -q -- '--spec-type' <<< "$SERVER_HELP" && grep -q -- 'ngram-simple' <<< "$SERVER_HELP"; then
+    if grep -q -- 'comma-separated list of types' <<< "$SERVER_HELP" && grep -q -- 'draft-simple' <<< "$SERVER_HELP"; then
+      SPEC_ARGS+=(--spec-type draft-simple,ngram-simple --spec-ngram-simple-size-m 16)
+    else
+      SPEC_ARGS+=(--spec-type draft-simple)
+    fi
+  fi
+  echo "草稿 $DRAFT_REV / sha256 ${DRAFT_SHA:0:12} / 指定 ${SPEC_ARGS[*]}" >> "$OUT"
+else SPEC_ARGS=(--spec-type ngram-simple --spec-ngram-simple-size-m 16); fi
 wait $DL; DL=""
 echo "$HF_SHA  $M.part" | sha256sum -c --quiet || { echo "頭脳の sha256 が違う" >> "$OUT"; exit 1; }
 mv "$M.part" "$M"; log "頭脳 $(du -h "$M" | cut -f1) 落とした（lfs.oid sha256 一致）"
@@ -229,6 +270,12 @@ if [[ -n "${REBUILD_QTYPE:-}" ]]; then
   wait "$DL_IMATRIX"; DL_IMATRIX=""
   echo "$IMATRIX_SHA  $IMATRIX.part" | sha256sum -c --quiet || { echo "imatrix の sha256 が違う" >> "$OUT"; exit 1; }
   mv "$IMATRIX.part" "$IMATRIX"
+  if [[ -n "${KOUKAI_PRUNE_NEURONS:-}" && ! "${KOUKAI_PRUNE_NEURONS}" =~ ^0(\.0*)?$ ]]; then
+    PRUNED_M="$W/pruned_q8.gguf"; PRUNED_IMATRIX="$W/pruned_imatrix.dat"
+    python3 "$K/dougu/asshuku/prune_neurons.py" --imatrix "$IMATRIX" --imatrix-out "$PRUNED_IMATRIX" --frac "$KOUKAI_PRUNE_NEURONS" "$M" "$PRUNED_M"
+    rm -f "$M" "$IMATRIX"; M="$PRUNED_M"; IMATRIX="$PRUNED_IMATRIX"
+    echo "ニューロン剪定 ${KOUKAI_PRUNE_NEURONS}: $(du -h "$M" | cut -f1)" >> "$OUT"
+  fi
   QARGS=(--allow-requantize --imatrix "$IMATRIX")
   [[ -z "${KOUKAI_QOUT:-}" ]] || QARGS+=(--output-tensor-type "$KOUKAI_QOUT")
   [[ -z "${KOUKAI_QEMB:-}" ]] || QARGS+=(--token-embedding-type "$KOUKAI_QEMB")
@@ -262,8 +309,10 @@ fi
 
 # 4. 速さ（読み込み pp512・書き出し tg128、3回）
 OVERRIDE_ARGS=(); [[ -n "${EXPERTS:-}" ]] && OVERRIDE_ARGS+=(--override-kv "qwen3moe.expert_used_count=int:$EXPERTS")
-BENCH_ARGS=(); [[ -n "${UB:-}" ]] && BENCH_ARGS+=(-ub "$UB")
+BENCH_ARGS=("${MMAP_ARGS[@]}"); [[ -n "${UB:-}" ]] && BENCH_ARGS+=(-ub "$UB")
 if [[ -n "${KVQ:-}" ]]; then BENCH_ARGS+=(-ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa on); fi
+[[ -z "${KVK8V4:-}" ]] || BENCH_ARGS+=(-ctk q8_0 -ctv q4_0 -fa on)
+[[ -z "${FA1:-}" ]] || BENCH_ARGS+=(-fa on)
 { echo; echo "## 速さ（llama-bench -t $NP）"; } >> "$OUT"
 if [[ -n "${MEM_GB:-}" ]]; then
   BENCH_CG=$(new_cgroup bench)
@@ -298,11 +347,11 @@ fi
 PPL_LOG="$W/perplexity.log"
 if [[ -n "${MEM_GB:-}" ]]; then
   PPL_CG=$(new_cgroup perplexity)
-  if run_in_cgroup "$PPL_CG" "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 > "$PPL_LOG" 2>&1; then :
+  if run_in_cgroup "$PPL_CG" "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1; then :
   else echo "$MEM_GB GB で落ちた（llama-perplexity）" >> "$OUT"; fi
   cgroup_report "$PPL_CG" llama-perplexity
 else
-  "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 > "$PPL_LOG" 2>&1 || echo 'llama-perplexity failed' >> "$OUT"
+  "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1 || echo 'llama-perplexity failed' >> "$OUT"
 fi
 grep -E 'PPL' "$PPL_LOG" | tail -1 >> "$OUT" || echo 'PPL: 取れなかった' >> "$OUT"
 
@@ -312,7 +361,9 @@ tateru(){ # $1=差し替える指定
   local ub_value=256; [[ -z "${UB:-}" ]] || ub_value="$UB"
   local fa_value=off; local -a kv_args=()
   if [[ -n "${KVQ:-}" ]]; then fa_value=on; kv_args=(-ctk "q${KVQ}_0" -ctv "q${KVQ}_0"); fi
-  local -a server_args=("$B/llama-server" -m "$M" -t "$NP" -ngl 0 -dev none -c 8192 -np 1 -cb -ub "$ub_value" --cache-reuse 16 -fa "$fa_value" "${kv_args[@]}"
+  if [[ -n "${KVK8V4:-}" ]]; then fa_value=on; kv_args=(-ctk q8_0 -ctv q4_0); fi
+  [[ -z "${FA1:-}" ]] || fa_value=on
+  local -a server_args=("$B/llama-server" -m "$M" -t "$NP" -ngl 0 -dev none -c 8192 -np 1 -cb -ub "$ub_value" --cache-reuse 16 -fa "$fa_value" "${kv_args[@]}" "${MMAP_ARGS[@]}"
     --reasoning-format none)
   [[ -n "$LORA" ]] && server_args+=(--lora "$K/lora/tehon-lora.gguf")
   server_args+=("${OVERRIDE_ARGS[@]}"); read -r -a HENKA_ARGS <<< "$1"; server_args+=("${HENKA_ARGS[@]}" --host 127.0.0.1 --port 8080)
@@ -344,7 +395,7 @@ hakaru(){ # $1=名札の付け足し
 }
 export LLAMA_URL=http://127.0.0.1:8080
 if [[ -n "${PPLONLY:-}" ]]; then
-  tateru "--spec-type ngram-simple --spec-ngram-simple-size-m 16"
+  tateru "${SPEC_ARGS[*]}"
   kill "$SERVER_PID" 2>/dev/null || true; wait "$P" 2>/dev/null || true; P=""; SERVER_PID=""
   if [[ -n "$SERVER_CG" ]]; then cgroup_report "$SERVER_CG" llama-server; SERVER_CG=""; fi
 elif [ -n "${HENKA_FILE:-}" ] && [ -f "$HENKA_FILE" ]; then
@@ -359,7 +410,7 @@ PY
     log "$NA 測った"
   done < <(grep -v '^#' "$HENKA_FILE")
 else
-  tateru "--spec-type ngram-simple --spec-ngram-simple-size-m 16"
+  tateru "${SPEC_ARGS[*]}"
   { echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
   hakaru ""; { tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"
   kill "$SERVER_PID" 2>/dev/null || true; wait $P 2>/dev/null || true; P=""; SERVER_PID=""

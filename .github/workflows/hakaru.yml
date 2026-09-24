@@ -13,7 +13,7 @@ on:
         default: ""
         type: string
   push:
-    branches: ['hakaru*']   # hakaru-zenbu=全問 / -x名前 実験env / -pplonly PPLだけ / -ubN / -kvq8,-kvq4
+    branches: ['hakaru*']   # -x名前 / -pplonly / -ubN / -kvq8,-kvq4 / -kvk8v4 / -fa1 / -nommap / -mlock / -spd06
 permissions:
   contents: write
 jobs:
