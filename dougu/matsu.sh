@@ -1,6 +1,6 @@
 #!/bin/bash
 # 外の処理が終わるまで待って、結果を短く出す。Claude は必ず run_in_background で呼ぶ（終わると返事が戻る）。
-# 使い方: dougu/matsu.sh actions   … GitHub Actions の走りが全部終わるまで。枝 kekka に増えた結果の正解率・秒を出す
+# 使い方: dougu/matsu.sh actions [枝の正規表現] … GitHub Actions の走りが全部終わるまで。枝 kekka の主要指標を出す
 #         dougu/matsu.sh gcp       … GCP の VM が 0台になるまで
 #         dougu/matsu.sh pid N…    … Mac の処理が終わるまで
 # 終わったら ~/.cache/claude-ura/<種類> の印を消す（印は hooks の ~/.claude/scripts/ura_guard.py が付ける）。最長 6時間。
@@ -9,8 +9,9 @@ SHU=${1:?actions / gcp / pid}; shift
 HAJIME=$(date -u -r ~/.cache/claude-ura/"$SHU" +%FT%TZ 2>/dev/null || date -u +%FT%TZ)   # 印の時刻から
 for i in $(seq 1 360); do
   case $SHU in
-    actions) N=$(curl -s "https://api.github.com/repos/$REPO/actions/runs?per_page=20" | python3 -c "
-import json,sys; print(sum(r['status']!='completed' for r in json.load(sys.stdin)['workflow_runs']))" 2>/dev/null);;
+    actions) N=$(gh api "repos/$REPO/actions/runs?per_page=100" 2>/dev/null | EDA="${1:-}" python3 -c "
+import json,os,re,sys; e=os.environ.get('EDA') or '.'
+print(sum(r['status']!='completed' and bool(re.search(e, r['head_branch'] or '')) for r in json.load(sys.stdin)['workflow_runs']))" 2>/dev/null);;   # 9/24: 直近20本だけ見て 走り中を見落とした → 100本・認証つき・枝の正規表現で絞れる
     gcp) N=$(gcloud compute instances list --format='value(name)' 2>/dev/null | wc -l | tr -d ' ');;
     pid) N=0; for p in "$@"; do kill -0 "$p" 2>/dev/null && N=$((N+1)); done;;
   esac
@@ -20,7 +21,5 @@ echo "$SHU: 残り ${N:-?}（$((i-1))分待った）"
 rm -f ~/.cache/claude-ura/"$SHU"
 if [ "$SHU" = actions ]; then
   git fetch -q origin kekka 2>/dev/null
-  for f in $(git log origin/kekka --since="$HAJIME" --name-only --format= | grep '\.md$' | sort -u); do
-    echo "$(basename "$f" .md): $(git show "origin/kekka:$f" | grep -m2 -E '"(正解率|平均秒)"' | tr -d ' \n')"
-  done
+  git log origin/kekka --since="$HAJIME" --name-only --format= | grep '\.md$' | sort -u | python3 "$(dirname "$0")/matsu_matome.py"
 fi

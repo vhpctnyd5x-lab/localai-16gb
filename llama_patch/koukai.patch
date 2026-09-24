@@ -71,7 +71,7 @@ index 5855393ef..85dda9967 100644
  
  #include "llama-impl.h"
  #include "llama-model.h"
-@@ -18,12 +19,149 @@
+@@ -18,12 +19,187 @@
  
  #include <cassert>
  #include <cmath>
@@ -146,23 +146,27 @@ index 5855393ef..85dda9967 100644
 +
 +static bool koukai_head_selected(const char * value, int layer, int head) {
 +    if (value == nullptr) return false;
-+    std::stringstream items(value);
-+    std::string item;
-+    while (std::getline(items, item, ',')) {
-+        const auto colon = item.find(':');
-+        if (colon == std::string::npos) continue;
++    std::string spec(value);
++    const auto colon = spec.find(':');
++    if (colon != std::string::npos) {
++        const std::string layers = spec.substr(0, colon), heads = spec.substr(colon + 1);
++        if (!koukai_layer_selected(layers.c_str(), layer)) return false;
 +        char * end = nullptr;
-+        const long item_layer = std::strtol(item.c_str(), &end, 10);
-+        if (end != item.c_str() && item_layer == layer) {
-+            const char * first_text = item.c_str() + colon + 1;
-+            const long first = std::strtol(first_text, &end, 10);
-+            if (end == first_text) continue;
-+            long last = first;
-+            if (*end == '-') last = std::strtol(end + 1, nullptr, 10);
-+            if (head >= first && head <= last) return true;
-+        }
++        const long first = std::strtol(heads.c_str(), &end, 10);
++        if (end == heads.c_str()) return false;
++        const long last = *end == '-' ? std::strtol(end + 1, nullptr, 10) : first;
++        return head >= first && head <= last;
 +    }
-+    return false;
++    // 旧 env 形式「35-46,8」: 対象層と落とす head 番号。
++    const auto comma = spec.find(',');
++    if (comma == std::string::npos || spec.find(',', comma + 1) != std::string::npos) return false;
++    const std::string layers = spec.substr(0, comma), heads = spec.substr(comma + 1);
++    if (!koukai_layer_selected(layers.c_str(), layer)) return false;
++    char * end = nullptr;
++    const long first = std::strtol(heads.c_str(), &end, 10);
++    if (end == heads.c_str()) return false;
++    const long last = *end == '-' ? std::strtol(end + 1, nullptr, 10) : first;
++    return head >= first && head <= last;
 +}
 +
 +static void koukai_dump_head_magnitudes(ggml_tensor * dst, const ggml_tensor * src, int ith, int nth, void * userdata) {
@@ -192,6 +196,54 @@ index 5855393ef..85dda9967 100644
 +    std::fclose(file);
 +}
 +
++static void koukai_mask_attention_heads(ggml_tensor * dst, const ggml_tensor * src, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++    const uint64_t packed = (uint64_t) (uintptr_t) userdata;
++    const int64_t head_dim = (int64_t) (packed >> 32);
++    const uint64_t masked_heads = packed & 0xffffffffu;
++    std::memcpy(dst->data, src->data, ggml_nbytes(src));
++    if (head_dim <= 0 || (src->type != GGML_TYPE_F16 && src->type != GGML_TYPE_F32)) return;
++    for (int64_t i3 = 0; i3 < src->ne[3]; ++i3) for (int64_t i2 = 0; i2 < src->ne[2]; ++i2) {
++        for (int64_t i1 = 0; i1 < src->ne[1]; ++i1) for (int64_t i0 = 0; i0 < src->ne[0]; ++i0) {
++            const int64_t head = i0 / head_dim;
++            if (head >= 32 || !(masked_heads & (uint64_t(1) << head))) continue;
++            const size_t offset = i3 * src->nb[3] + i2 * src->nb[2] + i1 * src->nb[1] + i0 * src->nb[0];
++            if (src->type == GGML_TYPE_F16) {
++                const ggml_fp16_t zero = ggml_fp32_to_fp16(0.0f);
++                std::memcpy((uint8_t *) dst->data + offset, &zero, sizeof(zero));
++            } else {
++                const float zero = 0.0f;
++                std::memcpy((uint8_t *) dst->data + offset, &zero, sizeof(zero));
++            }
++        }
++    }
++}
++
++static void koukai_swa_mask_callback(ggml_tensor * dst, const ggml_tensor * src, int ith, int nth, void * userdata) {
++    GGML_UNUSED(nth);
++    if (ith != 0) return;
++    const uint64_t packed = (uint64_t) (uintptr_t) userdata;
++    const int64_t window = (int64_t) (packed >> 32), sink = (int64_t) (packed & 0xffffffffu);
++    std::memcpy(dst->data, src->data, ggml_nbytes(src));
++    if (window <= 0 || (src->type != GGML_TYPE_F16 && src->type != GGML_TYPE_F32)) return;
++    for (int64_t i3 = 0; i3 < src->ne[3]; ++i3) for (int64_t i2 = 0; i2 < src->ne[2]; ++i2) {
++        for (int64_t iq = 0; iq < src->ne[1]; ++iq) {
++            const int64_t min_pos = src->ne[0] - src->ne[1] + iq - window + 1;
++            for (int64_t ik = sink; ik < min_pos; ++ik) {
++                const size_t offset = i3 * src->nb[3] + i2 * src->nb[2] + iq * src->nb[1] + ik * src->nb[0];
++                if (src->type == GGML_TYPE_F16) {
++                    const ggml_fp16_t masked = ggml_fp32_to_fp16(-INFINITY);
++                    std::memcpy((uint8_t *) dst->data + offset, &masked, sizeof(masked));
++                } else {
++                    const float masked = -INFINITY;
++                    std::memcpy((uint8_t *) dst->data + offset, &masked, sizeof(masked));
++                }
++            }
++        }
++    }
++}
++
 +static ggml_tensor * koukai_apply_swa_mask(ggml_context * ctx, ggml_tensor * mask, int layer) {
 +    if (mask == nullptr) return nullptr;
 +    if (!koukai_layer_selected(std::getenv("KOUKAI_SWA_LAYERS"), layer)) return mask;
@@ -200,22 +252,8 @@ index 5855393ef..85dda9967 100644
 +    if (window == 0) return mask;
 +    const char * sink_env = std::getenv("KOUKAI_SWA_SINK");
 +    const int64_t sink = sink_env ? std::max<int64_t>(0, std::strtoll(sink_env, nullptr, 10)) : 4;
-+    ggml_tensor * extra = ggml_new_tensor(ctx, mask->type, GGML_MAX_DIMS, mask->ne);
-+    for (int64_t i3 = 0; i3 < mask->ne[3]; ++i3) {
-+        for (int64_t i2 = 0; i2 < mask->ne[2]; ++i2) {
-+            for (int64_t iq = 0; iq < mask->ne[1]; ++iq) {
-+                const int64_t qpos = mask->ne[0] - mask->ne[1] + iq;
-+                const int64_t min_pos = qpos - window + 1;
-+                for (int64_t ik = 0; ik < mask->ne[0]; ++ik) {
-+                    const float value = (ik < sink || ik >= min_pos) ? 0.0f : -INFINITY;
-+                    const int64_t index = ik + mask->ne[0] * (iq + mask->ne[1] * (i2 + mask->ne[2] * i3));
-+                    if (mask->type == GGML_TYPE_F16) ((ggml_fp16_t *) extra->data)[index] = ggml_fp32_to_fp16(value);
-+                    else ((float *) extra->data)[index] = value;
-+                }
-+            }
-+        }
-+    }
-+    return ggml_add(ctx, mask, extra);
++    const uint64_t packed = ((uint64_t) window << 32) | (uint32_t) sink;
++    return ggml_map_custom1(ctx, mask, koukai_swa_mask_callback, 1, (void *) (uintptr_t) packed);
 +}
 +
  // dedup helpers
@@ -385,7 +423,7 @@ index 5855393ef..85dda9967 100644
      const bool v_trans = v->nb[1] > v->nb[2];
  
      // split the batch into streams if needed
-@@ -2721,6 +2875,24 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -2721,6 +2875,25 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          }
      }
  
@@ -397,14 +435,15 @@ index 5855393ef..85dda9967 100644
 +    }
 +    const char * head_mask = std::getenv("KOUKAI_HEAD_MASK");
 +    if (head_mask != nullptr && head_dim > 0 && cur->ne[0] % head_dim == 0) {
-+        ggml_tensor * head_scale = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, cur->ne[0], 1, 1, 1);
-+        auto * values = (float *) head_scale->data;
++        uint64_t masked_heads = 0;
 +        const int64_t n_heads = cur->ne[0] / head_dim;
-+        for (int64_t head = 0; head < n_heads; ++head) {
-+            const float scale = koukai_head_selected(head_mask, il, head) ? 0.0f : 1.0f;
-+            for (int64_t d = 0; d < head_dim; ++d) values[head * head_dim + d] = scale;
++        for (int64_t head = 0; head < n_heads && head < 32; ++head) {
++            if (koukai_head_selected(head_mask, il, head)) masked_heads |= uint64_t(1) << head;
 +        }
-+        cur = ggml_mul(ctx0, cur, head_scale);
++        if (masked_heads != 0) {
++            const uint64_t packed = ((uint64_t) head_dim << 32) | masked_heads;
++            cur = ggml_map_custom1(ctx0, cur, koukai_mask_attention_heads, 1, (void *) (uintptr_t) packed);
++        }
 +    }
 +
      ggml_build_forward_expand(gf, cur);

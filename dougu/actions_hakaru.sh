@@ -167,7 +167,7 @@ NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 PATCH_SHA=""
 [[ ! -f "$K/llama_patch/koukai.patch" ]] || PATCH_SHA=$(sha256sum "$K/llama_patch/koukai.patch" | cut -c1-64)
-NP=$(nproc); P=""; DL=""; DL_IMATRIX=""
+NP=$(nproc); P=""; DL=""; DL_IMATRIX=""; DL_BASE=""
 CGROOT="/sys/fs/cgroup/koukai-actions-$(id -u)-$$"; SERVER_CG=""; SERVER_PID=""
 new_cgroup(){
   local name="$1"; local path="$CGROOT-$name-$$"   # 1つの local の中で name はまだ使えない（set -u で落ちた 9/24）
@@ -199,13 +199,22 @@ cgroup_report(){
 }
 cleanup(){
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
-  kill $P $DL ${DL_IMATRIX:-} 2>/dev/null || true
+  kill $P $DL ${DL_IMATRIX:-} ${DL_BASE:-} 2>/dev/null || true
   [ -z "$P" ] || wait "$P" 2>/dev/null || true
   [ -z "$DL" ] || wait "$DL" 2>/dev/null || true
   [ -z "$DL_IMATRIX" ] || wait "$DL_IMATRIX" 2>/dev/null || true
+  [ -z "$DL_BASE" ] || wait "$DL_BASE" 2>/dev/null || true
   [ -z "$SERVER_CG" ] || cgroup_report "$SERVER_CG" llama-server
 }
 trap cleanup EXIT
+on_error(){
+  local rc=$?; trap - ERR
+  echo "失敗: exit=$rc 行=${BASH_LINENO[0]:-?} 命令=${BASH_COMMAND}" | tee -a "${OUT:-/dev/stderr}" >&2
+  [[ -z "${W:-}" || ! -f "$W/llama.log" ]] || { echo 'llama-server の末尾:' >> "$OUT"; tail -30 "$W/llama.log" >> "$OUT"; }
+  [[ -z "${W:-}" || ! -f "$W/perplexity.log" ]] || { echo 'llama-perplexity の末尾:' >> "$OUT"; tail -30 "$W/perplexity.log" >> "$OUT"; }
+  exit "$rc"
+}
+trap on_error ERR
 { echo "# $NAFUDA  $(date -u +%FT%TZ)"; echo '```'
   echo "llama.cpp $COMMIT / koukai $(git rev-parse --short HEAD) / 問題 $(sha256sum "$QF" | cut -c1-12) / 頭脳 ${HF_SHA:0:12}"
   [[ -z "${PATCH_SHA:-}" ]] || echo "llama patch sha256 ${PATCH_SHA:0:12}"
@@ -228,6 +237,13 @@ NEED_GB=15; [[ -z "${REBUILD_QTYPE:-}" ]] || NEED_GB=55
 ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$M.part" \
   "https://huggingface.co/$REPO/resolve/$HF_REV/${SOURCE_MF:-$MF}" ) &
 DL=$!
+BASE_M=""
+if [[ -n "${REBUILD_QTYPE:-}" ]]; then
+  BASE_M="$W/base-Q2_K.gguf"
+  ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$BASE_M.part" \
+    "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q2_K.gguf" ) &
+  DL_BASE=$!
+else DL_BASE=""; fi
 if [[ -n "${REBUILD_QTYPE:-}" ]]; then
   IMATRIX="$W/imatrix_unsloth.dat"
   ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$IMATRIX.part" \
@@ -245,6 +261,13 @@ cmake -S "$W/llama.cpp" -B "$W/build" -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_
 TARGETS=(llama-server llama-bench llama-perplexity); [[ -z "${REBUILD_QTYPE:-}" ]] || TARGETS+=(llama-quantize)
 cmake --build "$W/build" -j"$NP" --target "${TARGETS[@]}" >/dev/null
 B="$W/build/bin"; log "作った"
+PYTHON="$W/venv/bin/python"
+if [[ -n "${KOUKAI_TRANSFORM:-}" || ( -n "${KOUKAI_PRUNE_NEURONS:-}" && ! "${KOUKAI_PRUNE_NEURONS}" =~ ^0(\.0*)?$ ) ]]; then
+  python3 -m venv "$W/venv"
+  "$PYTHON" -m pip install --disable-pip-version-check numpy
+  "$PYTHON" -m pip install --disable-pip-version-check "$W/llama.cpp/gguf-py"
+  PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'import numpy, gguf; print("変換依存 numpy / llama.cpp gguf-py OK")'
+fi
 MMAP_ARGS=(); [[ -z "${NOMMAP:-}" ]] || MMAP_ARGS+=(--no-mmap)
 [[ -z "${MLOCK:-}" ]] || MMAP_ARGS+=(--mlock)
 if [[ -n "${SPD06:-}" ]]; then
@@ -258,8 +281,9 @@ if [[ -n "${SPD06:-}" ]]; then
   echo "$DRAFT_SHA  $DRAFT_M.part" | sha256sum -c --quiet || { echo "草稿の sha256 が違う" >&2; exit 1; }
   mv "$DRAFT_M.part" "$DRAFT_M"
   SERVER_HELP=$("$B/llama-server" --help 2>&1)
-  for option in '-md' '--draft-max' '--draft-min'; do grep -q -- "$option" <<< "$SERVER_HELP" || { echo "草稿指定に未対応: $option" >&2; exit 1; }; done
-  SPEC_ARGS=(-md "$DRAFT_M" --draft-max 8 --draft-min 1)
+  grep -q -- '-md' <<< "$SERVER_HELP" || { echo '草稿指定に未対応: -md' >&2; exit 1; }
+  grep -q -- '--spec-draft-n-max' <<< "$SERVER_HELP" || { echo '草稿指定に未対応: --spec-draft-n-max' >&2; exit 1; }
+  SPEC_ARGS=(-md "$DRAFT_M" --spec-draft-n-max 8)
   if grep -q -- '--spec-type' <<< "$SERVER_HELP" && grep -q -- 'ngram-simple' <<< "$SERVER_HELP"; then
     if grep -q -- 'comma-separated list of types' <<< "$SERVER_HELP" && grep -q -- 'draft-simple' <<< "$SERVER_HELP"; then
       SPEC_ARGS+=(--spec-type draft-simple,ngram-simple --spec-ngram-simple-size-m 16)
@@ -272,13 +296,32 @@ else SPEC_ARGS=(--spec-type ngram-simple --spec-ngram-simple-size-m 16); fi
 wait $DL; DL=""
 echo "$HF_SHA  $M.part" | sha256sum -c --quiet || { echo "頭脳の sha256 が違う" >> "$OUT"; exit 1; }
 mv "$M.part" "$M"; log "頭脳 $(du -h "$M" | cut -f1) 落とした（lfs.oid sha256 一致）"
+if [[ -n "$DL_BASE" ]]; then
+  wait "$DL_BASE"; DL_BASE=""
+  echo "db3ce897ccc9e7d9dbf17fe083cae7880a2092aa473b45eba8b77715aa9ca170  $BASE_M.part" | sha256sum -c --quiet || { echo "基準頭脳 Q2_K の sha256 が違う" >> "$OUT"; exit 1; }
+  mv "$BASE_M.part" "$BASE_M"
+fi
+# 改造前の同じ頭脳を同じ runner で測る。KOUKAI_* は外して既定動作に戻す。
+COMPARE_BASELINE=0
+[[ -n "${JIKKEN:-}${QUANT:-}${EXPERTS:-}${MEM_GB:-}${UB:-}${KVQ:-}${KVK8V4:-}${FA1:-}${NOMMAP:-}${MLOCK:-}${SPD06:-}" ]] && COMPARE_BASELINE=1
+if (( COMPARE_BASELINE )); then
+  [[ -n "$BASE_M" ]] || BASE_M="$M"
+  BASE_ENV=(env); while IFS= read -r key; do BASE_ENV+=(-u "$key"); done < <(compgen -e | grep '^KOUKAI_' || true)
+  echo; echo '## 基準（同じ機械）pp512 / tg128' >> "$OUT"
+  if ! "${BASE_ENV[@]}" "$B/llama-bench" -m "$BASE_M" -t "$NP" -p 512 -n 128 -r 3 -o md > "$W/baseline-bench.md" 2>&1; then
+    cat "$W/baseline-bench.md" >> "$OUT"; echo '基準 llama-bench 失敗' >> "$OUT"; exit 1
+  fi
+  cat "$W/baseline-bench.md" >> "$OUT"
+  BASE_PP=$(sed -nE 's/.*pp512[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$W/baseline-bench.md" | head -1)
+  BASE_TG=$(sed -nE 's/.*tg128[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$W/baseline-bench.md" | head -1)
+fi
 if [[ -n "${REBUILD_QTYPE:-}" ]]; then
   wait "$DL_IMATRIX"; DL_IMATRIX=""
   echo "$IMATRIX_SHA  $IMATRIX.part" | sha256sum -c --quiet || { echo "imatrix の sha256 が違う" >> "$OUT"; exit 1; }
   mv "$IMATRIX.part" "$IMATRIX"
   if [[ -n "${KOUKAI_PRUNE_NEURONS:-}" && ! "${KOUKAI_PRUNE_NEURONS}" =~ ^0(\.0*)?$ ]]; then
     PRUNED_M="$W/pruned_q8.gguf"; PRUNED_IMATRIX="$W/pruned_imatrix.dat"
-    python3 "$K/dougu/asshuku/prune_neurons.py" --imatrix "$IMATRIX" --imatrix-out "$PRUNED_IMATRIX" --frac "$KOUKAI_PRUNE_NEURONS" "$M" "$PRUNED_M"
+    PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" "$K/dougu/asshuku/prune_neurons.py" --imatrix "$IMATRIX" --imatrix-out "$PRUNED_IMATRIX" --frac "$KOUKAI_PRUNE_NEURONS" "$M" "$PRUNED_M"
     rm -f "$M" "$IMATRIX"; M="$PRUNED_M"; IMATRIX="$PRUNED_IMATRIX"
     echo "ニューロン剪定 ${KOUKAI_PRUNE_NEURONS}: $(du -h "$M" | cut -f1)" >> "$OUT"
   fi
@@ -309,7 +352,7 @@ if [[ -n "${KOUKAI_DROP_LAYERS:-}" ]]; then
 fi
 if [[ -n "$TRANSFORM" ]]; then
   NEW_M="$W/transform_${JIKKEN}.gguf"
-  PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" python3 "$K/dougu/$TRANSFORM" "$M" "$NEW_M"
+  PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" "$K/dougu/$TRANSFORM" "$M" "$NEW_M"
   rm -f "$M"; M="$NEW_M"; log "変換済み頭脳を使う: $TRANSFORM"
 fi
 
@@ -320,13 +363,36 @@ if [[ -n "${KVQ:-}" ]]; then BENCH_ARGS+=(-ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa 
 [[ -z "${KVK8V4:-}" ]] || BENCH_ARGS+=(-ctk q8_0 -ctv q4_0 -fa on)
 [[ -z "${FA1:-}" ]] || BENCH_ARGS+=(-fa on)
 { echo; echo "## 速さ（llama-bench -t $NP）"; } >> "$OUT"
+BENCH_OUT="$W/experiment-bench.md"
+bench_with_trace(){
+  local rc; if "$@" > "$BENCH_OUT" 2>&1; then cat "$BENCH_OUT" >> "$OUT"; return 0; else rc=$?; cat "$BENCH_OUT" >> "$OUT"; echo "llama-bench 失敗: exit=$rc" >> "$OUT"; fi
+  if (( rc == 139 )); then
+    if ! command -v gdb >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq gdb; fi
+    if command -v gdb >/dev/null 2>&1; then
+      echo '## 逆追跡（gdb）' >> "$OUT"
+      if [[ "$1" == run_in_cgroup ]]; then gdb -batch -ex run -ex bt --args "${@:3}" >> "$OUT" 2>&1 || true
+      else gdb -batch -ex run -ex bt --args "$@" >> "$OUT" 2>&1 || true; fi
+    else echo '逆追跡できず: gdb を導入できなかった' >> "$OUT"; fi
+  fi
+  return "$rc"
+}
 if [[ -n "${MEM_GB:-}" ]]; then
   BENCH_CG=$(new_cgroup bench)
-  if run_in_cgroup "$BENCH_CG" "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}" >> "$OUT" 2>/dev/null; then :
-  else echo "$MEM_GB GB で落ちた（llama-bench）" >> "$OUT"; fi
+  if ! bench_with_trace run_in_cgroup "$BENCH_CG" "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}"; then echo "$MEM_GB GB で落ちた（llama-bench）" >> "$OUT"; fi
   cgroup_report "$BENCH_CG" llama-bench
 else
-  "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}" >> "$OUT" 2>/dev/null
+  bench_with_trace "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}" || true
+fi
+if (( COMPARE_BASELINE )); then
+  EXP_PP=$(sed -nE 's/.*pp512[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$BENCH_OUT" | head -1)
+  EXP_TG=$(sed -nE 's/.*tg128[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$BENCH_OUT" | head -1)
+  python3 - "$BASE_PP" "$BASE_TG" "$EXP_PP" "$EXP_TG" >> "$OUT" <<'PY'
+import sys
+base_pp,base_tg,exp_pp,exp_tg=sys.argv[1:]
+for label,b,e in [('pp512',base_pp,exp_pp),('tg128',base_tg,exp_tg)]:
+    if b and e and float(b): print(f'基準比 {label}: {float(e)/float(b):.3f}（実験 / 基準）')
+    else: print(f'基準比 {label}: 算出できず（ベンチ値不足）')
+PY
 fi
 # llama-bench は --override-kv を受け付けない（9/24）。専門家の数を変えた速さは 頭脳を立てた後の「探り」で測る
 [[ -n "${EXPERTS:-}" ]] && echo "（上の llama-bench は 専門家 8人のまま。$EXPERTS 人の速さは 下の「探り」）" >> "$OUT"
@@ -351,13 +417,16 @@ PY
 fi
 { echo; echo '## PPL（llama-perplexity -c 512 --chunks 16）'; } >> "$OUT"
 PPL_LOG="$W/perplexity.log"
+PPL_ARGS=( -ctk f16 -ctv f16 ); [[ -n "${KVQ:-}" ]] && PPL_ARGS=( -ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa on )
+[[ -z "${KVK8V4:-}" ]] || PPL_ARGS=( -ctk q8_0 -ctv q4_0 -fa on )
+[[ -z "${FA1:-}" ]] || PPL_ARGS+=( -fa on )
 if [[ -n "${MEM_GB:-}" ]]; then
   PPL_CG=$(new_cgroup perplexity)
-  if run_in_cgroup "$PPL_CG" "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1; then :
-  else echo "$MEM_GB GB で落ちた（llama-perplexity）" >> "$OUT"; fi
+  if run_in_cgroup "$PPL_CG" "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1; then :
+  else echo "$MEM_GB GB で落ちた（llama-perplexity）" >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; fi
   cgroup_report "$PPL_CG" llama-perplexity
 else
-  "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1 || echo 'llama-perplexity failed' >> "$OUT"
+  "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1 || { echo 'llama-perplexity failed' >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; }
 fi
 grep -E 'PPL' "$PPL_LOG" | tail -1 >> "$OUT" || echo 'PPL: 取れなかった' >> "$OUT"
 
