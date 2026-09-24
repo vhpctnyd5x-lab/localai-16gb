@@ -35,4 +35,4 @@ Qwen3-30B-A3B Q2_K（unsloth 11.3GB）、`-t 6 -ngl 0 -c 8192 -np 1 -cb -ub 256 
 | Groq／NVIDIA（無料） | 教材と検品の先生。1日の上限・混雑で止まる（`tsukuru_tehon.py` は 5人を回す） |
 | Codex（Luna） | 審査 `dougu/shinsa.sh`、物差しづくり `tsukuru_monosashi*.py`、教材 `tsukuru_tehon_luna.py`、調査。`< /dev/null` 必須 |
 
-**穴**: GCP は既定 SA に GCS 権限が要る／`a && b` は set -e でも止まらない／起動の合図が 12分来なければ VM を消す／Codex は repo を読めないことがある（見せたいソースは頼み文に貼る）。
+**穴**: カーネルの用件は machine.py と kikai.py の 2か所（Codex に頼むときは両方の OPS を見せる。9/24 片方だけ見て 10個重ねた）／GCP は既定 SA に GCS 権限が要る／`a && b` は set -e でも止まらない／起動の合図が 12分来なければ VM を消す／Codex は repo を読めないことがある（見せたいソースは頼み文に貼る）。
