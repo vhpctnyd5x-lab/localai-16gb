@@ -59,9 +59,10 @@ def read_imatrix(path):
                 raise ValueError(f"imatrix entry {name} lacks sums or counts")
         return ("gguf", reader, result)
 
-    # llama.cpp legacy imatrix: little-endian int32 count, name, ncall, nval, floats.
+    # llama.cpp legacy imatrix: entries followed by call count and source filename.
     import struct
     entries = {}
+    footer = b""
     with p.open("rb") as f:
         raw = f.read(4)
         if len(raw) != 4:
@@ -73,9 +74,16 @@ def read_imatrix(path):
             ncall, nval = struct.unpack("<ii", f.read(8))
             sums = np.frombuffer(f.read(nval * 4), dtype="<f4").copy()
             entries[name] = {"sums": sums, "counts": np.array([ncall], dtype=np.float32)}
-        if f.read(1):
-            raise ValueError("trailing bytes in legacy imatrix")
-    return ("legacy", None, entries)
+        trailer = f.read()
+        if trailer:
+            if len(trailer) < 8:
+                raise ValueError("truncated legacy imatrix footer")
+            (name_len,) = struct.unpack_from("<i", trailer, 4)
+            if name_len < 0 or len(trailer) != 8 + name_len:
+                raise ValueError("invalid legacy imatrix footer")
+            trailer[8:].decode("utf-8")
+            footer = trailer
+    return ("legacy", footer, entries)
 
 
 def write_imatrix(kind, reader, entries, path):
@@ -89,6 +97,8 @@ def write_imatrix(kind, reader, entries, path):
                 count = int(np.asarray(entry["counts"]).reshape(-1)[0])
                 f.write(struct.pack("<i", len(encoded))); f.write(encoded)
                 f.write(struct.pack("<ii", count, len(sums))); f.write(sums.tobytes())
+            if reader:
+                f.write(reader)
         return
     tensors = {}
     for t in reader.tensors:

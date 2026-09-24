@@ -147,8 +147,18 @@ def _katachi(msgs, think, timeout):
 
 
 def _tsuzuki(prompt, n_predict, timeout, stop=None, temp=0.0):
-    payload = {"prompt": prompt, "n_predict": n_predict, "temperature": temp,
+    payload = {"prompt": prompt, "n_predict": n_predict,
+               "temperature": float(os.environ.get("KOUKAI_SAMPLE_TEMP", temp)),
                "cache_prompt": True, "stream": False}
+    top_p = os.environ.get("KOUKAI_SAMPLE_TOP_P")
+    top_k = os.environ.get("KOUKAI_SAMPLE_TOP_K")
+    seed = os.environ.get("KOUKAI_SAMPLE_SEED")
+    if top_p:
+        payload["top_p"] = float(top_p)
+    if top_k:
+        payload["top_k"] = int(top_k)
+    if seed:
+        payload["seed"] = int(seed)
     if stop:
         payload["stop"] = stop
     return _post("/completion", payload, timeout)

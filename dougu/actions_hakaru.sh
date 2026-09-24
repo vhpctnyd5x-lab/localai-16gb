@@ -11,6 +11,7 @@ parse_branch(){
   KVK8V4=""; FA1=""; NOMMAP=""; MLOCK=""; SPD06=""
   KERNEL_KAZOERU=""; KERNEL_JIKAN=""; KERNEL_NARABE=""; KERNEL_ERABI=""
   KERNEL_HAYASA=""; KERNEL_KEISAN=""; KERNEL_TEHON=""; KERNEL_LORA=""; ATAMA=""
+  BURE=""; SAMPLE_TEMP="0"; SAMPLE_TOP_P=""; SAMPLE_TOP_K=""; SAMPLE_SEED=""
   for token in k j n s v c t l; do has "$token" && case "$token" in
     k) KERNEL_KAZOERU=1;; j) KERNEL_JIKAN=1;; n) KERNEL_NARABE=1;; s) KERNEL_ERABI=1;;
     v) KERNEL_HAYASA=1;; c) KERNEL_KEISAN=1;; t) KERNEL_TEHON=1;; l) KERNEL_LORA=1;; esac
@@ -25,6 +26,9 @@ parse_branch(){
   if [[ "$b" =~ (^|-)x([A-Za-z0-9_]+)(-|$) ]]; then JIKKEN="${BASH_REMATCH[2]}"; fi
   has kvq8 && KVQ=8; has kvq4 && KVQ=4; has pplonly && PPLONLY=1
   has kvk8v4 && KVK8V4=1; has fa1 && FA1=1; has nommap && NOMMAP=1; has mlock && MLOCK=1; has spd06 && SPD06=1
+  if [[ "$b" =~ (^|-)bure([0-9]+)(-|$) ]]; then
+    BURE="${BASH_REMATCH[2]}"; SAMPLE_TEMP="0.7"; SAMPLE_TOP_P="0.8"; SAMPLE_TOP_K="20"; SAMPLE_SEED="$BURE"
+  fi
   if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q and -m2507 cannot be combined' >&2; return 2; fi
   if [[ "${b:0:12}" == hakaru-henka && "$b" =~ (^|-)henka(-|$) ]]; then HENKA_FILE=dougu/actions_henka.txt; else HENKA_FILE=""; fi
   if [[ -z "${KAGIRI:-}" ]]; then
@@ -40,6 +44,7 @@ if [[ "${1:-}" == --parse-branch ]]; then
     "${KERNEL_KAZOERU:-}" "${KERNEL_JIKAN:-}" "${KERNEL_NARABE:-}" "${KERNEL_ERABI:-}" \
     "${KERNEL_HAYASA:-}" "${KERNEL_KEISAN:-}" "${KERNEL_TEHON:-}" "${KERNEL_LORA:-}" "${HENKA_FILE:-}"
   printf 'UB=%s KVQ=%s JIKKEN=%s PPLONLY=%s KVK8V4=%s FA1=%s NOMMAP=%s MLOCK=%s SPD06=%s\n' "${UB:-}" "${KVQ:-}" "${JIKKEN:-}" "${PPLONLY:-}" "${KVK8V4:-}" "${FA1:-}" "${NOMMAP:-}" "${MLOCK:-}" "${SPD06:-}"
+  printf 'BURE=%s SAMPLE_TEMP=%s SAMPLE_TOP_P=%s SAMPLE_TOP_K=%s SAMPLE_SEED=%s\n' "${BURE:-}" "${SAMPLE_TEMP:-0}" "${SAMPLE_TOP_P:-}" "${SAMPLE_TOP_K:-}" "${SAMPLE_SEED:-}"
   exit 0
 fi
 NAFUDA="${1:-$(uname -m)}"; REF_NAME="${GITHUB_REF_NAME:-hakaru}"
@@ -47,6 +52,7 @@ NAFUDA="${1:-$(uname -m)}"; REF_NAME="${GITHUB_REF_NAME:-hakaru}"
 if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; KVK8V4=""; FA1=""; NOMMAP=""; MLOCK=""; SPD06=""; JIKKEN="${JIKKEN:-}"; PPLONLY="${PPLONLY:-}"; HENKA_FILE="${HENKA_FILE:-}"; fi
 # 道具の切り替えは hakaru.py が環境変数で読む。export しないと子に渡らない（9/24 道具が 1度も動かずに測っていた）
 export KERNEL_KAZOERU KERNEL_JIKAN KERNEL_NARABE KERNEL_ERABI KERNEL_HAYASA KERNEL_KEISAN KERNEL_TEHON KERNEL_LORA
+export KOUKAI_SAMPLE_TEMP="${SAMPLE_TEMP:-0}" KOUKAI_SAMPLE_TOP_P="${SAMPLE_TOP_P:-}" KOUKAI_SAMPLE_TOP_K="${SAMPLE_TOP_K:-}" KOUKAI_SAMPLE_SEED="${SAMPLE_SEED:-}"
 FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
 [[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
@@ -154,6 +160,7 @@ DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 [[ -n "${MLOCK:-}" ]] && NAFUDA="${NAFUDA}_mlock"
 [[ -n "${SPD06:-}" ]] && NAFUDA="${NAFUDA}_spd06"
 [[ -n "${PPLONLY:-}" ]] && NAFUDA="${NAFUDA}_pplonly"
+[[ -z "${BURE:-}" ]] || NAFUDA="${NAFUDA}_bure${BURE}"
 # ふるい（-pplonly）は x64 の 1台で足りる。ARM の台はすぐ終えて 同時 20台の枠を空ける（9/24）
 if [[ -n "${PPLONLY:-}" && "$(uname -m)" == aarch64 ]]; then echo "ふるいは x64 だけで測る（ARM は飛ばす）"; exit 0; fi
 if [[ "$BI_DUMP_PATH" == 1 ]]; then
@@ -181,11 +188,19 @@ new_cgroup(){
 run_in_cgroup(){
   local path="$1" uid gid keep; shift; uid=$(id -u); gid=$(id -g)
   keep=$(compgen -e | grep '^KOUKAI_' | paste -sd, || true)
+  local rc=0
   if [[ -n "$keep" ]]; then
-    sudo --preserve-env="$keep" bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
+    sudo --preserve-env="$keep" bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@" || rc=$?
   else
-    sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
+    sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@" || rc=$?
   fi
+  if (( rc == 137 )) && [[ "${MEM_GB:-}" == 8 ]]; then
+    CG_KILLED=1
+    [[ -z "${W:-}" ]] || : > "$W/cgroup-killed"
+    echo '8GB に載らない（Killed、exit 137）' >> "$OUT"
+    return 0
+  fi
+  return "$rc"
 }
 cgroup_report(){
   local path="$1" label="$2" peak="?" major="?" oom=0
@@ -224,6 +239,7 @@ trap on_error ERR
   [[ -z "$VOCAB_KEEP_PATH" ]] || echo "vocab keep $VOCAB_KEEP_PATH"
   [[ -z "${EXPERTS:-}" ]] || echo "専門家数 $EXPERTS"
   [[ -z "${MEM_GB:-}" ]] || echo "メモリ上限 ${MEM_GB} GB（swap なし、mmap ページキャッシュを含む）"
+  if [[ -n "${BURE:-}" ]]; then echo "生成設定 temperature=$SAMPLE_TEMP top_p=$SAMPLE_TOP_P top_k=$SAMPLE_TOP_K seed=$SAMPLE_SEED"; else echo '生成設定 temperature=0'; fi
   echo "runner $(grep -m1 VERSION= /etc/os-release | cut -d= -f2) $(gcc --version | head -1)"
   echo "cores $NP"; grep -m1 -i 'model name' /proc/cpuinfo || lscpu | grep -i 'model name\|vendor' | head -2
   free -g | head -2; df -h / | tail -1; echo '```'; } > "$OUT"
@@ -460,6 +476,9 @@ tateru(){ # $1=差し替える指定
     curl -s -m 900 http://127.0.0.1:8080/completion -H 'Content-Type: application/json' \
       -d '{"prompt":"日本の四季について、それぞれの特徴を詳しく説明してください。","n_predict":128,"temperature":0}' \
       | python3 -c 'import json,sys; t=json.load(sys.stdin)["timings"]; print("探り: 読み %.1f t/s（%d字）・書き %.1f t/s（%d字）" % (t["prompt_per_second"], t["prompt_n"], t["predicted_per_second"], t["predicted_n"]))' >> "$OUT" 2>/dev/null || echo "探り: 取れなかった" >> "$OUT"
+  fi
+  if [[ -n "${CG_KILLED:-}" || -e "$W/cgroup-killed" ]]; then
+    echo '8GB に載らない（Killed）'; [[ -z "$SERVER_CG" ]] || { cgroup_report "$SERVER_CG" llama-server; SERVER_CG=""; }; exit 0
   fi
   [ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない: $1" >> "$OUT"; if [[ -n "$SERVER_CG" ]]; then cgroup_report "$SERVER_CG" llama-server; SERVER_CG=""; [[ -n "${MEM_GB:-}" ]] && echo "$MEM_GB GB で落ちた（llama-server 起動）" >> "$OUT"; fi; exit 1; }
 }
