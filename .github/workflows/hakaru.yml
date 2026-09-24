@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: ['hakaru*']   # hakaru=3問 / hakaru-zenbu=128問 / 末尾 -f1,-f2 で深さ / -m2507 で頭脳を 2507 版に / -k で数え上げ電卓あり / -t で似た手本あり / -j で時刻電卓 / -n で並べ方・順位の電卓 / -s で選び方の電卓 / -l で LoRA（lora/tehon-lora.gguf）を乗せる / -d9 で自作テストC / -d10 で自作テストD / -d11 で自作テストE / -d12 で自作テストF（速さ） / -v で速さの電卓 / -c で計算も電卓 / -d8 で 8段（新しい物差し）
+    branches: ['hakaru*']   # hakaru-zenbu=全問 / スイッチは枝名のハイフン区切り。-e4..7 専門家数 / -q名 量子化 / -gN メモリGB
 permissions:
   contents: write
 jobs:
@@ -24,19 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: 走らせる
         env:
-          KAGIRI: ${{ github.event.inputs.kagiri || (startsWith(github.ref_name, 'hakaru-zenbu') && '0' || (startsWith(github.ref_name, 'hakaru-henka') && '16' || '3')) }}
-          HENKA_FILE: ${{ startsWith(github.ref_name, 'hakaru-henka') && 'dougu/actions_henka.txt' || '' }}
-          KERNEL_LORA: ${{ contains(github.ref_name, '-l') && '1' || '' }}
-          KERNEL_ERABI: ${{ contains(github.ref_name, '-s') && '1' || '' }}
-          KERNEL_NARABE: ${{ contains(github.ref_name, '-n') && '1' || '' }}
-          KERNEL_HAYASA: ${{ contains(github.ref_name, '-v') && '1' || '' }}
-          KERNEL_JIKAN: ${{ contains(github.ref_name, '-j') && '1' || '' }}
-          KERNEL_KEISAN: ${{ contains(github.ref_name, '-c') && '1' || '' }}
-          DAN: ${{ contains(github.ref_name, '-d12') && '12' || contains(github.ref_name, '-d11') && '11' || contains(github.ref_name, '-d10') && '10' || (contains(github.ref_name, '-d9') && '9' || (contains(github.ref_name, '-d8') && '8' || '7')) }}
-          KERNEL_TEHON: ${{ contains(github.ref_name, '-t') && '1' || '' }}
-          KERNEL_KAZOERU: ${{ contains(github.ref_name, '-k') && '1' || '' }}
-          ATAMA: ${{ contains(github.ref_name, '-m2507') && '2507' || '' }}
-          FUKASA: ${{ endsWith(github.ref_name, '-f2') && '2' || (endsWith(github.ref_name, '-f1') && '1' || '0') }}
+          KAGIRI: ${{ github.event.inputs.kagiri || '' }}
         timeout-minutes: 340
         run: bash dougu/actions_hakaru.sh "${{ matrix.os }}"
       - uses: actions/upload-artifact@v4

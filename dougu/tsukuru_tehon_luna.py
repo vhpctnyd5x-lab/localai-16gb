@@ -16,7 +16,9 @@ N = 50
 def luna(tanomi):
     d = tempfile.mkdtemp()
     out = os.path.join(d, "out.txt")
-    subprocess.run(["codex", "exec", "--skip-git-repo-check", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=max",
+    # 型と考える量は環境変数で変えられる（9/24 本人: Sol・Luna・Astra を使い分け。ultra max は使わない）
+    subprocess.run(["codex", "exec", "--skip-git-repo-check", "-m", os.environ.get("CODEX_MODEL", "gpt-6-luna"),
+                    "-c", "model_reasoning_effort=" + os.environ.get("CODEX_EFFORT", "max"),
                     "-s", "read-only", "-C", d, "-o", out, tanomi], stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3600)
     return open(out, encoding="utf-8").read() if os.path.exists(out) else ""
