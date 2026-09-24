@@ -8,6 +8,10 @@ on:
         description: "問題数（0=全部）"
         default: "3"
         type: string
+      experiment:
+        description: "dougu/jikken/<名前>.env の名前（空欄なら枝の -x名前 を使う）"
+        default: ""
+        type: string
   push:
     branches: ['hakaru*']   # hakaru-zenbu=全問 / -x名前 実験env / -pplonly PPLだけ / -ubN / -kvq8,-kvq4
 permissions:
@@ -25,6 +29,8 @@ jobs:
       - name: 走らせる
         env:
           KAGIRI: ${{ github.event.inputs.kagiri || '' }}
+          JIKKEN: ${{ github.event.inputs.experiment || '' }}
+          PPLONLY: ${{ github.event.inputs.experiment != '' && '1' || '' }}
         timeout-minutes: 340
         run: bash dougu/actions_hakaru.sh "${{ matrix.os }}"
       - uses: actions/upload-artifact@v4

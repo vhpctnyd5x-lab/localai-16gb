@@ -42,7 +42,7 @@ if [[ "${1:-}" == --parse-branch ]]; then
 fi
 NAFUDA="${1:-$(uname -m)}"; REF_NAME="${GITHUB_REF_NAME:-hakaru}"
 # hakaru* の枝だけ 枝の名から読む。hyou.yml（GSM8K の錨）は DAN・KERNEL_* を環境で渡すので そのまま使う（9/24 Claude）
-if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; JIKKEN=""; PPLONLY=""; HENKA_FILE="${HENKA_FILE:-}"; fi
+if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; JIKKEN="${JIKKEN:-}"; PPLONLY="${PPLONLY:-}"; HENKA_FILE="${HENKA_FILE:-}"; fi
 FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
 [[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
@@ -53,7 +53,9 @@ if [[ -n "${JIKKEN:-}" ]]; then
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     ((line_no += 1))
-    [[ "$line" =~ ^(KOUKAI_[A-Z_]+)=([A-Za-z0-9,._/-]+)$ ]] || { echo "不正な実験設定: $JIKKEN_ENV:$line_no" >&2; exit 2; }
+    if [[ "$line" =~ ^(KOUKAI_[A-Z_]+)=([A-Za-z0-9,._/-]+)$ ]]; then :
+    elif [[ "$line" =~ ^(KOUKAI_QTT)=([A-Za-z0-9,._:/-]+)$ ]]; then :
+    else echo "不正な実験設定: $JIKKEN_ENV:$line_no" >&2; exit 2; fi
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     printf -v "$key" '%s' "$value"; export "$key"
   done < "$JIKKEN_ENV"
@@ -62,6 +64,20 @@ if [[ -n "${JIKKEN:-}" ]]; then
     TRANSFORM="$KOUKAI_TRANSFORM"
   fi
   if [[ "${KOUKAI_BI_DUMP:-}" == 1 ]]; then BI_DUMP_PATH=1; fi
+  [[ -z "${KOUKAI_QTYPE:-}" || "${KOUKAI_QTYPE}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QTYPE" >&2; exit 2; }
+  [[ -z "${KOUKAI_QOUT:-}" || "${KOUKAI_QOUT}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QOUT" >&2; exit 2; }
+  [[ -z "${KOUKAI_QEMB:-}" || "${KOUKAI_QEMB}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QEMB" >&2; exit 2; }
+  if [[ -n "${KOUKAI_QTT:-}" ]]; then
+    [[ "$KOUKAI_QTT" =~ ^[A-Za-z0-9_.]+:[A-Za-z0-9_]+(,[A-Za-z0-9_.]+:[A-Za-z0-9_]+)*$ ]] || { echo "不正な KOUKAI_QTT" >&2; exit 2; }
+  fi
+  [[ -z "${KOUKAI_PRUNE_KEEP:-}" || "${KOUKAI_PRUNE_KEEP}" =~ ^[0-9]+$ ]] || { echo "不正な KOUKAI_PRUNE_KEEP" >&2; exit 2; }
+  [[ -z "${KOUKAI_DROP_LAYERS:-}" || "${KOUKAI_DROP_LAYERS}" =~ ^[0-9]+(,[0-9]+)*$ ]] || { echo "不正な KOUKAI_DROP_LAYERS" >&2; exit 2; }
+  if [[ -n "${KOUKAI_QOUT:-}${KOUKAI_QEMB:-}${KOUKAI_QTT:-}" && -z "${KOUKAI_QTYPE:-}" ]]; then
+    echo "QOUT/QEMB/QTT は QTYPE（再量子化）が必要" >&2; exit 2
+  fi
+  if [[ -n "${KOUKAI_QTYPE:-}" && ( -n "${QUANT:-}" || "${ATAMA:-}" == 2507 ) ]]; then
+    echo "QTYPE は -q / -m2507 と併用できない" >&2; exit 2
+  fi
   if [[ -n "${KOUKAI_VOCAB_KEEP:-}" ]]; then
     [[ "$KOUKAI_VOCAB_KEEP" =~ ^[A-Za-z0-9_.-]+$ && -f "$K/dougu/jikken/$KOUKAI_VOCAB_KEEP" ]] || { echo "語彙ファイルは dougu/jikken 内のファイル名を指定: $KOUKAI_VOCAB_KEEP" >&2; exit 2; }
     VOCAB_KEEP_PATH="$K/dougu/jikken/$KOUKAI_VOCAB_KEEP"
@@ -77,19 +93,31 @@ if [ "${ATAMA:-}" = 2507 ]; then
 else
   REPO=unsloth/Qwen3-30B-A3B-GGUF
   HF_REV=d5b1d57bd0b504ac62ae6c725904e96ef228dc74
+  REBUILD_QTYPE="${KOUKAI_QTYPE:-}"
   case "${QUANT:-}" in
     iq1s) MF=Qwen3-30B-A3B-UD-IQ1_S.gguf;; iq1m) MF=Qwen3-30B-A3B-UD-IQ1_M.gguf;;
     iq2xxs) MF=Qwen3-30B-A3B-UD-IQ2_XXS.gguf;; iq2m) MF=Qwen3-30B-A3B-UD-IQ2_M.gguf;;
     q2kxl) MF=Qwen3-30B-A3B-UD-Q2_K_XL.gguf;; *) MF=Qwen3-30B-A3B-Q2_K.gguf;;
   esac
-  if [[ -n "${QUANT:-}" ]]; then
+  if [[ -n "$REBUILD_QTYPE" ]]; then
+    SOURCE_MF=Qwen3-30B-A3B-Q8_0.gguf
+    MF="Qwen3-30B-A3B-${REBUILD_QTYPE}.gguf"
+  elif [[ -n "${QUANT:-}" ]]; then
+    :
+  fi
+  if [[ -n "${REBUILD_QTYPE:-}" ]]; then
+    HF_META=$(curl -fsSL "https://huggingface.co/api/models/$REPO/tree/$HF_REV?recursive=true&expand=true")
+    HF_SHA=$(python3 -c 'import json,sys; rows=json.load(sys.stdin); row=next((x for x in rows if x.get("path")==sys.argv[1]), None); print(row["lfs"]["oid"] if row and row.get("lfs",{}).get("oid") else "")' "$SOURCE_MF" <<< "$HF_META")
+    IMATRIX_SHA=$(python3 -c 'import json,sys; rows=json.load(sys.stdin); row=next((x for x in rows if x.get("path")=="imatrix_unsloth.dat"), None); print(row["lfs"]["oid"] if row and row.get("lfs",{}).get("oid") else "")' <<< "$HF_META")
+    [[ "$HF_SHA" =~ ^[0-9a-f]{64}$ && "$IMATRIX_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "Q8_0 または imatrix の lfs.oid が取れない" >&2; exit 1; }
+  elif [[ -n "${QUANT:-}" ]]; then
     HF_SHA=$(curl -fsSL "https://huggingface.co/api/models/$REPO/tree/$HF_REV?recursive=true&expand=true" | python3 -c 'import json,sys; name=sys.argv[1]; rows=json.load(sys.stdin); row=next((x for x in rows if x.get("path")==name), None); print(row["lfs"]["oid"] if row and row.get("lfs",{}).get("oid") else "")' "$MF")
     [[ "$HF_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "量子化ファイルの lfs.oid が取れない: $MF" >&2; exit 1; }
   else
     HF_SHA=db3ce897ccc9e7d9dbf17fe083cae7880a2092aa473b45eba8b77715aa9ca170
   fi
 fi
-M="$W/$MF"
+if [[ -n "${REBUILD_QTYPE:-}" ]]; then M="$W/$SOURCE_MF"; else M="$W/$MF"; fi
 [ "${KERNEL_KAZOERU:-}" = 1 ] && NAFUDA="${NAFUDA}_k"
 [ "${KERNEL_TEHON:-}" = 1 ] && NAFUDA="${NAFUDA}_t"
 [ "${KERNEL_KEISAN:-}" = 1 ] && NAFUDA="${NAFUDA}_c"
@@ -106,6 +134,8 @@ DAN="${DAN:-7}"; [ "$DAN" = 7 ] || NAFUDA="${NAFUDA}_d$DAN"
 [[ -n "${UB:-}" ]] && NAFUDA="${NAFUDA}_ub$UB"
 [[ -n "${KVQ:-}" ]] && NAFUDA="${NAFUDA}_kvq$KVQ"
 [[ -n "${PPLONLY:-}" ]] && NAFUDA="${NAFUDA}_pplonly"
+# ふるい（-pplonly）は x64 の 1台で足りる。ARM の台はすぐ終えて 同時 20台の枠を空ける（9/24）
+if [[ -n "${PPLONLY:-}" && "$(uname -m)" == aarch64 ]]; then echo "ふるいは x64 だけで測る（ARM は飛ばす）"; exit 0; fi
 if [[ "$BI_DUMP_PATH" == 1 ]]; then
   BI_DUMP_PATH="$K/kekka_actions/bi_${NAFUDA}.tsv"
   export KOUKAI_BI_DUMP="$BI_DUMP_PATH"
@@ -117,7 +147,7 @@ NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 PATCH_SHA=""
 [[ ! -f "$K/llama_patch/koukai.patch" ]] || PATCH_SHA=$(sha256sum "$K/llama_patch/koukai.patch" | cut -c1-64)
-NP=$(nproc); P=""; DL=""
+NP=$(nproc); P=""; DL=""; DL_IMATRIX=""
 CGROOT="/sys/fs/cgroup/koukai-actions-$(id -u)-$$"; SERVER_CG=""; SERVER_PID=""
 new_cgroup(){
   local name="$1"; local path="$CGROOT-$name-$$"   # 1つの local の中で name はまだ使えない（set -u で落ちた 9/24）
@@ -146,9 +176,10 @@ cgroup_report(){
 }
 cleanup(){
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
-  kill $P $DL 2>/dev/null || true
+  kill $P $DL ${DL_IMATRIX:-} 2>/dev/null || true
   [ -z "$P" ] || wait "$P" 2>/dev/null || true
   [ -z "$DL" ] || wait "$DL" 2>/dev/null || true
+  [ -z "$DL_IMATRIX" ] || wait "$DL_IMATRIX" 2>/dev/null || true
   [ -z "$SERVER_CG" ] || cgroup_report "$SERVER_CG" llama-server
 }
 trap cleanup EXIT
@@ -165,14 +196,21 @@ trap cleanup EXIT
   echo "cores $NP"; grep -m1 -i 'model name' /proc/cpuinfo || lscpu | grep -i 'model name\|vendor' | head -2
   free -g | head -2; df -h / | tail -1; echo '```'; } > "$OUT"
 
-# 1. 盤の空きを確かめる（頭脳 11.3GB ＋ 作る分 3GB）
+# 1. 盤の空きを確かめる
 FREE=$(df -B1 --output=avail / | tail -1)
-[ "$FREE" -gt $((15*1024*1024*1024)) ] || { echo "盤が足りない: $FREE" >> "$OUT"; exit 1; }
+NEED_GB=15; [[ -z "${REBUILD_QTYPE:-}" ]] || NEED_GB=55
+[ "$FREE" -gt $((NEED_GB*1024*1024*1024)) ] || { echo "盤が足りない（${NEED_GB}GiB 必要）: $FREE" >> "$OUT"; exit 1; }
 
 # 2. 頭脳を落とす（作りながら並行。途中から再開できる .part → sha256 が合ったら名前を変える）
 ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$M.part" \
-  "https://huggingface.co/$REPO/resolve/$HF_REV/$MF" ) &
+  "https://huggingface.co/$REPO/resolve/$HF_REV/${SOURCE_MF:-$MF}" ) &
 DL=$!
+if [[ -n "${REBUILD_QTYPE:-}" ]]; then
+  IMATRIX="$W/imatrix_unsloth.dat"
+  ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$IMATRIX.part" \
+    "https://huggingface.co/$REPO/resolve/$HF_REV/imatrix_unsloth.dat" ) &
+  DL_IMATRIX=$!
+else DL_IMATRIX=""; fi
 
 # 3. llama.cpp を手元と同じ commit で作る
 git clone -q --filter=blob:none https://github.com/ggml-org/llama.cpp "$W/llama.cpp"
@@ -181,15 +219,45 @@ if [[ -f "$K/llama_patch/koukai.patch" ]]; then
   git -C "$W/llama.cpp" apply "$K/llama_patch/koukai.patch"
 fi
 cmake -S "$W/llama.cpp" -B "$W/build" -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF >/dev/null
-cmake --build "$W/build" -j"$NP" --target llama-server llama-bench llama-perplexity >/dev/null
+TARGETS=(llama-server llama-bench llama-perplexity); [[ -z "${REBUILD_QTYPE:-}" ]] || TARGETS+=(llama-quantize)
+cmake --build "$W/build" -j"$NP" --target "${TARGETS[@]}" >/dev/null
 B="$W/build/bin"; log "作った"
 wait $DL; DL=""
 echo "$HF_SHA  $M.part" | sha256sum -c --quiet || { echo "頭脳の sha256 が違う" >> "$OUT"; exit 1; }
-mv "$M.part" "$M"; log "頭脳 11.3GB 落とした（sha256 一致）"
+mv "$M.part" "$M"; log "頭脳 $(du -h "$M" | cut -f1) 落とした（lfs.oid sha256 一致）"
+if [[ -n "${REBUILD_QTYPE:-}" ]]; then
+  wait "$DL_IMATRIX"; DL_IMATRIX=""
+  echo "$IMATRIX_SHA  $IMATRIX.part" | sha256sum -c --quiet || { echo "imatrix の sha256 が違う" >> "$OUT"; exit 1; }
+  mv "$IMATRIX.part" "$IMATRIX"
+  QARGS=(--allow-requantize --imatrix "$IMATRIX")
+  [[ -z "${KOUKAI_QOUT:-}" ]] || QARGS+=(--output-tensor-type "$KOUKAI_QOUT")
+  [[ -z "${KOUKAI_QEMB:-}" ]] || QARGS+=(--token-embedding-type "$KOUKAI_QEMB")
+  if [[ -n "${KOUKAI_QTT:-}" ]]; then
+    IFS=',' read -ra QTT_ITEMS <<< "$KOUKAI_QTT"
+    for item in "${QTT_ITEMS[@]}"; do QARGS+=(--tensor-type "${item/:/=}"); done
+  fi
+  FINAL_M="$W/$MF"
+  QUANT_T0=$(date +%s)
+  "$B/llama-quantize" "${QARGS[@]}" "$M" "$FINAL_M" "$REBUILD_QTYPE"
+  echo "作り直し: ${REBUILD_QTYPE} / $(du -h "$FINAL_M" | cut -f1) / 所要 $(( $(date +%s) - QUANT_T0 ))秒" >> "$OUT"
+  rm -f "$M" "$IMATRIX"; M="$FINAL_M"; log "Q8_0 と imatrix を消去"
+fi
+if [[ -n "${KOUKAI_PRUNE_KEEP:-}" ]]; then
+  NEXT_M="$W/prune_experts.gguf"
+  python3 "$K/dougu/asshuku/prune_experts.py" --in "$M" --out "$NEXT_M" --scores "$K/dougu/jikken/keep_fair_jce.tsv" --keep "$KOUKAI_PRUNE_KEEP"
+  echo "専門家を ${KOUKAI_PRUNE_KEEP} 個に手術: $(du -h "$NEXT_M" | cut -f1)" >> "$OUT"
+  rm -f "$M"; M="$NEXT_M"
+fi
+if [[ -n "${KOUKAI_DROP_LAYERS:-}" ]]; then
+  NEXT_M="$W/prune_layers.gguf"
+  python3 "$K/dougu/asshuku/prune_layers.py" --in "$M" --out "$NEXT_M" --drop "$KOUKAI_DROP_LAYERS"
+  echo "層 ${KOUKAI_DROP_LAYERS} を手術: $(du -h "$NEXT_M" | cut -f1)" >> "$OUT"
+  rm -f "$M"; M="$NEXT_M"
+fi
 if [[ -n "$TRANSFORM" ]]; then
-  NEW_M="$W/${MF%.gguf}_x${JIKKEN}.gguf"
+  NEW_M="$W/transform_${JIKKEN}.gguf"
   PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" python3 "$K/dougu/$TRANSFORM" "$M" "$NEW_M"
-  M="$NEW_M"; log "変換済み頭脳を使う: $TRANSFORM"
+  rm -f "$M"; M="$NEW_M"; log "変換済み頭脳を使う: $TRANSFORM"
 fi
 
 # 4. 速さ（読み込み pp512・書き出し tg128、3回）
