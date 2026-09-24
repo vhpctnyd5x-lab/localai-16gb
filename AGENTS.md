@@ -7,7 +7,7 @@
 ## 決めごと
 1. **未見の物差しで測って、良くなければ入れない**。見た物差し（間違いを読んだもの）の伸びは信じない（9/23: テストB +14 → 未見 C +2）。1つの物差しだけで決めない。
 2. Codex は main に push しない・kernel/ を書き換えない。鍵は `~/.groq.env`・`~/.nvidia.env`（値を出さない）。
-3. llama-server は 1本・8080。**裏の処理は `dougu/ura.sh`**。置き換えたら古い方をすぐ止める。GCP の VM は自動消滅で作る。
+3. llama-server は 1本・8080。**裏の処理は `dougu/ura.sh`**、**外の処理の待ち役は `dougu/matsu.sh actions|gcp|pid`**（run_in_background で。終わると結果が返る）。置き換えたら古い方をすぐ止める。GCP の VM は自動消滅で作る。
 
 ## 頭脳
 Qwen3-30B-A3B Q2_K（unsloth 11.3GB）、`-t 6 -ngl 0 -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple --spec-ngram-simple-size-m 16`、深さ0。2507 版は +2〜3 で 3割遅い＝差し替えない。
