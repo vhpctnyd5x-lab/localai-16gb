@@ -83,14 +83,14 @@ T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
 NP=$(nproc); P=""; DL=""
 CGROOT="/sys/fs/cgroup/koukai-actions-$(id -u)-$$"; SERVER_CG=""; SERVER_PID=""
 new_cgroup(){
-  local name="$1" path="$CGROOT-$name-$$"
+  local name="$1"; local path="$CGROOT-$name-$$"   # 1つの local の中で name はまだ使えない（set -u で落ちた 9/24）
   sudo mkdir "$path"
   sudo sh -c 'echo "$1" > "$2/memory.max"; echo 0 > "$2/memory.swap.max"' sh "$((MEM_GB * 1024 * 1024 * 1024))" "$path"
   printf '%s' "$path"
 }
 run_in_cgroup(){
   local path="$1" uid gid; shift; uid=$(id -u); gid=$(id -g)
-  sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; local uid="$1" gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
+  sudo bash -c 'echo $$ > "$1/cgroup.procs"; shift; uid="$1"; gid="$2"; shift 2; exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- "$@"' _ "$path" "$uid" "$gid" "$@"
 }
 cgroup_report(){
   local path="$1" label="$2" peak="?" major="?" oom=0
@@ -142,12 +142,14 @@ OVERRIDE_ARGS=(); [[ -n "${EXPERTS:-}" ]] && OVERRIDE_ARGS+=(--override-kv "qwen
 { echo; echo "## 速さ（llama-bench -t $NP）"; } >> "$OUT"
 if [[ -n "${MEM_GB:-}" ]]; then
   BENCH_CG=$(new_cgroup bench)
-  if run_in_cgroup "$BENCH_CG" "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${OVERRIDE_ARGS[@]}" >> "$OUT" 2>/dev/null; then :
+  if run_in_cgroup "$BENCH_CG" "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md >> "$OUT" 2>/dev/null; then :
   else echo "$MEM_GB GB で落ちた（llama-bench）" >> "$OUT"; fi
   cgroup_report "$BENCH_CG" llama-bench
 else
-  "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${OVERRIDE_ARGS[@]}" >> "$OUT" 2>/dev/null
+  "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md >> "$OUT" 2>/dev/null
 fi
+# llama-bench は --override-kv を受け付けない（9/24）。専門家の数を変えた速さは 頭脳を立てた後の「探り」で測る
+[[ -n "${EXPERTS:-}" ]] && echo "（上の llama-bench は 専門家 8人のまま。$EXPERTS 人の速さは 下の「探り」）" >> "$OUT"
 log "速さ測った"
 
 # 5. 頭脳を立てて 7段の物差し（指定は kernel/server.py の local:main と同じ。-t だけ runner の数）
@@ -170,6 +172,11 @@ tateru(){ # $1=差し替える指定
   fi
   OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
     curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
+  if [ -n "$OK" ]; then   # 探り: 同じ頼みで 128字書かせて 読み・書きの t/s を残す（専門家の数・メモリ上限の違いを比べる）
+    curl -s -m 900 http://127.0.0.1:8080/completion -H 'Content-Type: application/json' \
+      -d '{"prompt":"日本の四季について、それぞれの特徴を詳しく説明してください。","n_predict":128,"temperature":0}' \
+      | python3 -c 'import json,sys; t=json.load(sys.stdin)["timings"]; print("探り: 読み %.1f t/s（%d字）・書き %.1f t/s（%d字）" % (t["prompt_per_second"], t["prompt_n"], t["predicted_per_second"], t["predicted_n"]))' >> "$OUT" 2>/dev/null || echo "探り: 取れなかった" >> "$OUT"
+  fi
   [ -n "$OK" ] || { echo "頭脳が立たない"; tail -20 "$W/llama.log"; echo "頭脳が立たない: $1" >> "$OUT"; if [[ -n "$SERVER_CG" ]]; then cgroup_report "$SERVER_CG" llama-server; SERVER_CG=""; [[ -n "${MEM_GB:-}" ]] && echo "$MEM_GB GB で落ちた（llama-server 起動）" >> "$OUT"; fi; exit 1; }
 }
 hakaru(){ # $1=名札の付け足し
