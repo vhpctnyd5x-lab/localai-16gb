@@ -21,7 +21,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        # ふるい（pplonly）は x64 の 1台だけ。ARM の台は数が少なく、順番待ちで回全体が終わらなかった（9/24）
+        os: ${{ fromJSON(contains(github.ref_name, 'pplonly') && '["ubuntu-24.04"]' || '["ubuntu-24.04","ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 355
     steps:
