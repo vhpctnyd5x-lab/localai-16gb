@@ -9,7 +9,7 @@ on:
         default: "3"
         type: string
   push:
-    branches: ['hakaru*']   # hakaru-zenbu=全問 / スイッチは枝名のハイフン区切り。-e4..7 専門家数 / -q名 量子化 / -gN メモリGB
+    branches: ['hakaru*']   # hakaru-zenbu=全問 / -x名前 実験env / -pplonly PPLだけ / -ubN / -kvq8,-kvq4
 permissions:
   contents: write
 jobs:
