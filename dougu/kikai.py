@@ -334,20 +334,16 @@ def m_keisan(slots):
 
 
 def m_kazoeru(slots):
-    """数え上げ : 「何通り」をローカル LLM が式に書き、電卓（kazoeru.py）が数える（2026-09-23。7段の数え上げ 9/32→31/32）"""
+    """道具で解く : 何通り（数え上げ・並べ方・選び方）と 時刻の問題を、ローカル LLM が書き出し、電卓（kazoeru.py）が計算する。
+    物差しと同じ kazoeru.toku を呼ぶ（2026-09-24 未見のテストE 97→106、時刻 5→15/16。C・D・E とも道具なし以上）。"""
     import kazoeru, teachers
     t = slots.get("_文", "")
-    r = teachers.ask_one("local:main", t, system=kazoeru.SYSTEM, timeout=180, fukasa=0)
-    shiki = (r.get("text") or "").strip()
-    try:
-        n = kazoeru.kazoeru(shiki)
-        if n == 0:          # 「何通り」で 0 は まず式の書き違い
-            raise ValueError("0通り")
-        gyou = [g for g in shiki.splitlines() if g.strip().startswith(("変数", "条件"))]
-        return "%d 通り\n（ローカル LLM が式を書き、電卓が数えました）\n%s" % (n, "\n".join(gyou))
-    except Exception:
-        r2 = teachers.ask_one("local:main", t, timeout=240, fukasa=0)
-        return (r2.get("text") or r2.get("error") or "").strip() + "\n（式が読めなかったので、ふつうに解きました）"
+    v, na, kaki = kazoeru.toku(t, lambda q, sy, cap: teachers.ask_one("local:main", q, system=sy, timeout=180, fukasa=0).get("text"))
+    if v is not None:
+        gyou = [g for g in kaki.splitlines() if g.strip() and not g.strip().startswith("答え")]
+        return "%s\n（ローカル LLM が書き出し、電卓（%s）が計算しました）\n%s" % (format(v, ",") if isinstance(v, int) else v, na, "\n".join(gyou))
+    r2 = teachers.ask_one("local:main", t, timeout=240, fukasa=0)
+    return (r2.get("text") or r2.get("error") or "").strip() + ("\n（道具が合わなかったので、ふつうに解きました）" if na else "")
 
 
 def _shortcuts():
@@ -606,8 +602,8 @@ KIKEN = {
 
 # machine.PATTERNS の **前** に置く（先に当たった方が勝つ）。語は絞って、既存の用件を奪わないように
 PATTERNS_MAE = [
-    # 並べ方（隣・列・席）は電卓が式にできず 8段で 13→3 に落ちた（9/23）→ 組み合わせ（金額・枚数）だけ
-    (r"^(?!.*(並べ|並び|隣|列に|一列|席)).*(何通り|なんとおり)", "数え上げ"),
+    # 道具（kazoeru.erabu と同じ型）: 何通り・順位・2つの時刻の差。細かい振り分けは kazoeru.erabu がする（9/24 全部の道具を本番へ）
+    (r"何通り|なんとおり|(並|順位|順番|列|席).*(何位|何番目)|\d+時(?!間).*\d+時(?!間).*(何分|何時間)", "数え上げ"),
     (r"^[\d０-９\s\+\-\*/×÷x\^\(\)（）\.．,，＋－]+[=＝は？?]*(を計算して|の答え|ください)?[？?。]*$", "計算"),
     (r"(最近|さいきん|昨日|きのう|今週).{0,6}(使った|つかった|開いた|ひらいた|見た|さわった|触った).{0,4}(ファイル|書類|もの)", "最近のファイル"),
     (r"(ネット|回線|wi-?fi|通信).{0,4}(速さ|はやさ|速度|スピード|速い|はやい|遅い|おそい)", "ネットの速さ"),
