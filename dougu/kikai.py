@@ -688,3 +688,10 @@ def slots_hook(name, text, slots) -> bool:
             return False
         slots["文"] = w
     return True
+
+
+# ★ 2026-09-24 足した用件（kikai_tsuika.py、Codex/Luna の案を確かめて 9個だけ入れた）。Bluetooth・Wi-Fi名・ダークモード 等
+import kikai_tsuika as _T
+OPS.update(_T.TSUIKA_OPS); KIKEN.update(_T.TSUIKA_KIKEN)
+YOMU.update(n for n, (_f, sousa) in _T.TSUIKA_OPS.items() if not sousa)
+PATTERNS_MAE += _T.TSUIKA_PATTERNS

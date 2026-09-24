@@ -5,6 +5,7 @@
 正は内蔵 `~/LocalAI_mirror/{kernel,koukai,llama-latest,models}`。SSD は写し（`dougu/utsusu.sh`）。`kernel/`=本体（git 外。直したら `koukai/dougu/` に写す）。物差し `monosashi/hakaru.py`、比べる台本 `dougu/hashiru_tejun.sh`、結果 `dougu/kekka/`（git 外）。不採用の 35B は SSD `LocalAI/models_hokan/`。
 
 ## 決めごと
+0. **方針（9/24 本人）**: 物差しは自作テスト（見ていない問題を Luna が作る）＋ GitHub Actions で測り、結果は GitHub に公開。公式ベンチマーク（`koushiki.yml`）は作ってあるが、ふだんは回さない（GSM8K だけ大きな変更のときの錨）。**測るのは改良がまとまったときだけ**（ずっと測っている感じにしない）。重い作業（コードの案・問題・教材・調査）は **Codex と NVIDIA に任せ**、Claude は確かめと組み込み。カーネルは学習しない「指示をこなす係」なので、パソコンの言葉（操作）を増やす。
 1. **未見の物差しで測って、良くなければ入れない**。見た物差し（間違いを読んだもの）の伸びは信じない（9/23: テストB +14 → 未見 C +2）。1つの物差しだけで決めない。
 2. Codex は main に push しない・kernel/ を書き換えない。鍵は `~/.groq.env`・`~/.nvidia.env`（値を出さない）。
 3. llama-server は 1本・8080。**裏の処理は `dougu/ura.sh`**、**外の処理の待ち役は `dougu/matsu.sh actions|gcp|pid`**（run_in_background で。終わると結果が返る）。置き換えたら古い方をすぐ止める。GCP の VM は自動消滅で作る。
