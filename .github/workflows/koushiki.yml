@@ -1,0 +1,61 @@
+name: koushiki
+# 公式ベンチマーク（MMLU-Pro・IFEval・MATH-500・AIME 2025・GPQA）を 20台に分けて測る。
+# 枝 koushiki-<名>[-nami<k>of<m>] への push で走る（例 koushiki-aime25、koushiki-mmlu_pro-nami1of2）。
+#   nami: 大きいもの（MMLU-Pro）を m 回に分ける。k 回目は 全体を 20*m に分けたうちの 20*(k-1)〜20*k-1 番目。
+#   末尾 -t<数> で 1台あたりの問題数を絞る（試し）。
+# 各台は artifact に上げ、最後の 1つが枝 kekka の kekka/koushiki/ に積んで 表を作る。
+on:
+  push:
+    branches: ['koushiki-*']
+permissions:
+  contents: write
+jobs:
+  hakaru:
+    strategy:
+      fail-fast: false
+      matrix:
+        bubun: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: 走らせる
+        env:
+          NA: ${{ github.ref_name }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          KIJUN=$(echo "$NA" | sed -E 's/^koushiki-//; s/-nami[0-9]+of[0-9]+//; s/-t[0-9]+$//')
+          K_=1; M_=1; if [[ "$NA" =~ -nami([0-9]+)of([0-9]+) ]]; then K_=${BASH_REMATCH[1]}; M_=${BASH_REMATCH[2]}; fi
+          KAGIRI=0; if [[ "$NA" =~ -t([0-9]+)$ ]]; then KAGIRI=${BASH_REMATCH[1]}; fi
+          export KIJUN KAGIRI BUBUN="$(( ${{ matrix.bubun }} + 20*(K_-1) ))/$(( 20*M_ ))"
+          echo "$KIJUN $BUBUN 絞り $KAGIRI"
+          bash dougu/actions_koushiki.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: koushiki-${{ matrix.bubun }}
+          path: kekka_actions/
+  tsumu:
+    needs: hakaru
+    if: always()
+    runs-on: ubuntu-24.04
+    concurrency: kekka
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: koushiki-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/k
+      - name: 枝 kekka へ
+        run: |
+          set -e
+          ls "$RUNNER_TEMP/k" || { echo "結果なし"; exit 0; }
+          cp monosashi/koushiki_matome.py "$RUNNER_TEMP/"
+          git config user.name hakaru-bot; git config user.email hakaru-bot@users.noreply.github.com
+          if git fetch -q origin kekka; then git checkout -q -B kekka origin/kekka; else git checkout -q --orphan kekka; git rm -rfq .; fi
+          mkdir -p kekka/koushiki; cp "$RUNNER_TEMP"/k/koushiki_*.jsonl kekka/koushiki/
+          python3 "$RUNNER_TEMP/koushiki_matome.py" kekka/koushiki > kekka/koushiki/HYOU.md
+          cat kekka/koushiki/HYOU.md
+          git add -f kekka; git commit -qm "koushiki: run ${{ github.run_number }} (${{ github.ref_name }})" || { echo "変わりなし"; exit 0; }
+          git push -q origin kekka
