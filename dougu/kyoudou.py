@@ -35,6 +35,7 @@ import machine
 import shounin
 
 SAIDAI_TE = 30
+TOMERU = None   # server が 画面の「止める」（threading.Event）を差し込む。手と手の間で見る（9/24）
 SAIDAI_MOJI = 4000
 MODEL_TIMEOUT = 600
 CONTEXT_WINDOW_TOKENS = 20000   # 9/24 実測: server の -c は 32768 だが、深さ 2万超えで書き出し 1.8字/秒。6割=1万2千で要約して速さを保つ
@@ -1679,6 +1680,9 @@ def kotaeru(text: str) -> str:
             unreadable_streak = 0
 
             for step in range(1, SAIDAI_TE + 1):
+                if TOMERU is not None and TOMERU.is_set():
+                    return "止めました（%d手目の前）" % step
+                print("  手 %d" % step, flush=True)   # 画面の途中経過に 何手目かを出す
                 try:
                     _maybe_compact(prefix, history, session, step)
                 except Exception as error:

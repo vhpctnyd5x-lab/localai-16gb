@@ -513,7 +513,7 @@ class _Nagashi(io.TextIOBase):
         return "\n".join(self.all + ([self.buf] if self.buf else []))
 
 
-def handle_text_nagashi(text, q, tomeru):
+def handle_text_nagashi(text, q, tomeru, michi=None):
     """handle_text と同じ道筋を、途中経過と文字を q に流しながら通る。
     ★ 画面の「止める」= tomeru。teachers は次のかたまりで接続を切る。"""
     import teachers as _T
@@ -539,7 +539,23 @@ def handle_text_nagashi(text, q, tomeru):
         try:
             with contextlib.redirect_stdout(w):
                 try:
-                    if S.is_command(text):
+                    if michi == "kyoudou":
+                        # ★ 2026-09-24 協働の輪（kyoudou.py）: 30B が 1手ずつ考え、カーネルが門番を通して動かして確かめる。
+                        #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
+                        ok, shirase = moderu_youi("local:main")
+                        if not ok:
+                            print(f"\n  頭（30B）を起こせませんでした： {shirase}")
+                        else:
+                            import kyoudou as _kyoudou
+                            _kyoudou.TOMERU = tomeru          # 画面の「止める」を 手と手の間で効かせる
+                            print("  協働: 30B が考え、カーネルが動かして確かめます")
+                            try:
+                                kotae = _kyoudou.kotaeru(text)
+                            finally:
+                                _kyoudou.TOMERU = None
+                            print("答え：" + kotae)
+                        kind = "協働"
+                    elif S.is_command(text):
                         S.run(text, CTX); kind = "コマンド"
                     elif cfg.get("先生と直接"):
                         import sensei as _sensei
@@ -902,7 +918,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tomeru = threading.Event()
             def worker():
                 try:
-                    res = handle_text_nagashi(text, q, tomeru)
+                    res = handle_text_nagashi(text, q, tomeru, body.get("michi"))
                 except Exception as e:
                     res = {"出力": f"エラー： {type(e).__name__}: {e}", "経過": "", "ミリ秒": 0,
                            "モード": CTX["設定"].get("モード", ""), "止めた": tomeru.is_set()}

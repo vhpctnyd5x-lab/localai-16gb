@@ -647,7 +647,7 @@ const atesaki = document.getElementById("atesaki");
 const atesakiChuuiEl = document.getElementById("atesaki-chuui");
 function atesakiChuui(){
   const m = atesaki.value;
-  if (m === "" || m.startsWith("computer:")){   // カーネル ／ AIカーソル（承認してから動く）
+  if (m === "" || m.startsWith("computer:") || m === "kyoudou:"){   // カーネル ／ AIカーソル ／ 協働（承認してから動く）
     atesakiChuuiEl.hidden = true; return;
   }
   atesakiChuuiEl.hidden = false;
@@ -1693,17 +1693,18 @@ async function send(text){
     const agent = m.startsWith("agent:");
     const agentModel = agent ? m.slice(6) : m;
     const jika = agentModel.startsWith("local:") || agentModel.startsWith("groq:");
+    const kyoudou = m === "kyoudou:";   // 協働（30B＋カーネル）は カーネルと同じ /ask/stream に michi を付けて流す
     atesaki.classList.toggle("temoto", computer || agent || m.startsWith("local:"));
-    atesaki.classList.toggle("soto", m !== "" && !computer && !agent && !m.startsWith("local:"));
+    atesaki.classList.toggle("soto", m !== "" && !kyoudou && !computer && !agent && !m.startsWith("local:"));
     const res = computer
       ? await api("/computer/plan", {method:"POST", body: JSON.stringify({text, model:computerModel})})
       : agent
       ? await api("/agent", {method:"POST", body: JSON.stringify({text, model:agentModel})})
       : jika
       ? await api("/sensei", {method:"POST", body: JSON.stringify({text, model:m})})
-      : m
+      : (m && !kyoudou)
       ? await api("/nvidia", {method:"POST", body: JSON.stringify({text, model:m})})
-      : await askNagashi(text, node);
+      : await askNagashi(text, node, m === "kyoudou:" ? "kyoudou" : undefined);
     const r = res.error ? {出力:"エラー： "+res.error, ミリ秒:0, モード:"—"} : res;
     fillBot(node, r);
     if (computer && !res.error) addComputerApproval(node, res);
@@ -1720,7 +1721,7 @@ async function send(text){
 
 /* ---------- 流しながら受ける（/ask/stream）＋ 止める ---------- */
 let ABORT = null;
-async function askNagashi(text, node){
+async function askNagashi(text, node, michi){
   // 吹き出しの下に「いま何をしているか」を出す。文字が来たらそのまま流す。
   const pre = node.querySelector("pre");
   let keika = node.querySelector(".keika");
@@ -1731,7 +1732,7 @@ async function askNagashi(text, node){
   const kaku = () => { pre.innerHTML = paint(moji || " "); log.scrollTop = log.scrollHeight; };
   try{
     const r = await fetch("/ask/stream", {method:"POST", signal: ABORT.signal,
-      headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify({text, 会話: ST.いま || undefined})});
+      headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify({text, 会話: ST.いま || undefined, michi})});
     const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
     while (true){
       const {value, done} = await rd.read(); if (done) break;
@@ -1895,7 +1896,8 @@ async function refresh(){
       const sig = ms.join(",") + "|" + te.map(x=>x.key).join(",") + "|" + (s.手元のいま||"");
       if (atesaki.dataset.sig !== sig){
         const keep = atesaki.value;
-        let h = '<optgroup label="カーネル"><option value="">カーネル（相棒）</option></optgroup>';
+        let h = '<optgroup label="カーネル"><option value="">カーネル（相棒）</option>'
+          + '<option value="kyoudou:">カーネル＋30B（協働・パソコン操作）</option></optgroup>';
         if (te.length){
           h += '<optgroup label="手元のモデルに じかに（外に出ません）">'
             + te.map(x => `<option value="${esc(x.key)}">${esc(x.名)}${x.いま?" ● いま":""}</option>`).join("")
