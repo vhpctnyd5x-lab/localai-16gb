@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -32,11 +33,10 @@ import computer
 import kazoeru
 import machine
 import shounin
-import teachers
 
 SAIDAI_TE = 30
 SAIDAI_MOJI = 4000
-MODEL_TIMEOUT = 120
+MODEL_TIMEOUT = 600
 CONTEXT_WINDOW_TOKENS = 20000   # 9/24 実測: server の -c は 32768 だが、深さ 2万超えで書き出し 1.8字/秒。6割=1万2千で要約して速さを保つ
 SUMMARY_TRIGGER_RATIO = 0.60
 RECENT_STEPS_AFTER_SUMMARY = 3
@@ -47,6 +47,61 @@ SUMMARY_LIMIT_CHARS = 2400
 _LOCK = threading.RLock()
 _SESSION_SECRET_DIRTY = False
 _SESSION_SECRET_VALUES: set[str] = set()
+
+_ACTION_FIELDS = {
+    "命令": ({"cmd"}, set()),
+    "読む": ({"path"}, {"start", "end"}),
+    "書く": ({"path", "text"}, set()),
+    "直す": ({"path", "old", "new"}, set()),
+    "画面": (set(), set()),
+    "押す": ({"moji"}, set()),
+    "打つ": ({"text"}, set()),
+    "キー": ({"key"}, set()),
+    "用件": ({"text"}, set()),
+    "電卓": ({"toi"}, set()),
+    "終わり": ({"kotae"}, set()),
+}
+
+
+def _action_schema() -> dict:
+    """llama.cpp の JSON schema → GBNF に渡す、11種類の排他的な形。"""
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    kind: {
+                        "type": "object",
+                        "properties": {name: {"type": "string"} for name in sorted(required | optional)},
+                        "required": sorted(required),
+                        "additionalProperties": False,
+                    },
+                },
+                "required": [kind],
+                "additionalProperties": False,
+            }
+            for kind, (required, optional) in _ACTION_FIELDS.items()
+        ]
+    }
+
+
+ACTION_SCHEMA = _action_schema()
+
+
+def _matches_schema(value: Any, schema: dict) -> bool:
+    """自己試験と受信時の検査。上の schema が使う JSON Schema の部分集合。"""
+    if "oneOf" in schema:
+        return sum(_matches_schema(value, branch) for branch in schema["oneOf"]) == 1
+    if schema.get("type") == "string":
+        return isinstance(value, str)
+    if schema.get("type") != "object" or not isinstance(value, dict):
+        return False
+    properties = schema.get("properties", {})
+    if not set(schema.get("required", [])).issubset(value):
+        return False
+    if schema.get("additionalProperties") is False and not set(value).issubset(properties):
+        return False
+    return all(_matches_schema(item, properties[key]) for key, item in value.items() if key in properties)
 
 _SECRET_LABEL = (
     r"(?:api[_-]?key|access[_-]?key|token|secret|password|passwd|"
@@ -1310,17 +1365,32 @@ def _run_machine(text: str, matched: tuple | None = None) -> dict:
         return {"ok": False, "確認済み": False, "結果": _redact(error)}
 
 
-def _ask_local(prompt: str, system: str = "", timeout: int = MODEL_TIMEOUT) -> str:
-    result = teachers.ask_one(
-        "local:main",
-        prompt,
-        system=system,
-        timeout=timeout,
-        fukasa=0,
+def _ask_local(prompt: str, system: str = "", timeout: int = MODEL_TIMEOUT,
+               schema: dict | None = None) -> str:
+    body: dict[str, Any] = {
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 1200 if schema else 2400,
+        "stream": False,
+        "cache_prompt": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "one_action", "strict": True, "schema": schema},
+        }
+    request = urllib.request.Request(
+        "http://127.0.0.1:8080/v1/chat/completions",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
     )
-    if result.get("error"):
-        raise RuntimeError(str(result["error"]))
-    return str(result.get("text") or "")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        result = json.load(response)
+    choice = result["choices"][0]
+    if choice.get("finish_reason") == "length":
+        raise RuntimeError("ローカルモデルの出力が途中で切れました")
+    return str(choice["message"].get("content") or "")
 
 
 def _run_calculator(toi: str) -> dict:
@@ -1479,37 +1549,9 @@ def _save_waza(request: str, answer: str, steps: list[dict]) -> str | None:
 
 
 def _model_action(raw: str) -> dict:
-    line = raw.strip()
-    if not line or "\n" in line or "\r" in line:
-        raise ValueError("1行のJSONではありません")
-    value = json.loads(line)
-    if not isinstance(value, dict) or len(value) != 1:
-        raise ValueError("道具を1つだけ含むJSONではありません")
-    kind, payload = next(iter(value.items()))
-    if kind not in {
-        "命令", "読む", "書く", "直す", "画面", "押す", "打つ",
-        "キー", "用件", "電卓", "終わり",
-    } or not isinstance(payload, dict):
+    value = json.loads(raw.strip())
+    if not _matches_schema(value, ACTION_SCHEMA):
         raise ValueError("道具の書式が違います")
-
-    required = {
-        "命令": {"cmd"},
-        "読む": {"path"},
-        "書く": {"path", "text"},
-        "直す": {"path", "old", "new"},
-        "画面": set(),
-        "押す": {"moji"},
-        "打つ": {"text"},
-        "キー": {"key"},
-        "用件": {"text"},
-        "電卓": {"toi"},
-        "終わり": {"kotae"},
-    }[kind]
-    optional = {"start", "end"} if kind == "読む" else set()
-    if not required.issubset(payload) or not set(payload).issubset(required | optional):
-        raise ValueError("道具の項目が違います")
-    if any(not isinstance(item, str) for item in payload.values()):
-        raise ValueError("道具の値は文字列で指定してください")
     return value
 
 
@@ -1632,6 +1674,8 @@ def kotaeru(text: str) -> str:
             history: list[dict] = []
             completed: list[dict] = []
             failed_actions: dict[str, int] = {}
+            last_action_key = ""
+            repeated_actions = 0
             unreadable_streak = 0
 
             for step in range(1, SAIDAI_TE + 1):
@@ -1641,7 +1685,7 @@ def kotaeru(text: str) -> str:
                     return "履歴を要約できなかったため停止しました: " + _redact(error)
 
                 try:
-                    raw = _ask_local(_prompt(prefix, history), system=SYSTEM)
+                    raw = _ask_local(_prompt(prefix, history), system=SYSTEM, schema=ACTION_SCHEMA)
                 except Exception as error:
                     return "ローカルモデルを呼べませんでした: " + _redact(error)
 
@@ -1665,7 +1709,12 @@ def kotaeru(text: str) -> str:
                     return _finish(payload, request, session, step, completed)
 
                 action_key = json.dumps(tool, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                repeated_actions = repeated_actions + 1 if action_key == last_action_key else 1
+                last_action_key = action_key
+                if repeated_actions >= 3:
+                    return _stopped_with_summary("同じ手を3回続けたため停止しました", history)
                 if failed_actions.get(action_key, 0):
+                    failed_actions[action_key] += 1
                     result = {
                         "ok": False, "確認済み": False,
                         "結果": "その手は失敗済み。別の手を選ぶこと（例: 命令で ls や find を使う）",
@@ -1675,6 +1724,8 @@ def kotaeru(text: str) -> str:
                         _log_event(session, step, "結果", _scrub(result))
                     except Exception:
                         return "記録できないため停止しました"
+                    if failed_actions[action_key] >= 3:
+                        return _stopped_with_summary("同じ手が3回失敗したため停止しました", history)
                 else:
                     result = _gate_and_run(tool, session=session, step=step)
                 action_result = {
@@ -1705,6 +1756,54 @@ def _self_test() -> None:
 
     home = os.path.expanduser("~")
     assert home in SYSTEM and "~ はこのホーム" in SYSTEM
+    examples = {
+        "命令": {"cmd": "pwd"},
+        "読む": {"path": "/tmp/a", "start": "1", "end": "2"},
+        "書く": {"path": "/tmp/a", "text": "引用符 \" と改行\n"},
+        "直す": {"path": "/tmp/a", "old": "a", "new": "b"},
+        "画面": {},
+        "押す": {"moji": "保存"},
+        "打つ": {"text": "abc"},
+        "キー": {"key": "return"},
+        "用件": {"text": "メモを開く"},
+        "電卓": {"toi": "1+1"},
+        "終わり": {"kotae": "完了"},
+    }
+    assert len(ACTION_SCHEMA["oneOf"]) == 11
+    for kind, fields in examples.items():
+        example = {kind: fields}
+        assert _matches_schema(example, ACTION_SCHEMA)
+        assert _model_action(json.dumps(example, ensure_ascii=False)) == example
+    invalid = [
+        {"読む": {}}, {"読む": {"path": "/tmp/a", "start": 1}},
+        {"書く": {"path": "/tmp/a"}}, {"画面": {"text": "余分"}},
+        {"画面": {}, "終わり": {"kotae": "完了"}},
+        {"未知": {}}, {"命令": {"cmd": None}},
+    ]
+    for example in invalid:
+        assert not _matches_schema(example, ACTION_SCHEMA)
+        try:
+            _model_action(json.dumps(example, ensure_ascii=False))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(example)
+    for broken in ('{"打つ":{"text":"a"b"}}', '{"画面":{}} 説明'):
+        try:
+            _model_action(broken)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(broken)
+    with mock.patch("urllib.request.urlopen") as open_url:
+        open_url.return_value.__enter__.return_value = __import__("io").BytesIO(
+            b'{"choices":[{"message":{"content":"{\\"\\u753b\\u9762\\":{}}"},"finish_reason":"stop"}]}'
+        )
+        assert _ask_local("試験", system=SYSTEM, schema=ACTION_SCHEMA) == '{"画面":{}}'
+        sent = json.loads(open_url.call_args.args[0].data)
+        assert sent["response_format"]["json_schema"]["schema"] == ACTION_SCHEMA
+        assert sent["chat_template_kwargs"]["enable_thinking"] is False
+        assert open_url.call_args.kwargs["timeout"] == MODEL_TIMEOUT
     assert _resolve_path("/home/user/LocalAI_mirror/koukai") == _resolve_path("~/LocalAI_mirror/koukai")
     with tempfile.TemporaryDirectory() as temporary:
         folder = Path(temporary)
