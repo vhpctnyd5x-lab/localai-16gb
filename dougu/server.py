@@ -546,7 +546,8 @@ def handle_text_nagashi(text, q, tomeru, michi=None):
                         if not ok:
                             print(f"\n  頭（30B）を起こせませんでした： {shirase}")
                         else:
-                            import kyoudou as _kyoudou
+                            import importlib, kyoudou as _kyoudou
+                            _kyoudou = importlib.reload(_kyoudou)   # 直した協働の輪を アプリの再起動なしで使う（9/24）
                             _kyoudou.TOMERU = tomeru          # 画面の「止める」を 手と手の間で効かせる
                             print("  協働: 30B が考え、カーネルが動かして確かめます")
                             try:

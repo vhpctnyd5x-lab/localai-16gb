@@ -89,6 +89,33 @@ def _action_schema() -> dict:
 ACTION_SCHEMA = _action_schema()
 
 
+def _action_gbnf(exclude: frozenset[str] = frozenset()) -> str:
+    """ACTION_SCHEMA と同じ 11種の形を、英数字の規則名だけで書いた GBNF。項目の順は 固定（必須→任意）。"""
+    s = 'ws ::= [ \\t\\n]{0,8}\n'
+    s += 'str ::= "\\"" ( [^"\\\\\\x7F\\x00-\\x1F] | "\\\\" ( ["\\\\/bfnrt] | "u" [0-9a-fA-F]{4} ) )* "\\""\n'
+    def kv(key):
+        return '"\\"%s\\"" ws ":" ws str' % key
+    forms = {
+        "命令": ["cmd"], "読む": ["path"], "書く": ["path", "text"], "直す": ["path", "old", "new"],
+        "画面": [], "押す": ["moji"], "打つ": ["text"], "キー": ["key"], "用件": ["text"],
+        "電卓": ["toi"], "終わり": ["kotae"],
+    }
+    names = []
+    for i, (tool, keys) in enumerate(forms.items()):
+        body = ' ws "," ws '.join(kv(k) for k in keys)
+        if tool == "読む":   # start と end は 任意
+            body += ' ( ws "," ws %s )? ( ws "," ws %s )?' % (kv("start"), kv("end"))
+        inner = ('"{" ws ' + body + ' ws "}"') if body else '"{" ws "}"'
+        s += 'a%d ::= "\\"%s\\"" ws ":" ws %s\n' % (i, tool, inner)
+        if tool not in exclude or tool == "終わり":
+            names.append("a%d" % i)
+    s = 'root ::= "{" ws ( ' + " | ".join(names) + ' ) ws "}"\n' + s
+    return s
+
+
+ACTION_GBNF = _action_gbnf()
+
+
 def _matches_schema(value: Any, schema: dict) -> bool:
     """自己試験と受信時の検査。上の schema が使う JSON Schema の部分集合。"""
     if "oneOf" in schema:
@@ -180,6 +207,8 @@ Claude Code と Codex の本体・設定・ログイン情報、および両者�
 秘密の値をkirokuやwazaに残してはいけません。長い資料は先頭・末尾・件数だけを示し、
 全文の記録先が示されたら、読む道具の start/end で必要な範囲を取り出してください。
 成功を確認できないときは、成功したと言わず確認に必要な一手を選んでください。
+結果を読んで答えが分かったら、すぐ「終わり」で答えてください。同じ手をくり返さないでください。
+数える・合計する・並べ替える は、頭で数えず 命令（例: ls フォルダ/*.jsonl | wc -l）か 電卓 を使ってください。
 """
 
 SUMMARY_SYSTEM = """あなたは記憶係です。渡された過去の操作と結果だけを短く要約してください。
@@ -1172,12 +1201,26 @@ def _read_file(
     try:
         if os.path.isdir(path):
             with os.scandir(path) as entries:
-                names = sorted(entry.name for entry in entries)
+                names = []
+                counts: dict[str, int] = {}
+                hidden = 0
+                for entry in entries:
+                    names.append(entry.name)
+                    if entry.name.startswith("."):
+                        hidden += 1
+                        continue
+                    kind = "フォルダ" if entry.is_dir() else (Path(entry.name).suffix or "拡張子なし")
+                    counts[kind] = counts.get(kind, 0) + 1
+            names.sort()
+            counts = dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
             shown = names[:50]
             result_text = f"フォルダ内の名前（全{len(names)}件）: " + ("、".join(shown) or "空です")
             if len(names) > len(shown):
                 result_text += f"（先頭{len(shown)}件を表示）"
-            return {"ok": True, "確認済み": True, "結果": result_text, "場所": path, "件数": len(names)}
+            types_text = "、".join(f"{kind} {count}件" for kind, count in counts.items()) or "なし"
+            result_text += f"。種類別: {types_text}（. で始まる隠し {hidden}件は数えない）"
+            return {"ok": True, "確認済み": True, "結果": result_text, "場所": path,
+                    "件数": len(names), "種類別": counts}
         with open(path, "rb") as handle:
             size = os.fstat(handle.fileno()).st_size
             if size > READ_LIMIT_BYTES:
@@ -1367,7 +1410,7 @@ def _run_machine(text: str, matched: tuple | None = None) -> dict:
 
 
 def _ask_local(prompt: str, system: str = "", timeout: int = MODEL_TIMEOUT,
-               schema: dict | None = None) -> str:
+               schema: dict | None = None, exclude: frozenset[str] = frozenset()) -> str:
     body: dict[str, Any] = {
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         "temperature": 0,
@@ -1377,10 +1420,9 @@ def _ask_local(prompt: str, system: str = "", timeout: int = MODEL_TIMEOUT,
         "chat_template_kwargs": {"enable_thinking": False},
     }
     if schema is not None:
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "one_action", "strict": True, "schema": schema},
-        }
+        # llama.cpp の json_schema→文法 は 日本語の項目名を 文法の名前に使って落ちる
+        #（9/24 実測: "Failed to initialize samplers"）。英数字の名前で 手で書いた文法を渡す。
+        body["grammar"] = ACTION_GBNF if not exclude else _action_gbnf(exclude)
     request = urllib.request.Request(
         "http://127.0.0.1:8080/v1/chat/completions",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -1550,7 +1592,17 @@ def _save_waza(request: str, answer: str, steps: list[dict]) -> str | None:
 
 
 def _model_action(raw: str) -> dict:
-    value = json.loads(raw.strip())
+    # サーバーは 返事の頭に 空の考えの札（<think></think>）を付けて返す（9/24 実測）。札を外し、最初の { から 1つの JSON を拾う
+    text = re.sub(r"(?s)^.*</think>", "", raw or "").strip()
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("JSON がありません")
+    value, _end = json.JSONDecoder().raw_decode(text[start:])
+    for payload in (value.values() if isinstance(value, dict) else ()):   # 数を 1 と書く癖 → 文字列に
+        if isinstance(payload, dict):
+            for key, item in list(payload.items()):
+                if isinstance(item, (int, float)) and not isinstance(item, bool):
+                    payload[key] = str(item)
     if not _matches_schema(value, ACTION_SCHEMA):
         raise ValueError("道具の書式が違います")
     return value
@@ -1675,9 +1727,12 @@ def kotaeru(text: str) -> str:
             history: list[dict] = []
             completed: list[dict] = []
             failed_actions: dict[str, int] = {}
+            successful_actions: dict[str, int] = {}
+            empty_repeats = 0
             last_action_key = ""
             repeated_actions = 0
             unreadable_streak = 0
+            next_exclude: frozenset[str] = frozenset()
 
             for step in range(1, SAIDAI_TE + 1):
                 if TOMERU is not None and TOMERU.is_set():
@@ -1689,7 +1744,10 @@ def kotaeru(text: str) -> str:
                     return "履歴を要約できなかったため停止しました: " + _redact(error)
 
                 try:
-                    raw = _ask_local(_prompt(prefix, history), system=SYSTEM, schema=ACTION_SCHEMA)
+                    exclude = next_exclude
+                    next_exclude = frozenset()
+                    raw = _ask_local(_prompt(prefix, history), system=SYSTEM,
+                                     schema=ACTION_SCHEMA, exclude=exclude)
                 except Exception as error:
                     return "ローカルモデルを呼べませんでした: " + _redact(error)
 
@@ -1717,7 +1775,21 @@ def kotaeru(text: str) -> str:
                 last_action_key = action_key
                 if repeated_actions >= 3:
                     return _stopped_with_summary("同じ手を3回続けたため停止しました", history)
-                if failed_actions.get(action_key, 0):
+                if action_key in successful_actions:
+                    empty_repeats += 1
+                    result = {
+                        "ok": True, "確認済み": True,
+                        "結果": "その手は 手%d で成功済み（結果は上にある）。答えが分かっているなら 終わり で答えること"
+                                % successful_actions[action_key],
+                    }
+                    try:
+                        _log_event(session, step, "提案", {"操作": _scrub(tool), "門番": "くり返しを防止"})
+                        _log_event(session, step, "結果", _scrub(result))
+                    except Exception:
+                        return "記録できないため停止しました"
+                    next_exclude = (frozenset({kind}) if empty_repeats == 1
+                                    else frozenset(_ACTION_FIELDS) - {"終わり"})
+                elif failed_actions.get(action_key, 0):
                     failed_actions[action_key] += 1
                     result = {
                         "ok": False, "確認済み": False,
@@ -1728,10 +1800,16 @@ def kotaeru(text: str) -> str:
                         _log_event(session, step, "結果", _scrub(result))
                     except Exception:
                         return "記録できないため停止しました"
+                    next_exclude = frozenset({kind})
                     if failed_actions[action_key] >= 3:
                         return _stopped_with_summary("同じ手が3回失敗したため停止しました", history)
                 else:
+                    risk = kensa(tool)
                     result = _gate_and_run(tool, session=session, step=step)
+                    if risk != "見る":
+                        successful_actions.clear()
+                    if result.get("ok"):
+                        successful_actions[action_key] = step
                 action_result = {
                     "手": step,
                     "道具": kind,
@@ -1779,7 +1857,7 @@ def _self_test() -> None:
         assert _matches_schema(example, ACTION_SCHEMA)
         assert _model_action(json.dumps(example, ensure_ascii=False)) == example
     invalid = [
-        {"読む": {}}, {"読む": {"path": "/tmp/a", "start": 1}},
+        {"読む": {}},
         {"書く": {"path": "/tmp/a"}}, {"画面": {"text": "余分"}},
         {"画面": {}, "終わり": {"kotae": "完了"}},
         {"未知": {}}, {"命令": {"cmd": None}},
@@ -1792,7 +1870,10 @@ def _self_test() -> None:
             pass
         else:
             raise AssertionError(example)
-    for broken in ('{"打つ":{"text":"a"b"}}', '{"画面":{}} 説明'):
+    # 9/24: 数は文字列に直して受け取り、JSON の後ろの文と 頭の考えの札は 読み飛ばす（形は 文法で縛る）
+    assert _model_action('{"読む":{"path":"/tmp/a","start":1}}') == {"読む": {"path": "/tmp/a", "start": "1"}}
+    assert _model_action('<think>\n\n</think>\n\n{"画面":{}} 説明') == {"画面": {}}
+    for broken in ('{"打つ":{"text":"a"b"}}', '説明だけ'):
         try:
             _model_action(broken)
         except ValueError:
@@ -1805,20 +1886,106 @@ def _self_test() -> None:
         )
         assert _ask_local("試験", system=SYSTEM, schema=ACTION_SCHEMA) == '{"画面":{}}'
         sent = json.loads(open_url.call_args.args[0].data)
-        assert sent["response_format"]["json_schema"]["schema"] == ACTION_SCHEMA
+        assert sent["grammar"] == _action_gbnf(frozenset()) == ACTION_GBNF and "response_format" not in sent
         assert sent["chat_template_kwargs"]["enable_thinking"] is False
         assert open_url.call_args.kwargs["timeout"] == MODEL_TIMEOUT
     assert _resolve_path("/home/user/LocalAI_mirror/koukai") == _resolve_path("~/LocalAI_mirror/koukai")
     with tempfile.TemporaryDirectory() as temporary:
         folder = Path(temporary)
         (folder / "a.jsonl").write_text("{}\n", encoding="utf-8")
-        (folder / "b.txt").write_text("x", encoding="utf-8")
+        (folder / "b.jsonl").write_text("{}\n", encoding="utf-8")
+        (folder / "c.py").write_text("x", encoding="utf-8")
+        (folder / "._d.jsonl").write_text("{}\n", encoding="utf-8")
+        (folder / "plain").write_text("x", encoding="utf-8")
+        (folder / "sub").mkdir()
         listed = _read_file(str(folder), start="0", end="0")
-        assert listed["ok"] and listed["件数"] == 2 and "a.jsonl" in listed["結果"]
+        assert listed["ok"] and listed["件数"] == 6 and "a.jsonl" in listed["結果"]
+        assert listed["種類別"] == {".jsonl": 2, ".py": 1, "フォルダ": 1, "拡張子なし": 1}
+        assert ".jsonl 2件" in listed["結果"] and "フォルダ 1件" in listed["結果"]
+        assert "拡張子なし 1件" in listed["結果"]
+        assert "隠し 1件" in listed["結果"]
         assert "ありません" in _read_file(str(folder / "missing"))["結果"]
         with mock.patch("os.scandir", side_effect=PermissionError("拒否されました")):
             denied = _read_file(str(folder))
         assert not denied["ok"] and "拒否されました" in denied["結果"]
+
+    restricted = _action_gbnf(frozenset({"読む"}))
+    root_rules = re.findall(r"a\d+", restricted.splitlines()[0])
+    assert "a1" not in root_rules and "a10" in root_rules
+    assert 'a1 ::= "\\"読む\\""' in restricted
+    assert "a10" in re.findall(r"a\d+", _action_gbnf(frozenset({"終わり"})).splitlines()[0])
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(shounin, "hajimeru"))
+        stack.enter_context(mock.patch.object(shounin, "owaru"))
+        stack.enter_context(mock.patch(__name__ + "._log_event"))
+        stack.enter_context(mock.patch(__name__ + "._near_waza", return_value=[]))
+        stack.enter_context(mock.patch(__name__ + "._maybe_compact"))
+        stack.enter_context(mock.patch(__name__ + "._gate_and_run", return_value={
+            "ok": True, "確認済み": True, "結果": "成功",
+        }))
+        stack.enter_context(mock.patch(__name__ + "._finish", return_value="完了"))
+        responses = [
+            '{"読む":{"path":"/tmp/a"}}', '{"読む":{"path":"/tmp/a"}}',
+            '{"画面":{}}', '{"終わり":{"kotae":"完了"}}',
+        ]
+        def reply(request, timeout):
+            content = responses.pop(0)
+            data = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+            return __import__("io").BytesIO(json.dumps(data).encode("utf-8"))
+        open_url = stack.enter_context(mock.patch("urllib.request.urlopen", side_effect=reply))
+        assert kotaeru("試験") == "完了"
+        grammars = [json.loads(call.args[0].data)["grammar"] for call in open_url.call_args_list]
+        assert grammars == [ACTION_GBNF, ACTION_GBNF, restricted, ACTION_GBNF]
+
+    command = '{"命令":{"cmd":"ls ~/LocalAI_mirror/koukai/monosashi/*.jsonl | wc -l"}}'
+    writing = '{"書く":{"path":"/tmp/a","text":"更新"}}'
+    assert kensa(json.loads(command)) == "見る"
+    assert kensa(json.loads(writing)) == "戻せる"
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(shounin, "hajimeru"))
+        stack.enter_context(mock.patch.object(shounin, "owaru"))
+        events = stack.enter_context(mock.patch(__name__ + "._log_event"))
+        stack.enter_context(mock.patch(__name__ + "._near_waza", return_value=[]))
+        stack.enter_context(mock.patch(__name__ + "._maybe_compact"))
+        run = stack.enter_context(mock.patch(__name__ + "._gate_and_run", return_value={
+            "ok": True, "確認済み": True, "結果": "13",
+        }))
+        stack.enter_context(mock.patch(__name__ + "._finish", return_value="13"))
+        responses = [command, command, '{"読む":{"path":"/tmp/b"}}', command,
+                     '{"終わり":{"kotae":"13"}}']
+        def reply(request, timeout):
+            data = {"choices": [{"message": {"content": responses.pop(0)}, "finish_reason": "stop"}]}
+            return __import__("io").BytesIO(json.dumps(data).encode("utf-8"))
+        open_url = stack.enter_context(mock.patch("urllib.request.urlopen", side_effect=reply))
+        assert kotaeru("jsonl はいくつ？") == "13"
+        assert [call.args[0] for call in run.call_args_list].count(json.loads(command)) == 1
+        grammars = [json.loads(call.args[0].data)["grammar"] for call in open_url.call_args_list]
+        finish_only = _action_gbnf(frozenset(_ACTION_FIELDS) - {"終わり"})
+        assert grammars == [ACTION_GBNF, ACTION_GBNF,
+                            _action_gbnf(frozenset({"命令"})), ACTION_GBNF, finish_only]
+        repeat_steps = [call.args[1] for call in events.call_args_list
+                        if call.args[2] == "提案" and call.args[3].get("門番") == "くり返しを防止"]
+        assert repeat_steps == [2, 4]
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(shounin, "hajimeru"))
+        stack.enter_context(mock.patch.object(shounin, "owaru"))
+        stack.enter_context(mock.patch(__name__ + "._log_event"))
+        stack.enter_context(mock.patch(__name__ + "._near_waza", return_value=[]))
+        stack.enter_context(mock.patch(__name__ + "._maybe_compact"))
+        run = stack.enter_context(mock.patch(__name__ + "._gate_and_run", return_value={
+            "ok": True, "確認済み": True, "結果": "成功",
+        }))
+        stack.enter_context(mock.patch(__name__ + "._finish", return_value="完了"))
+        responses = [command, writing, command, '{"終わり":{"kotae":"完了"}}']
+        def reply(request, timeout):
+            data = {"choices": [{"message": {"content": responses.pop(0)}, "finish_reason": "stop"}]}
+            return __import__("io").BytesIO(json.dumps(data).encode("utf-8"))
+        stack.enter_context(mock.patch("urllib.request.urlopen", side_effect=reply))
+        assert kotaeru("試験") == "完了"
+        assert [call.args[0] for call in run.call_args_list] == [
+            json.loads(command), json.loads(writing), json.loads(command)]
 
     with ExitStack() as stack:
         stack.enter_context(mock.patch.object(shounin, "hajimeru"))
