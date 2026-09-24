@@ -1,0 +1,1 @@
+{"i": 10, "○": true, "秒": 682.3, "字": 4709, "答え": "wo 2's**: Sum = 4 → not divisible by 3.\n- **Three 2's with more zeros**: e.g., 20220 → larger than 2220.\n- **Other arrangements** like 2202, 2022, etc., end in 2 → not divisible by 2 and 5.\n\nSo, **2220** is the **smallest number** that meets all conditions.\n\n---\n\n### Final Answer\n\n$$\n\\boxed{2220}\n$$"}

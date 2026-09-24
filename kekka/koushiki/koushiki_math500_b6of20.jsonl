@@ -1,0 +1,1 @@
+{"i": 6, "○": true, "秒": 378.5, "字": 3163, "答え": "not be written as a sum of three consecutive integers (no integer solution to $3(x + 1) = 1$)\n- $2^3 = 8$ → No integer solution to $3(x + 1) = 8$\n\nThus, **27 is the smallest positive perfect cube** that can be written as the sum of three consecutive integers.\n\n---\n\n### Final Answer\n\n$$\n\\boxed{27}\n$$"}

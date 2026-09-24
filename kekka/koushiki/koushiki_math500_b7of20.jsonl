@@ -1,0 +1,1 @@
+{"i": 7, "○": true, "秒": 481.6, "字": 3578, "答え": "(-12) + (-6) \\cdot (-3)\n= 6 - 24 + 18 = 0\n$$\n\n#### **Interpret the Result:**\nSince the dot product is zero, the vectors are **perpendicular**, which means the angle between them is:\n$$\n\\theta = \\cos^{-1}(0) = 90^\\circ\n$$\n\n---\n\n### **Conclusion**\n\nThe angle between the two lines is:\n\n$$\n\\boxed{90}\n$$"}
