@@ -51,34 +51,28 @@ def text_rows(code_dataset: str):
             raise RuntimeError(f"Wikipedia {lang}: {count}/{limit} 記事のみ")
         print(f"Wikipedia {lang}: {count} 記事", flush=True)
 
-    # このデータセットの言語別 config を使い、3 言語から計 2 万ファイル。
-    # config 名はサーバ側で変わり得るので一覧から大小文字を無視して選ぶ。
-    from datasets import get_dataset_config_names
-
-    repo = code_dataset
-    configs = {name.lower(): name for name in get_dataset_config_names(repo)}
-    targets = (("python", 6_667), ("javascript", 6_667), ("shell", 6_666))
-    aliases = {"shell": ("shell", "bash", "sh")}
-    for language, limit in targets:
-        config = next((configs[name] for name in aliases.get(language, (language,)) if name in configs), None)
-        if config is None:
-            raise RuntimeError(f"{repo} に {language} config がありません: {sorted(configs)}。--code-dataset で別データを指定してください")
-        rows = load_dataset(repo, config, split="train", streaming=True)
-        count = 0
-        for row in rows:
-            value = row.get("code") or row.get("content") or row.get("text")
-            if value:
-                yield value
-                count += 1
-            if count == limit:
-                break
-        if count != limit:
-            raise RuntimeError(f"コード {language}: {count}/{limit} ファイルのみ")
-        print(f"コード {language}: {count} ファイル", flush=True)
+    # プログラムの文は 手元のコードを使う（9/24: ネットの大きなコードデータの読み込みで 2時間 固まった）
+    import pathlib
+    home = pathlib.Path.home() / "LocalAI_mirror"
+    kinds = ("*.py", "*.sh", "*.c", "*.cpp", "*.h", "*.js", "*.ts", "*.md", "*.json", "*.yml", "*.toml")
+    count = 0
+    for top in (home / "koukai", home / "kernel", home / "koukai" / "llama_src"):
+        for kind in kinds:
+            for path in sorted(top.rglob(kind)):
+                if path.name.startswith("._") or any(p in path.parts for p in ("kiroku", "corpus", "node_modules", ".git", "kekka")) or path.stat().st_size > 2_000_000:
+                    continue
+                try:
+                    yield path.read_text(encoding="utf-8", errors="ignore")
+                    count += 1
+                except OSError:
+                    pass
+    print(f"手元のコード: {count} ファイル", flush=True)
 
     count = 0
     for path in sorted((ROOT / "monosashi").glob("*.jsonl")):
-        for line in path.open(encoding="utf-8"):
+        if path.name.startswith("._"):   # macOS の付けたおまけ（中身は文ではない。9/24 これで止まった）
+            continue
+        for line in path.open(encoding="utf-8", errors="ignore"):
             row = json.loads(line)
             question = row.get("問") or row.get("question")
             if isinstance(question, str) and question:
