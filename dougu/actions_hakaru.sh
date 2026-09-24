@@ -45,6 +45,8 @@ fi
 NAFUDA="${1:-$(uname -m)}"; REF_NAME="${GITHUB_REF_NAME:-hakaru}"
 # hakaru* の枝だけ 枝の名から読む。hyou.yml（GSM8K の錨）は DAN・KERNEL_* を環境で渡すので そのまま使う（9/24 Claude）
 if [[ "$REF_NAME" == hakaru* ]]; then parse_branch "$REF_NAME"; else DAN="${DAN:-7}"; KAGIRI="${KAGIRI:-0}"; EXPERTS=""; QUANT=""; MEM_GB=""; UB=""; KVQ=""; KVK8V4=""; FA1=""; NOMMAP=""; MLOCK=""; SPD06=""; JIKKEN="${JIKKEN:-}"; PPLONLY="${PPLONLY:-}"; HENKA_FILE="${HENKA_FILE:-}"; fi
+# 道具の切り替えは hakaru.py が環境変数で読む。export しないと子に渡らない（9/24 道具が 1度も動かずに測っていた）
+export KERNEL_KAZOERU KERNEL_JIKAN KERNEL_NARABE KERNEL_ERABI KERNEL_HAYASA KERNEL_KEISAN KERNEL_TEHON KERNEL_LORA
 FUKASA="${FUKASA:-0}"; COMMIT="${LLAMA_COMMIT:-b31b71f}"
 [[ "$KAGIRI" =~ ^[0-9]+$ && "$FUKASA" =~ ^[0-9]+$ ]] || { echo "KAGIRI/FUKASA は整数"; exit 2; }
 cd "$(dirname "$0")/.."; K="$PWD"
@@ -55,6 +57,7 @@ if [[ -n "${JIKKEN:-}" ]]; then
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     ((line_no += 1))
+    [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue   # 説明の行と空行は読み飛ばす（9/24 base.env が止まった）
     if [[ "$line" =~ ^(KOUKAI_[A-Z_]+)=([A-Za-z0-9,._/-]+)$ ]]; then :
     elif [[ "$line" =~ ^(KOUKAI_QTT)=([A-Za-z0-9,._:/-]+)$ ]]; then :
     else echo "不正な実験設定: $JIKKEN_ENV:$line_no" >&2; exit 2; fi
@@ -170,6 +173,9 @@ new_cgroup(){
   local name="$1"; local path="$CGROOT-$name-$$"   # 1つの local の中で name はまだ使えない（set -u で落ちた 9/24）
   sudo mkdir "$path"
   sudo sh -c 'echo "$1" > "$2/memory.max"; echo 0 > "$2/memory.swap.max"' sh "$((MEM_GB * 1024 * 1024 * 1024))" "$path"
+  # 頭脳のファイルは 落としたときに 外の組で読み込み済み（ページキャッシュ）。空にしないと 上限の外で数えられる
+  #（9/24 memory.peak 0.26GB・大きなページフォールト 2回で、8GB の絞りが効いていなかった）
+  sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
   printf '%s' "$path"
 }
 run_in_cgroup(){
@@ -339,7 +345,7 @@ for dan in range(7, 13):
 with (root / "mondai_gsm8k.jsonl").open(encoding="utf-8") as f:
     for i, line in enumerate(f):
         if i == 200: break
-        parts.append(json.loads(line)["question"])
+        d = json.loads(line); parts.append(d.get("question") or d.get("問"))   # 手元の GSM8K は「問」（9/24 KeyError で全部止まった）
 out.write_text("\n".join(parts) + "\n", encoding="utf-8")
 PY
 fi
