@@ -1,13 +1,13 @@
-# ubuntu-24.04_g8_nommap_pplonly_f0  2026-09-24T12:43:54Z
+# ubuntu-24.04_g8_nommap_pplonly_f0  2026-09-24T13:00:49Z
 ```
-llama.cpp b31b71f / koukai ff0775c / 問題 edcddf2ebec8 / 頭脳 db3ce897ccc9
+llama.cpp b31b71f / koukai 97c7133 / 問題 edcddf2ebec8 / 頭脳 db3ce897ccc9
 llama patch sha256 1a2b1d653f2a
 メモリ上限 8 GB（swap なし、mmap ページキャッシュを含む）
 runner "24.04.5 LTS (Noble Numbat)" gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
 cores 4
-model name	: AMD EPYC 9V45 96-Core Processor
+model name	: AMD EPYC 7763 64-Core Processor
                total        used        free      shared  buff/cache   available
-Mem:              15           1          11           0           2          14
+Mem:              15           0          12           0           2          14
 /dev/root       145G   59G   86G  41% /
 ```
 
@@ -79,7 +79,7 @@ llama-bench cgroup memory.peak: 8212480 bytes; pgmajfault: 48
 
 ## PPL（llama-perplexity -c 512 --chunks 16）
 8 GB で落ちた（llama-perplexity）
-llama-perplexity cgroup memory.peak: 8589934592 bytes; pgmajfault: 88
+llama-perplexity cgroup memory.peak: 8589934592 bytes; pgmajfault: 91
 8 GB で落ちた（llama-perplexity、OOM kill）
 PPL: 取れなかった
 頭脳が立たない: --spec-type ngram-simple --spec-ngram-simple-size-m 16
