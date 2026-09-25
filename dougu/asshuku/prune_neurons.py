@@ -20,7 +20,7 @@ def metadata_value(field):
     return value, None
 
 
-def save_gguf(reader, out_path, tensors, replacement_ffn=None):
+def make_writer(reader, out_path, replacement_ffn=None):
     arch = str(reader.get_field("general.architecture").contents())
     writer = gguf.GGUFWriter(out_path, arch)
     for key, field in reader.fields.items():
@@ -30,6 +30,11 @@ def save_gguf(reader, out_path, tensors, replacement_ffn=None):
         if replacement_ffn and key == f"{arch}.expert_feed_forward_length":
             val = replacement_ffn
         writer.add_key_value(key, val, field.types[0], subtype)
+    return writer
+
+
+def save_gguf(reader, out_path, tensors, replacement_ffn=None):
+    writer = make_writer(reader, out_path, replacement_ffn)
     for name, (array, raw_shape, raw_dtype) in tensors.items():
         writer.add_tensor(name, array, raw_shape=raw_shape, raw_dtype=raw_dtype,
                           tensor_endianess=reader.endianess)
@@ -129,7 +134,6 @@ def main():
     if not down_names:
         raise ValueError("no blk.N.ffn_down_exps.weight tensors found")
     plans = {}
-    selected = {}
     new_im = {k: {q: v.copy() for q, v in ent.items()} for k, ent in im_entries.items()}
     common_keep = None
     layers = set()
@@ -161,12 +165,34 @@ def main():
         indices.sort(axis=1)
         plans[layer] = (indices, raw_shape, keep_n)
 
+    writer = make_writer(model, args.output, common_keep)
     for t in model.tensors:
+        match = re.fullmatch(r"blk\.(\d+)\.ffn_(down|gate|up)_exps\.weight", t.name)
+        raw_dims = list(map(int, t.shape))
+        if match:
+            layer = int(match.group(1))
+            if layer not in plans:
+                raise ValueError(f"no down expert tensor found for {t.name}")
+            raw_dims[0 if match.group(2) == "down" else 1] = plans[layer][2]
+            elements = int(np.prod(raw_dims))
+            if elements % 32:
+                raise ValueError(f"Q8_0 tensor size is not a multiple of 32: {t.name}")
+            nbytes = elements // 32 * 34
+            raw_dtype = gguf.GGMLQuantizationType.Q8_0
+        else:
+            nbytes = t.data.nbytes
+            raw_dtype = t.tensor_type
+        # add_tensor_info treats uint8 shapes as packed-byte shapes; these are element shapes.
+        writer.add_tensor_info(t.name, tuple(reversed(raw_dims)), np.dtype(np.float32), nbytes, raw_dtype=raw_dtype)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_ti_data_to_file()
+
+    def tensor_data(t):
         name = t.name
         match = re.fullmatch(r"blk\.(\d+)\.ffn_(down|gate|up)_exps\.weight", name)
         if not match:
-            selected[name] = (t.data.copy(), tuple(int(x) for x in t.data.shape), t.tensor_type)
-            continue
+            return t.data  # GGUFReader data is a view of its file mmap.
         layer = int(match.group(1)); kind = match.group(2)
         if layer not in plans:
             raise ValueError(f"no down expert tensor found for {name}")
@@ -177,7 +203,6 @@ def main():
             # numpy layout [expert, embedding, neurons]
             pruned = np.stack([deq[e][:, ids[e]] for e in range(len(ids))])
             quantized = gguf.quantize(pruned, gguf.GGMLQuantizationType.Q8_0)
-            selected[name] = (quantized, tuple(quantized.shape), gguf.GGMLQuantizationType.Q8_0)
             base = name
             entry = new_im.get(base)
             if entry:
@@ -192,10 +217,11 @@ def main():
                 raise ValueError(f"unexpected {kind} expert tensor shape: {arr.shape}")
             pruned = np.stack([arr[e, ids[e], :] for e in range(len(ids))])
             quantized = gguf.quantize(pruned, gguf.GGMLQuantizationType.Q8_0)
-            selected[name] = (quantized, tuple(quantized.shape), gguf.GGMLQuantizationType.Q8_0)
+        return quantized
 
-    # `selected` now contains every tensor in original ggml dimensions.
-    save_gguf(model, args.output, selected, keep_n)
+    for t in model.tensors:
+        writer.write_tensor_data(tensor_data(t), tensor_endianess=model.endianess)
+    writer.close()
     write_imatrix(im_kind, im_reader, new_im, args.imatrix_out)
     old_width = next(iter(plans.values()))[1][0]
     print(f"pruned {len(layers)} layers: expert FFN width {old_width} -> {keep_n}")

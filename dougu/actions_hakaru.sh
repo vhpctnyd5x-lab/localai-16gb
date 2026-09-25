@@ -337,7 +337,13 @@ if [[ -n "${REBUILD_QTYPE:-}" ]]; then
   mv "$IMATRIX.part" "$IMATRIX"
   if [[ -n "${KOUKAI_PRUNE_NEURONS:-}" && ! "${KOUKAI_PRUNE_NEURONS}" =~ ^0(\.0*)?$ ]]; then
     PRUNED_M="$W/pruned_q8.gguf"; PRUNED_IMATRIX="$W/pruned_imatrix.dat"
-    PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" "$K/dougu/asshuku/prune_neurons.py" --imatrix "$IMATRIX" --imatrix-out "$PRUNED_IMATRIX" --frac "$KOUKAI_PRUNE_NEURONS" "$M" "$PRUNED_M"
+    PRUNE_TIME="$W/prune-time.log"; TIMEV=(); [[ -x /usr/bin/time ]] && TIMEV=(/usr/bin/time -v)   # time が無い runner でも止めない
+    if PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "${TIMEV[@]}" "$PYTHON" "$K/dougu/asshuku/prune_neurons.py" --imatrix "$IMATRIX" --imatrix-out "$PRUNED_IMATRIX" --frac "$KOUKAI_PRUNE_NEURONS" "$M" "$PRUNED_M" 2> "$PRUNE_TIME"; then
+      :
+    else
+      rc=$?; cat "$PRUNE_TIME" >> "$OUT"; exit "$rc"
+    fi
+    awk '/Maximum resident set size \(kbytes\):/ {printf "剪定の最大メモリ: %.2f GiB（%s KiB）\n", $NF / 1048576, $NF}' "$PRUNE_TIME" >> "$OUT"
     rm -f "$M" "$IMATRIX"; M="$PRUNED_M"; IMATRIX="$PRUNED_IMATRIX"
     echo "ニューロン剪定 ${KOUKAI_PRUNE_NEURONS}: $(du -h "$M" | cut -f1)" >> "$OUT"
   fi
@@ -374,11 +380,13 @@ fi
 
 # 4. 速さ（読み込み pp512・書き出し tg128、3回）
 OVERRIDE_ARGS=(); [[ -n "${EXPERTS:-}" ]] && OVERRIDE_ARGS+=(--override-kv "qwen3moe.expert_used_count=int:$EXPERTS")
-BENCH_ARGS=("${MMAP_ARGS[@]}"); [[ -n "${UB:-}" ]] && BENCH_ARGS+=(-ub "$UB")
+BENCH_ARGS=(); [[ -z "${NOMMAP:-}" ]] || BENCH_ARGS+=(-mmp 0)
+[[ -n "${UB:-}" ]] && BENCH_ARGS+=(-ub "$UB")
 if [[ -n "${KVQ:-}" ]]; then BENCH_ARGS+=(-ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa on); fi
 [[ -z "${KVK8V4:-}" ]] || BENCH_ARGS+=(-ctk q8_0 -ctv q4_0 -fa on)
 [[ -z "${FA1:-}" ]] || BENCH_ARGS+=(-fa on)
 { echo; echo "## 速さ（llama-bench -t $NP）"; } >> "$OUT"
+[[ -z "${MLOCK:-}" ]] || echo 'llama-bench は mlock 非対応。速さは 探り（llama-server）で' >> "$OUT"
 BENCH_OUT="$W/experiment-bench.md"
 bench_with_trace(){
   local rc; if "$@" > "$BENCH_OUT" 2>&1; then cat "$BENCH_OUT" >> "$OUT"; return 0; else rc=$?; cat "$BENCH_OUT" >> "$OUT"; echo "llama-bench 失敗: exit=$rc" >> "$OUT"; fi
