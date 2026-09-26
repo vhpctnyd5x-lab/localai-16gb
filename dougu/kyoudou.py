@@ -1133,7 +1133,15 @@ def kensa(te: dict) -> str:
         args = value.get("args")
         if _contains_secret_value(args) or _looks_sensitive_content(str(args or "")):
             return "禁止"
-        return "戻せない" if isinstance(value.get("id"), str) and isinstance(args, str) else "禁止"
+        if not (isinstance(value.get("id"), str) and isinstance(args, str)):
+            return "禁止"
+        # 9/26 本人:「読むだけの道具は許可しなくていい」。登録時の試験で 書く・消す・送る を使わなかった道具（risk=見る）は
+        #   承認なしで動かす。道具が返す effects は 別に門番と承認を通す（_run_added_tool）。
+        try:
+            manifest, _source, _path = tsuika._load_registered(value["id"])
+        except Exception:
+            return "戻せない"
+        return "見る" if manifest.get("risk") == "見る" else "戻せない"
 
     if kind == "命令":
         command = value.get("cmd")
@@ -2483,9 +2491,13 @@ def _prepare_added_inputs(args: dict) -> tuple[dict, list[str]]:
     for raw in scope_paths:
         if not isinstance(raw, str) or not raw.strip():
             raise tsuika.TsuikaError("ファイルの指定が不正です")
+        raw = _alias_folder(raw)
         symlink_path = os.path.expandvars(os.path.expanduser(raw))
         if not os.path.isabs(symlink_path):
             symlink_path = str(Path.home() / symlink_path)
+        home_text = str(Path.home())   # ホームの根元は本当のパスにそろえる（試験の /var → /private/var で断られていた）
+        if symlink_path == home_text or symlink_path.startswith(home_text + os.sep):
+            symlink_path = os.path.realpath(home_text) + symlink_path[len(home_text):]
         if nouryoku._has_symlink(symlink_path):
             raise tsuika.TsuikaError("シンボリックリンク経由のパスは使えません")
         path = Path(_resolve_path(raw, cwd=Path.home()))
@@ -2502,7 +2514,7 @@ def _prepare_added_inputs(args: dict) -> tuple[dict, list[str]]:
                 if walked > 2048:
                     raise tsuika.TsuikaError("探索フォルダが大きすぎます")
                 subdirs[:] = [name for name in subdirs if not name.startswith(".") and not (Path(directory) / name).is_symlink()]
-                found.extend(Path(directory) / name for name in names if name.endswith(".txt") and not name.startswith(".") and not (Path(directory) / name).is_symlink())
+                found.extend(Path(directory) / name for name in names if Path(name).suffix.casefold() in _TEXT_SUFFIXES and not name.startswith(".") and not (Path(directory) / name).is_symlink())
                 if len(found) > 128:
                     raise tsuika.TsuikaError("追加道具に渡せるファイルは128件までです")
         else:
@@ -2530,12 +2542,32 @@ def _prepare_added_inputs(args: dict) -> tuple[dict, list[str]]:
     return {"files": files}, list(dict.fromkeys(canonical))
 
 
+_TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".py", ".html", ".htm", ".css", ".js", ".log", ".xml", ".yaml", ".yml"}
+_FOLDER_ALIASES = {"デスクトップ": "Desktop", "書類": "Documents", "ドキュメント": "Documents", "ダウンロード": "Downloads",
+                   "ピクチャ": "Pictures", "ミュージック": "Music", "ムービー": "Movies"}
+
+
+def _alias_folder(raw: str) -> str:
+    """「書類」「~/デスクトップ/x」などの呼び名を 本当の場所（~/Documents など）に置き換える（9/26: 30B が "書類" と渡した）。"""
+    text = str(raw or "").strip()
+    for name, folder in _FOLDER_ALIASES.items():
+        for form in ("~/" + name + "フォルダ", "~/" + name, name + "フォルダ", name):
+            if text == form or text.startswith(form + "/"):
+                return "~/" + folder + text[len(form):]
+    return raw
+
+
 def _create_added_tool(payload: dict) -> dict:
     name, purpose = str(payload.get("名前") or "").strip(), str(payload.get("目的") or "").strip()
     combined = (name + purpose).casefold().replace(" ", "")
     duplicate = [op for op in machine.OPS if op.casefold().replace(" ", "") in combined]
     if duplicate:
         return {"ok": False, "確認済み": False, "結果": "既存機能で扱えるため作成を止めました: " + "・".join(duplicate[:5])}
+    # 9/26: 登録済みの道具を使えずに 同じ名前の道具をもう一度作ろうとした。作らずに それを使わせる。
+    same = [tool for tool in tsuika.list_registered() if str(tool.get("name") or "").strip() == name]
+    if same:
+        return {"ok": False, "確認済み": False,
+                "結果": f"同じ名前の道具「{name}」が登録済みです（ID {same[0]['id']}）。追加道具でこの ID を使ってください"}
     try:
         source = _ask_local(_tool_code_prompt(name, purpose), system="指定の制限内で Python の関数だけを出力する係です。", max_tokens=3500)
         source = _clean_tool_source(source)
@@ -2566,7 +2598,7 @@ def _run_added_tool(payload: dict, session: str, step: int, request: str) -> dic
         ident = str(payload.get("id") or "")
         manifest, _source, path = tsuika._load_registered(ident)
         approval_info = {"名前": manifest["name"], "ID": ident, "版": manifest["version"], "sha256": manifest["sha256"], "args": payload.get("args")}
-        if not _approve_if_needed({"追加道具の実行": approval_info}, "戻せない"):
+        if manifest.get("risk") != "見る" and not _approve_if_needed({"追加道具の実行": approval_info}, "戻せない"):
             tsuika.record_use(path, denied=True)
             return {"ok": False, "確認済み": False, "結果": "承認されませんでした"}
         args = _tool_args(str(payload.get("args") or "{}"))
