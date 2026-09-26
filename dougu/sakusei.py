@@ -110,7 +110,10 @@ def validate_html(text: str, instruction: str = "") -> tuple[bool, str]:
 def generate_html(prompt: str, existing: str, ask) -> str:
     material = _JOUKEN + (_MIDASHI_JOUKEN if _MIDASHI.search(prompt) else "") + f"【依頼】\n{prompt}\n"
     if existing.strip():
-        material += f"【今のページ（内容を保ちながら、依頼に合わせて直す）】\n{existing}\n"
+        # 9/26: 「かっこよくする」を 題と見出しにして 花子の自己紹介が消えた。題と中身の事実は残させる。
+        material += ("【今のページ】（題・見出し・書いてある事実（名前・好きなことなど）はそのまま残し、"
+                     "見た目と構成を【依頼】に合わせて良くする。【依頼】の言葉を題や見出しにしない）\n"
+                     f"{existing}\n")
     result = strip_outer_fence(ask(material))
     valid, reason = validate_html(result)
     if not valid:

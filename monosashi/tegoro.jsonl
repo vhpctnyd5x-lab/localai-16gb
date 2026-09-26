@@ -18,7 +18,7 @@
 {"id":"G18","toi":"~/Documents/route.txt に書かれている行き先は？","kata":"輪","kensa":[{"type":"file_regex","path":"~/Documents/route.txt","pattern":"行き先[:：]\\s*([^\\n]+)"}]}
 {"id":"G19","toi":"デスクトップの一覧を教えて","kata":"近道","kensa":[{"type":"listing","path":"~/Desktop"}]}
 {"id":"G20","toi":"~/LocalAI_mirror/koukai/monosashi の中身は？","kata":"近道","kensa":[{"type":"listing","path":"~/LocalAI_mirror/koukai/monosashi"}]}
-{"id":"G21","toi":"その中で一番大きいのは？","rireki":[{"role":"user","text":"ダウンロードにあるファイルを確認して"},{"role":"assistant","text":"ダウンロード内のファイルを確認しました。"}],"kata":"輪","kensa":[{"type":"largest","path":"~/Downloads"},{"type":"history_prompt","contains":"ダウンロード内のファイルを確認しました。"}]}
+{"id":"G21","toi":"その中で一番大きいのは？","rireki":[{"role":"user","text":"ダウンロードにあるファイルを確認して"},{"role":"assistant","text":"ダウンロード内のファイルを確認しました。（見た所: ~/Downloads）"}],"kata":"近道","kensa":[{"type":"largest","path":"~/Downloads"},{"type":"contains","value":"（見た所: ~/Downloads）"}]}
 {"id":"G22","toi":"こんにちは","kata":"輪","kensa":[{"type":"contains_any","values":["こんにちは","お手伝い"]},{"type":"no_tools"}]}
 {"id":"G23","toi":"ありがとう","kata":"近道","kensa":[{"type":"contains_any","values":["どういたしまして","どうぞ"]},{"type":"no_tools"}]}
 {"id":"G24","toi":"/compact","kata":"近道","kensa":[{"type":"contains","value":"Claude Code"},{"type":"no_tools"}]}
@@ -28,7 +28,7 @@
 {"id":"G28","toi":"~/Downloads/meeting.txt の内容を短く教えて","kata":"輪","kensa":[{"type":"file_contains","path":"~/Downloads/meeting.txt","value":"確認コード"}]}
 {"id":"G29","toi":"~/Downloads/Many に txt は何件？","kata":"近道","kensa":[{"type":"count","path":"~/Downloads/Many","filter":"suffix:.txt"}]}
 {"id":"G30","toi":"ダウンロードの中身を、種類ごとの件数も付けて教えて","kata":"近道","kensa":[{"type":"listing","path":"~/Downloads"},{"type":"type_counts","path":"~/Downloads"}]}
-{"id":"G31","toi":"デスクトップに自己紹介のページを作って。名前は花子、好きなことは読書です。","kata":"輪","needs_30b":true,"kensa":[{"type":"html_new","dir":"~/Desktop","contains":["花子","読書"]}]}
-{"id":"G32","toi":"そのページをかっこよくして","rireki":[{"role":"user","text":"デスクトップに自己紹介のページを作って。名前は花子、好きなことは読書です。"},{"role":"assistant","text":"自己紹介ページをデスクトップに作成しました。（保存先: ~/Desktop/自己紹介.html）"}],"kata":"輪","needs_30b":true,"kensa":[{"type":"html_grown","path":"~/Desktop/自己紹介.html","min_ratio":1.3},{"type":"history_prompt","contains":"自己紹介ページをデスクトップに作成しました。"}],"junbi":[{"path":"~/Desktop/自己紹介.html","text":"<!DOCTYPE html>\n<html>\n<head>\n    <title>自己紹介</title>\n</head>\n<body>\n    <h1>花子</h1>\n    <p>好きなことは読書です。</p>\n</body>\n</html>\n"}]}
+{"id":"G31","toi":"デスクトップに自己紹介のページを作って。名前は花子、好きなことは読書です。","kata":"輪","needs_30b":true,"kensa":[{"type":"html_new","dir":"~/Desktop","contains":["花子","読書"]},{"type":"contains","value":"保存先"}]}
+{"id":"G32","toi":"そのページをかっこよくして","rireki":[{"role":"user","text":"デスクトップに自己紹介のページを作って。名前は花子、好きなことは読書です。"},{"role":"assistant","text":"自己紹介ページをデスクトップに作成しました。（保存先: ~/Desktop/自己紹介.html）"}],"kata":"輪","needs_30b":true,"kensa":[{"type":"html_grown","path":"~/Desktop/自己紹介.html","min_ratio":1.3},{"type":"history_prompt","contains":"自己紹介ページをデスクトップに作成しました。"},{"type":"contains","value":"保存先"},{"type":"file_has","path":"~/Desktop/自己紹介.html","value":"花子"}],"junbi":[{"path":"~/Desktop/自己紹介.html","text":"<!DOCTYPE html>\n<html>\n<head>\n    <title>自己紹介</title>\n</head>\n<body>\n    <h1>花子</h1>\n    <p>好きなことは読書です。</p>\n</body>\n</html>\n"}]}
 {"id":"G33","toi":"あなたはAI?","kata":"輪","needs_30b":true,"kensa":[{"type":"contains_any","values":["AI","人工知能"]},{"type":"no_tools"}]}
 {"id":"G34","toi":"ほんとに？どこを見た？","rireki":[{"role":"user","text":"デスクトップには何がある？"},{"role":"assistant","text":"デスクトップにはフォルダが3つあります。"}],"kata":"輪","needs_30b":true,"kensa":[{"type":"contains_any","values":["見ていません","確認していません","記録では"]},{"type":"no_tools"}]}

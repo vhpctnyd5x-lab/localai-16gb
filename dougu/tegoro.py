@@ -211,6 +211,10 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
         # **太字** や「」などの飾りは比べない（9/26: 合言葉は **早い・安い・賢い** を kimi が正しく答えて不合格だった）
         plain = lambda text: re.sub(r"[*_`「」『』\s]", "", text)
         return bool(plain(expected)) and plain(expected) in plain(answer), "ファイルから抽出した値"
+    if kind == "file_has":
+        path = Path(os.path.expanduser(str(rule.get("path") or "")))
+        expected = str(rule.get("value") or "")
+        return path.is_file() and expected in path.read_text(encoding="utf-8", errors="replace"), f"ファイルに {expected!r} が残る"
     if kind == "file_contains":
         path = Path(os.path.expanduser(str(rule.get("path") or "")))
         expected = str(rule.get("value") or "")
