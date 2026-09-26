@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -1655,6 +1656,9 @@ def _mac_system_shortcut(request: str) -> str | None:
     asks_version = bool(re.search(r"macOS|mac\s*OS|このMac", request, re.IGNORECASE)) and bool(
         re.search(r"版|バージョン|version", request, re.IGNORECASE)
     )
+    asks_computer_name = bool(re.search(r"(?:Mac|パソコン).{0,5}(?:名前|名)", request, re.IGNORECASE))
+    if asks_version and asks_computer_name:
+        return None
     asks_space = bool(re.search(r"空き.{0,8}(?:容量|スペース)|(?:容量|ストレージ).{0,8}空き", request))
     if not (asks_version or asks_space):
         return None
@@ -1675,12 +1679,86 @@ def _mac_system_shortcut(request: str) -> str | None:
     return "。".join(pieces) + "。"
 
 
+_MAC_STATE_LABELS = {
+    "電池": "バッテリー残量",
+    "開いているアプリ": "開いているアプリ",
+    "メモリ": "メモリ使用量",
+    "起動してから": "起動してからの時間",
+    "いま何時": "現在時刻",
+    "ダークモード状態": "ダークモードの状態",
+    "重いアプリ": "負荷の重いアプリ",
+    "音量": "音量",
+    "macOS版": "macOSの版",
+    "ネット": "ネット接続状態",
+}
+_MAC_STATE_READ_FAILURE = re.compile(
+    r"取得できません|取得できない|確認できません|確認できない|分かりません|わかりません|"
+    r"missing value|権限|許可されていません|"
+    r"permission denied|not authorized|access denied|エラー|失敗",
+    re.IGNORECASE,
+)
+_MAC_STATE_PERMISSION_FAILURE = re.compile(
+    r"権限|許可されていません|permission|not authorized|access denied|-1743",
+    re.IGNORECASE,
+)
+
+
+def _asks_computer_name(request: str) -> bool:
+    return bool(re.search(r"(?:Mac|パソコン).{0,5}(?:名前|名)", request, re.IGNORECASE))
+
+
+def _asks_running_apps_only(request: str) -> bool:
+    # 「開いている」は状態の説明にも使う。ちょうどこの読み取り質問だけを例外にし、
+    # アプリを開く依頼などの変更判定はそのまま残す。
+    return str(request or "").strip() in {"いま開いているアプリは？", "いま開いているアプリは?"}
+
+
+def _machine_read_match(request: str) -> tuple[tuple, str]:
+    matched = machine.match(request)
+    if matched:
+        return matched, request
+    if (not _has_mutating_request(request)
+            and re.search(r"(?:ダークモード|ダークテーマ).{0,8}(?:なってる|なっています|になっている|かどうか|状態|オン|オフ)", request)):
+        gate_text = "ダークモード状態"
+        matched = machine.match(gate_text)
+        if matched and matched[0] in getattr(machine, "YOMU", set()):
+            return matched, gate_text
+    return None, request
+
+
+def _machine_read_failure(name: str, detail: str) -> str:
+    label = _MAC_STATE_LABELS.get(name, "状態")
+    if _MAC_STATE_PERMISSION_FAILURE.search(detail):
+        return f"権限がないため、{label}を確認できませんでした。"
+    return f"{label}を取得できませんでした。"
+
+
+def _machine_read_answer(name: str, request: str, answer: str) -> str:
+    if name not in _MAC_STATE_LABELS:
+        return answer
+    if _MAC_STATE_READ_FAILURE.search(answer):
+        return _machine_read_failure(name, answer)
+    if name == "ネット":
+        status = re.search(r"外には(つながっています|つながっていません)", answer)
+        if not status:
+            return _machine_read_failure(name, answer)
+        return "ネットには" + status.group(1) + "。"
+    if name == "macOS版" and _asks_computer_name(request):
+        computer_name = socket.gethostname().strip()
+        if computer_name.casefold().endswith(".local"):
+            computer_name = computer_name[:-6]
+        if not computer_name:
+            return "Macの名前を取得できませんでした。" + answer
+        return f"このMacの名前は {computer_name}。{answer}"
+    return answer
+
+
 def _quick_answer(request: str, session: str) -> str | None:
     if re.fullmatch(r"/[A-Za-z][A-Za-z0-9_-]*", request):
         return "それは Claude Code の命令です。この画面では使えません。したいことを言葉で書いてください。"
     if re.fullmatch(r"(?:ありがとう(?:ございます)?|ありがと|どうもありがとう(?:ございます)?|どうも|感謝します)[。！!？?]*", request):
         return "どういたしまして。"
-    if _has_mutating_request(request):
+    if _has_mutating_request(request) and not _asks_running_apps_only(request):
         return None
     answer = _folder_shortcut(request)
     if answer is not None:
@@ -1691,18 +1769,23 @@ def _quick_answer(request: str, session: str) -> str | None:
         return _with_source(answer, "このMac")
     if _folder_location(request) or re.search(r"(?<![\w])(?:~(?:/|\b)|/Users/|/Volumes/|/tmp/)", request):
         return None
-    matched = machine.match(request)
+    matched, gate_text = _machine_read_match(request)
     if not matched:
         return None
     name, _slots = matched
-    if name not in getattr(machine, "YOMU", set()) or kensa({"用件": {"text": request}}) != "見る":
+    if name not in getattr(machine, "YOMU", set()) or kensa({"用件": {"text": gate_text}}) != "見る":
         return None
-    result = _gate_and_run({"用件": {"text": request}}, session=session, step=0, matched=matched, request=request)
+    result = _gate_and_run({"用件": {"text": gate_text}}, session=session, step=0, matched=matched, request=request)
     if not result.get("ok"):
+        if name in _MAC_STATE_LABELS:
+            return _with_source(_machine_read_failure(name, str(result.get("結果") or "")), "このMac")
         return None
+    answer = _machine_read_answer(name, request, str(result.get("結果") or ""))
+    if name in _MAC_STATE_LABELS:
+        return _with_source(answer, "このMac")
     requested = _requested_path(request)
     source = result.get("場所") or (_display_path(requested) if requested else name)
-    return _with_source(str(result.get("結果") or ""), str(source))
+    return _with_source(answer, str(source))
 
 
 def _previous_user_request(rireki: list[dict] | None) -> str:
@@ -1757,7 +1840,7 @@ def _base_shortcut(text: str) -> bool:
     request = str(text or "").strip()
     if re.fullmatch(r"/[A-Za-z][A-Za-z0-9_-]*", request):
         return True
-    if not request or _has_mutating_request(request):
+    if not request or (_has_mutating_request(request) and not _asks_running_apps_only(request)):
         return False
     if _is_bare_recheck(request) or _asks_where_seen(request) or _DETAIL_REQUEST.search(request):
         return False
@@ -1775,9 +1858,9 @@ def _base_shortcut(text: str) -> bool:
             return True
     if _folder_location(request) or re.search(r"(?<![\w])(?:~(?:/|\b)|/Users/|/Volumes/|/tmp/)", request):
         return False
-    matched = machine.match(request)
+    matched, gate_text = _machine_read_match(request)
     return bool(matched and matched[0] in getattr(machine, "YOMU", set())
-                and kensa({"用件": {"text": request}}) == "見る")
+                and kensa({"用件": {"text": gate_text}}) == "見る")
 
 
 def is_shortcut(text: str, rireki: list[dict] | None = None) -> bool:
