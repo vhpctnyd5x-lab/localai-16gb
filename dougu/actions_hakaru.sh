@@ -76,6 +76,9 @@ if [[ -n "${JIKKEN:-}" ]]; then
   fi
   if [[ "${KOUKAI_BI_DUMP:-}" == 1 ]]; then BI_DUMP_PATH=1; fi
   [[ -z "${KOUKAI_QTYPE:-}" || "${KOUKAI_QTYPE}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QTYPE" >&2; exit 2; }
+  if [[ -n "${KOUKAI_IMATRIX_CALIB:-}" ]]; then
+    [[ "$KOUKAI_IMATRIX_CALIB" =~ ^(ja|en)$ && -n "${KOUKAI_QTYPE:-}" ]] || { echo "IMATRIX_CALIB は ja/en、QTYPE が必要" >&2; exit 2; }
+  fi
   [[ -z "${KOUKAI_QOUT:-}" || "${KOUKAI_QOUT}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QOUT" >&2; exit 2; }
   [[ -z "${KOUKAI_QEMB:-}" || "${KOUKAI_QEMB}" =~ ^[A-Za-z0-9_]+$ ]] || { echo "不正な KOUKAI_QEMB" >&2; exit 2; }
   if [[ -n "${KOUKAI_QTT:-}" ]]; then
@@ -275,6 +278,7 @@ if [[ -f "$K/llama_patch/koukai.patch" ]]; then
 fi
 cmake -S "$W/llama.cpp" -B "$W/build" -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF >/dev/null
 TARGETS=(llama-server llama-bench llama-perplexity); [[ -z "${REBUILD_QTYPE:-}" ]] || TARGETS+=(llama-quantize)
+[[ -z "${KOUKAI_IMATRIX_CALIB:-}" ]] || TARGETS+=(llama-imatrix)
 cmake --build "$W/build" -j"$NP" --target "${TARGETS[@]}" >/dev/null
 B="$W/build/bin"; log "作った"
 PYTHON="$W/venv/bin/python"
@@ -335,6 +339,24 @@ if [[ -n "${REBUILD_QTYPE:-}" ]]; then
   wait "$DL_IMATRIX"; DL_IMATRIX=""
   echo "$IMATRIX_SHA  $IMATRIX.part" | sha256sum -c --quiet || { echo "imatrix の sha256 が違う" >> "$OUT"; exit 1; }
   mv "$IMATRIX.part" "$IMATRIX"
+  echo "配布 imatrix: revision=$HF_REV sha256=$IMATRIX_SHA" >> "$OUT"
+  if [[ -n "${KOUKAI_IMATRIX_CALIB:-}" ]]; then
+    # Q8 は31GB。較正の推論は10.48GiBの配布Q2_Kで行い、重みの再量子化はQ8から行う。
+    # ja/en は同じ土台・種・問題の組・トークン予算。評価問題は読まない。
+    CALIB_FILE="$W/calib_${KOUKAI_IMATRIX_CALIB}.txt"
+    CALIB_IMATRIX="$W/imatrix_${KOUKAI_IMATRIX_CALIB}.gguf"
+    python3 "$K/dougu/asshuku/calib_t8.py" --language "$KOUKAI_IMATRIX_CALIB" --out "$CALIB_FILE"
+    echo "較正: $KOUKAI_IMATRIX_CALIB / 配布Q2_K由来 / c512 chunks32 / $(sha256sum "$CALIB_FILE")" >> "$OUT"
+    if "${BASE_ENV[@]}" timeout 90m "$B/llama-imatrix" -m "$BASE_M" -f "$CALIB_FILE" \
+      -o "$CALIB_IMATRIX" -c 512 -b 512 -ub 256 --chunks 32 -t "$NP" -ngl 0 > "$W/imatrix.log" 2>&1; then
+      [[ -s "$CALIB_IMATRIX" ]] || { echo '較正 imatrix が空' >> "$OUT"; exit 1; }
+    else
+      rc=$?; tail -30 "$W/imatrix.log" >> "$OUT"; exit "$rc"
+    fi
+    tail -12 "$W/imatrix.log" >> "$OUT"
+    echo "較正 imatrix: $(sha256sum "$CALIB_IMATRIX")" >> "$OUT"
+    rm -f "$IMATRIX"; IMATRIX="$CALIB_IMATRIX"
+  fi
   if [[ -n "${KOUKAI_PRUNE_NEURONS:-}" && ! "${KOUKAI_PRUNE_NEURONS}" =~ ^0(\.0*)?$ ]]; then
     PRUNED_M="$W/pruned_q8.gguf"; PRUNED_IMATRIX="$W/pruned_imatrix.dat"
     PRUNE_TIME="$W/prune-time.log"; TIMEV=(); [[ -x /usr/bin/time ]] && TIMEV=(/usr/bin/time -v)   # time が無い runner でも止めない
