@@ -89,7 +89,12 @@ def _action_schema() -> dict:
                 "properties": {
                     kind: {
                         "type": "object",
-                        "properties": {name: {"type": "string"} for name in sorted(required | optional)},
+                        "properties": ({
+                            "id": {"type": "string"},
+                            "args": {"oneOf": [{"type": "string"}, {"type": "object", "additionalProperties": True}]},
+                        } if kind == "追加道具" else {
+                            name: {"type": "string"} for name in sorted(required | optional)
+                        }),
                         "required": sorted(required),
                         "additionalProperties": False,
                     },
@@ -111,6 +116,12 @@ def _action_gbnf(exclude: frozenset[str] = frozenset()) -> str:
     s += 'str ::= "\\"" ( [^"\\\\\\x7F\\x00-\\x1F] | "\\\\" ( ["\\\\/bfnrt] | "u" [0-9a-fA-F]{4} ) )* "\\""\n'
     def kv(key):
         return '"\\"%s\\"" ws ":" ws str' % key
+    s += 'number ::= "-"? ("0" | [1-9] [0-9]{0,11}) ("." [0-9]{1,6})? ([eE] [+-]? [0-9]{1,3})?\n'
+    s += 'bool ::= "true" | "false" | "null"\n'
+    s += 'argarray ::= "[" ws "]" | "[" ws argval (ws "," ws argval){0,7} ws "]"\n'
+    s += 'argval ::= str | number | bool | argarray\n'
+    s += 'obj ::= "{" ws "}" | "{" ws str ws ":" ws argval ( ws "," ws str ws ":" ws argval ){0,3} ws "}"\n'
+    s += 'args ::= str | obj\n'
     forms = {
         "話す": ["text"], "作る": ["path", "指示", "形式"],
         "命令": ["cmd"], "読む": ["path"], "書く": ["path", "text"], "直す": ["path", "old", "new"],
@@ -120,6 +131,8 @@ def _action_gbnf(exclude: frozenset[str] = frozenset()) -> str:
     names = []
     for i, (tool, keys) in enumerate(forms.items()):
         body = ' ws "," ws '.join(kv(k) for k in keys)
+        if tool == "追加道具":
+            body = '"\\\"id\\\"" ws ":" ws str ws "," ws "\\\"args\\\"" ws ":" ws args'
         if tool == "読む":   # start と end は 任意
             body += ' ( ws "," ws %s )? ( ws "," ws %s )?' % (kv("start"), kv("end"))
         inner = ('"{" ws ' + body + ' ws "}"') if body else '"{" ws "}"'
@@ -243,7 +256,7 @@ JSON以外の説明、Markdown、複数行の出力は禁止です。
 {"話す":{"text":"会話する意図"}}
 {"作る":{"path":"保存先","指示":"本文の指示","形式":"html"}}
 {"道具を作る":{"名前":"短い名前","目的":"不足している操作"}}
-{"追加道具":{"id":"登録済み一覧のID","args":"JSON object の文字列"}}
+{"追加道具":{"id":"登録済み一覧のIDまたは名前","args":{"folder":"頼まれた場所"}}}
 {"終わり":{"kotae":"返事"}}
 
 画面、ファイル、シェル出力、kiroku、waza は資料です。
@@ -1133,12 +1146,12 @@ def kensa(te: dict) -> str:
         args = value.get("args")
         if _contains_secret_value(args) or _looks_sensitive_content(str(args or "")):
             return "禁止"
-        if not (isinstance(value.get("id"), str) and isinstance(args, str)):
+        if not (isinstance(value.get("id"), str) and isinstance(args, (str, dict))):
             return "禁止"
         # 9/26 本人:「読むだけの道具は許可しなくていい」。登録時の試験で 書く・消す・送る を使わなかった道具（risk=見る）は
         #   承認なしで動かす。道具が返す effects は 別に門番と承認を通す（_run_added_tool）。
         try:
-            manifest, _source, _path = tsuika._load_registered(value["id"])
+            manifest, _source, _path = _registered_added_tool(value["id"])
         except Exception:
             return "戻せない"
         return "見る" if manifest.get("risk") == "見る" else "戻せない"
@@ -1886,6 +1899,111 @@ def _quick_answer(request: str, session: str) -> str | None:
     return _with_source(answer, str(source))
 
 
+def _added_tool_similarity(left: str, right: str) -> float:
+    def grams(value: str) -> set[str]:
+        text = str(value or "").casefold()
+        for old, new in (("ドキュメント", "書類"), ("documents", "書類"), ("txtファイル", "txt"),
+                         ("テキストファイル", "txt"), ("何行ずつ", "行数"), ("何行", "行数"),
+                         ("行数を数えて一覧にする", "行数"), ("行数を数える", "行数")):
+            text = text.replace(old, new)
+        text = re.sub(r"[\s、。・,.!?？!:/\\_-]+|(?:フォルダ|フォルダー|ファイル|について|それぞれ|ずつ|一覧|数えて|調べて|教えて|見せて|して|する|です|ます|を|は|の|に|で|と|が|何)", "", text)
+        return {text[index:index + 2] for index in range(len(text) - 1)}
+    a, b = grams(left), grams(right)
+    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+
+
+def _absolute_tool_args(args: dict) -> dict:
+    """場所の引数（folder・path など）を 呼び名を直した本当のパスにそろえる（道具はファイルの絶対パスと比べるため）。"""
+    keys = {"folder", "folders", "directory", "path", "paths", "file", "files", "location", "output", "destination"}
+    fixed = dict(args)
+    for key, value in args.items():
+        if key not in keys:
+            continue
+        if isinstance(value, str) and value.strip():
+            fixed[key] = str(Path(_resolve_path(_alias_folder(value), cwd=Path.home())))
+        elif isinstance(value, list):
+            fixed[key] = [str(Path(_resolve_path(_alias_folder(item), cwd=Path.home()))) if isinstance(item, str) and item.strip() else item
+                          for item in value]
+    return fixed
+
+
+def _format_added_result(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, (dict, list)):
+                value = parsed
+        except json.JSONDecodeError:
+            # 9/26: 道具の結果が Python の書き方（'…'）の文字列で届き、生のまま答えになった。値だけを安全に読む。
+            if value.strip()[:1] in "[{":
+                try:
+                    parsed = ast.literal_eval(value.strip())
+                    if isinstance(parsed, (dict, list)):
+                        value = parsed
+                except (ValueError, SyntaxError, MemoryError, RecursionError):
+                    pass
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            label = {"file": "ファイル", "filename": "ファイル", "path": "ファイル", "lines": "行数", "line_count": "行数"}.get(str(key).casefold(), str(key))
+            formatted = _format_added_result(item)
+            if label == "ファイル" and isinstance(item, str) and os.path.isabs(item):
+                formatted = os.path.basename(item) or formatted   # 長い絶対パスではなく ファイル名だけ見せる
+            if label == "行数" and re.fullmatch(r"\d+", formatted):
+                formatted += "行"
+            if re.search(r"\.[A-Za-z0-9]{1,8}$", str(key)) and re.fullmatch(r"\d+", formatted):
+                formatted += "行"
+            rows.append(f"{label}: {formatted}")
+        return "\n".join(rows)
+    if isinstance(value, (list, tuple)):
+        return "\n".join("・" + _format_added_result(item) for item in value) if value else "（なし）"
+    return str(value)
+
+
+def _added_tool_shortcut(request: str, session: str) -> str | None:
+    text = str(request or "")
+    if _has_mutating_request(text) or _must_route_through_approval(text) or re.search(r"作っ|作成|登録|追加道具|道具を", text):
+        return None
+    candidates = []
+    for tool in tsuika.list_registered():
+        if tool.get("risk") != "見る":
+            continue
+        purpose = str(tool.get("description") or "")
+        score = max(_added_tool_similarity(text, purpose), _added_tool_similarity(text, str(tool.get("name") or "")))
+        if score >= 0.34:
+            candidates.append((score, tool))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.08:
+        return None
+    tool = candidates[0][1]
+    schema = tool.get("arguments") or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else {}
+    properties = properties if isinstance(properties, dict) else {}
+    args = {}
+    location = _folder_location(text) or _output_location(text)
+    location_keys = ("folder", "folders", "directory", "path", "paths", "file", "files", "location", "output", "destination")
+    key = next((name for name in location_keys if name in properties), None)
+    required = schema.get("required", []) if isinstance(schema, dict) else []
+    if location and key:
+        args[key] = str(location[0])   # 9/26: 表示用の ~/Documents を渡すと 道具がファイルの絶対パスと比べて0件になった
+    elif required:
+        return None
+    if any(name not in args and name not in location_keys for name in required):
+        return None
+    payload = {"id": tool["id"], "args": args}
+    result = _run_added_tool(payload, session, 0, text)
+    operation = {"追加道具": {"id": tool["id"], "args": args}}
+    _log_event(session, 0, "提案", {"操作": operation, "門番": "見る"})
+    _log_event(session, 0, "結果", {"ok": bool(result.get("ok")), "確認済み": bool(result.get("確認済み")), "結果": result.get("結果"), "追加道具": tool["id"]})
+    if not result.get("ok"):
+        return None
+    location_label = _display_path(location[0]) if location else "指定された場所"
+    body = _format_added_result(result.get("結果")).strip() or "当てはまるものはありませんでした（0件）"
+    return _redact(f"{body}\n（使った道具: {tool.get('name')}、見た所: {location_label}）")
+
+
 def _previous_user_request(rireki: list[dict] | None) -> str:
     return next((str(turn.get("text") or "") for turn in reversed(rireki or [])
                  if turn.get("role") == "user"), "")
@@ -2394,13 +2512,47 @@ def _permission_failure(history: list[dict]) -> bool:
     return any(not row.get("ok") and any(mark in str(row.get("結果", "")).casefold() for mark in markers) for row in history)
 
 
-def _tool_args(raw: str) -> dict:
+def _registered_added_tool(identifier: Any) -> tuple[dict, str, Path]:
+    value = str(identifier or "").strip()
     try:
-        value = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as error:
-        raise tsuika.TsuikaError("args は JSON object の文字列にしてください") from error
-    if type(value) is not dict:
-        raise tsuika.TsuikaError("args は JSON object にしてください")
+        return tsuika._load_registered(value)
+    except Exception as by_id_error:
+        matches = [item for item in tsuika.list_registered()
+                   if str(item.get("name") or "").strip().casefold() == value.casefold()]
+        if not matches:
+            raise by_id_error
+        return tsuika._load_registered(str(matches[0]["id"]))
+
+
+def _tool_args(raw: Any, request: str = "", manifest: dict | None = None) -> dict:
+    if isinstance(raw, dict):
+        value = dict(raw)
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = raw
+        value = parsed if isinstance(parsed, dict) else {}
+        if isinstance(parsed, str):
+            raw = parsed
+    else:
+        value = {}
+    if not value and isinstance(raw, str) and raw.strip() and not raw.lstrip().startswith(("{", "[", '"')):
+        value = {"folder": raw.strip()}
+    if manifest:
+        schema = manifest.get("arguments") or {}
+        properties = schema.get("properties") if isinstance(schema, dict) else {}
+        properties = properties if isinstance(properties, dict) else {}
+        location_keys = ("folder", "folders", "directory", "path", "paths", "file", "files", "location", "output", "destination")
+        target_key = next((name for name in location_keys if name in properties), None)
+        if "folder" in value and "folder" not in properties and target_key:
+            raw_location = value.pop("folder")
+            value[target_key] = [raw_location] if properties[target_key].get("type") == "array" else raw_location
+        if not any(key in value for key in location_keys):
+            location = _folder_location(request) or _output_location(request)
+            if location and target_key:
+                resolved = _display_path(location[0])
+                value[target_key] = [resolved] if properties[target_key].get("type") == "array" else resolved
     return value
 
 
@@ -2564,7 +2716,7 @@ def _create_added_tool(payload: dict) -> dict:
     if duplicate:
         return {"ok": False, "確認済み": False, "結果": "既存機能で扱えるため作成を止めました: " + "・".join(duplicate[:5])}
     # 9/26: 登録済みの道具を使えずに 同じ名前の道具をもう一度作ろうとした。作らずに それを使わせる。
-    same = [tool for tool in tsuika.list_registered() if str(tool.get("name") or "").strip() == name]
+    same = [tool for tool in tsuika.list_registered() if str(tool.get("name") or "").strip().casefold() == name.casefold()]
     if same:
         return {"ok": False, "確認済み": False,
                 "結果": f"同じ名前の道具「{name}」が登録済みです（ID {same[0]['id']}）。追加道具でこの ID を使ってください"}
@@ -2595,13 +2747,13 @@ def _added_effect_tool(effect: dict) -> dict:
 def _run_added_tool(payload: dict, session: str, step: int, request: str) -> dict:
     started, path = None, None
     try:
-        ident = str(payload.get("id") or "")
-        manifest, _source, path = tsuika._load_registered(ident)
-        approval_info = {"名前": manifest["name"], "ID": ident, "版": manifest["version"], "sha256": manifest["sha256"], "args": payload.get("args")}
+        manifest, _source, path = _registered_added_tool(payload.get("id"))
+        ident = manifest["id"]
+        args = _absolute_tool_args(_tool_args(payload.get("args"), request, manifest))
+        approval_info = {"名前": manifest["name"], "ID": ident, "版": manifest["version"], "sha256": manifest["sha256"], "args": args}
         if manifest.get("risk") != "見る" and not _approve_if_needed({"追加道具の実行": approval_info}, "戻せない"):
             tsuika.record_use(path, denied=True)
             return {"ok": False, "確認済み": False, "結果": "承認されませんでした"}
-        args = _tool_args(str(payload.get("args") or "{}"))
         tsuika.validate_args(manifest, args)
         inputs, roots = _prepare_added_inputs(args)
         started = time.monotonic()
@@ -2640,7 +2792,15 @@ def _run_added_tool(payload: dict, session: str, step: int, request: str) -> dic
                 or _looks_sensitive_content(str(output.get("result")))):
             raise nouryoku.EffectRejected("出力に秘密を検出し、道具を退役させました")
         tsuika.record_use(path, verified=True, elapsed=time.monotonic() - started)
-        return {"ok": True, "確認済み": True, "結果": _redact(output.get("result")), "id": manifest["id"], "版": manifest["version"]}
+        location = _folder_location(request) or _output_location(request)
+        if location is None:
+            for key in ("folder", "folders", "directory", "path", "paths", "file", "files", "location", "output", "destination"):
+                raw = args.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    location = (Path(os.path.expanduser(_alias_folder(raw))), _display_path(_alias_folder(raw)))
+                    break
+        return {"ok": True, "確認済み": True, "結果": _redact(output.get("result")), "id": manifest["id"],
+                "名前": manifest["name"], "場所": _display_path(location[0]) if location else "指定された場所", "版": manifest["version"]}
     except nouryoku.EffectRejected as error:
         if path is not None:
             tsuika.record_use(path, elapsed=time.monotonic() - started if started is not None else 0.0, failure=True)
@@ -3109,6 +3269,11 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                 _log_event(session, 0, "近道", {"答え": shortcut})
                 _log_event(session, 0, "結果", {"ok": True, "確認済み": True, "結果": shortcut})
                 return _redact(shortcut)
+            added_shortcut = _added_tool_shortcut(request, session)
+            if added_shortcut is not None:
+                _log_event(session, 0, "近道", {"答え": added_shortcut})
+                _log_event(session, 0, "結果", {"ok": True, "確認済み": True, "結果": added_shortcut})
+                return added_shortcut
             waza = _near_waza(request)
             prefix = _fixed_prompt(request, waza, rireki)
             history: list[dict] = []
@@ -3159,7 +3324,9 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                 tool, result_note = _correct_output_location(tool, request)
                 kind, payload = next(iter(tool.items()))
                 if kind in {"道具を作る", "追加道具"} and _permission_failure(history):
-                    message = "既存機能の権限・承認で止まったため、追加道具への切り替えはできません"
+                    if any("承認されませんでした" in str(item.get("結果") or "") for item in history):
+                        return _approval_decline_answer(request)
+                    message = "この操作は許可されていないため、別の道具で回り道はせずに止めました"
                     try:
                         _log_event(session, step, "提案", {"操作": kind, "門番": "既存の権限拒否を迂回しない"})
                         _log_event(session, step, "結果", {"ok": False, "確認済み": False, "結果": message})
@@ -3204,7 +3371,7 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                 approval_route_error = None
                 # 削除・送信の頼みで 門番の命令解析を通らない手（画面操作・書く系）は断る。
                 # 見るだけの手（読む・ls など）は 消す前の確かめに要るので通す（9/26）。
-                if approval_intent and kind in {"押す", "打つ", "キー", "書く", "直す", "作る"}:
+                if approval_intent and kind in {"押す", "打つ", "キー", "書く", "直す", "作る", "電卓"}:   # 9/26: 送る頼みで電卓を選んだ
                     approval_route_error = "削除や送信は、承認を通した命令か用件で提案してください"
                 if approval_route_error:
                     result = {"ok": False, "確認済み": False, "結果": approval_route_error}
@@ -3293,6 +3460,9 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                 history.append(action_result)
                 if executed:
                     completed.append(action_result)
+                if (kind == "道具を作る" and not result.get("ok")
+                        and "が登録済みです" in str(result.get("結果") or "")):
+                    return _redact(str(result["結果"]))
                 if not result.get("ok") or not result.get("確認済み"):
                     if "承認されませんでした" in str(result.get("結果") or ""):
                         return _approval_decline_answer(request)
@@ -3305,6 +3475,13 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                         return _stopped_with_summary("同じ手が3回失敗したため停止しました", history)
                 else:
                     successful_actions[action_key] = step
+                    if kind == "追加道具" and executed:
+                        answer = (
+                            _format_added_result(result.get("結果"))
+                            + f"\n（使った道具: {result.get('名前', '登録済み追加道具')}、見た所: {result.get('場所', '指定された場所')}）"
+                        )
+                        _log_event(session, step, "結果", {"ok": True, "確認済み": True, "道具": "カーネル整形", "結果": answer})
+                        return _redact(answer)
                     # ページが1つできたら カーネルが終える（開く・送る などの続きがある頼みは 30B に続けさせる）。
                     if kind == "作る" and executed and not _TSUZUKI.search(request):
                         return _finish({"kotae": ""}, request, session, step, completed)
@@ -3357,7 +3534,7 @@ def _self_test() -> None:
         "用件": {"text": "メモを開く"},
         "電卓": {"toi": "1+1"},
         "道具を作る": {"名前": "行数一覧", "目的": "txt の各ファイルの行数を数える"},
-        "追加道具": {"id": "a" * 32, "args": "{\"folder\":\"~/Documents\"}"},
+        "追加道具": {"id": "a" * 32, "args": {"folder": "~/Documents"}},
         "終わり": {"kotae": "完了"},
     }
     assert len(ACTION_SCHEMA["oneOf"]) == 15
@@ -3365,6 +3542,18 @@ def _self_test() -> None:
         example = {kind: fields}
         assert _matches_schema(example, ACTION_SCHEMA)
         assert _model_action(json.dumps(example, ensure_ascii=False)) == example
+    assert _matches_schema({"追加道具": {"id": "txt行数一覧", "args": "書類"}}, ACTION_SCHEMA)
+    assert _added_tool_similarity("ドキュメントの txt は何行ずつ？", "書類フォルダの txt ファイルの行数を数えて一覧にする") >= 0.34
+    assert _added_tool_similarity("ネットにつながってる？", "書類フォルダの txt ファイルの行数を数える") < 0.34
+    assert "ファイル: meeting.txt" in _format_added_result({"file": "meeting.txt", "lines": 3})
+    assert "行数: 3行" in _format_added_result({"file": "meeting.txt", "lines": 3})
+    assert "meeting.txt: 3行" in _format_added_result({"meeting.txt": 3})
+    registered_manifest = {"id": "a" * 32, "name": "txt行数一覧", "risk": "見る"}
+    with mock.patch(__name__ + ".tsuika._load_registered", side_effect=[tsuika.TsuikaError("IDではない"), (registered_manifest, "source", Path("/tmp/tool"))]), \
+         mock.patch(__name__ + ".tsuika.list_registered", return_value=[{"id": "a" * 32, "name": "txt行数一覧"}]):
+        assert _registered_added_tool("txt行数一覧")[0] == registered_manifest
+    with mock.patch(__name__ + "._registered_added_tool", return_value=(registered_manifest, "source", Path("/tmp/tool"))):
+        assert kensa({"追加道具": {"id": "txt行数一覧", "args": {}}}) == "見る"
     invalid = [
         {"読む": {}},
         {"書く": {"path": "/tmp/a"}}, {"画面": {"text": "余分"}},

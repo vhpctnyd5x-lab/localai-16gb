@@ -38,6 +38,9 @@ def _fixture(home: Path) -> None:
     for name in ("dougu_shiken", "カーネルの成果物", "整理済み_2026-06-17"):
         (desktop / name).mkdir(parents=True, exist_ok=True)
     _write(desktop / ".DS_Store", "fixture\n")
+    documents = home / "Documents"
+    documents.mkdir(parents=True, exist_ok=True)
+    _write(documents / "meeting.txt", "一行目\n二行目\n三行目\n")
 
     docs = home / "Documents"
     _write(docs / "meeting.txt", "会議メモ\n締切: 10月15日\n担当: 青木\n")
@@ -328,6 +331,46 @@ def _run(argv: list[str] | None = None) -> int:
                     except Exception as error:
                         results.append({"row": row, "status": "FAIL", "answer": f"安全検査失敗: {type(error).__name__}: {error}", "actual": "近道", "steps": 0,
                                         "seconds": round(time.monotonic() - started, 3), "approved": False, "checks": [(False, "安全検査") ]})
+                    continue
+                if row.get("fixture_test") == "registered_read_tool":
+                    started = time.monotonic()
+                    original_list = kyoudou.tsuika.list_registered
+                    original_run = kyoudou._run_added_tool
+                    try:
+                        kyoudou.tsuika.list_registered = lambda: [{
+                            "id": "a" * 32, "name": "txt行数一覧",
+                            "description": "書類フォルダの txt ファイルの行数を数えて一覧にする",
+                            "risk": "見る", "arguments": {
+                                "type": "object", "properties": {"folder": {"type": "string"}},
+                                "required": ["folder"], "additionalProperties": False,
+                            },
+                        }]
+                        captured = {}
+                        def run_fixture(payload, _session, _step, _request):
+                            captured.update(payload)
+                            return {"ok": True, "確認済み": True, "結果": [{"file": "meeting.txt", "lines": 3}]}
+                        kyoudou._run_added_tool = run_fixture
+                        answer = kyoudou._added_tool_shortcut(str(row.get("toi") or ""), "tegoro-G49") or "近道が成立しませんでした"
+                        events = [{"段階": "提案", "内容": {"操作": {"追加道具": {"id": "a" * 32}}}}]
+                        checks = []
+                        for rule in row.get("kensa", []):
+                            ok, label = _check(rule, answer, events, [], [])
+                            checks.append((ok, label))
+                        folder = str(captured.get("args", {}).get("folder") or "")
+                        documents = os.path.realpath(os.path.expanduser("~/Documents"))
+                        # 9/26: 道具には本当のパスを渡すようにした（~/Documents のままだと道具の比べで0件）
+                        checks.append((folder == "~/Documents" or os.path.realpath(folder) == documents, "頼みから書類フォルダを補完"))
+                        passed = all(ok for ok, _label in checks)
+                        results.append({"row": row, "status": "PASS" if passed else "FAIL", "answer": answer,
+                                        "actual": "近道", "steps": 0, "seconds": round(time.monotonic() - started, 3),
+                                        "approved": False, "checks": checks})
+                    except Exception as error:
+                        results.append({"row": row, "status": "FAIL", "answer": f"近道試験失敗: {type(error).__name__}: {error}",
+                                        "actual": "近道", "steps": 0, "seconds": round(time.monotonic() - started, 3),
+                                        "approved": False, "checks": [(False, "登録済み読む道具の近道") ]})
+                    finally:
+                        kyoudou.tsuika.list_registered = original_list
+                        kyoudou._run_added_tool = original_run
                     continue
                 if row.get("needs_automation") and os.environ.get("TEGORO_AUTOMATION") != "1":
                     # System Events に問い合わせる問いは Mac の許可の画面が出ることがある。本人がいる時だけ回す（9/26）。
