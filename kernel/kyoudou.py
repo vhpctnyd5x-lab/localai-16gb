@@ -380,7 +380,7 @@ def _protected_roots() -> list[str]:
     return list(dict.fromkeys(roots))
 
 
-def _is_protected_path(raw: Any, mutation: bool = False, cwd: str | Path | None = None) -> bool:
+def _is_protected_path(raw: Any, mutation: bool = False, cwd: str | Path | None = None, own: bool = True) -> bool:
     try:
         candidate = _resolve_path(raw, cwd=cwd)
     except (TypeError, ValueError, OSError):
@@ -400,7 +400,7 @@ def _is_protected_path(raw: Any, mutation: bool = False, cwd: str | Path | None 
             return True
         if mutation and _inside_path(root, candidate):
             return True
-    if mutation:
+    if mutation and own:   # own=False: カーネル自身が書く記録・技の置き場（9/26 これを守って本番の記録が止まった）
         for root in _mutation_only_roots():
             if _inside_path(candidate, root) or _inside_path(root, candidate):
                 return True
@@ -1190,7 +1190,7 @@ def _local_dir(name: str) -> str:
     override = os.environ.get("KERNEL_WAZA_DIR") if name == "waza" else None
     path = Path(override) if override else Path(HERE) / name
     resolved = Path(os.path.realpath(path))
-    if _is_protected_path(str(resolved), mutation=True):
+    if _is_protected_path(str(resolved), mutation=True, own=False):
         raise PermissionError("保護された場所には記録できません")
     resolved.mkdir(parents=True, exist_ok=True)
     return str(resolved)
@@ -1203,7 +1203,7 @@ def _kiroku_dir(directory: str | Path | None = None) -> Path:
     if (directory is None and not os.environ.get("KERNEL_KIROKU_DIR")
             and not _inside_path(str(resolved), str(KERNEL_DIR.resolve()))):
         raise PermissionError("kiroku の保存先が kernel/ の外です")
-    if _is_protected_path(str(resolved), mutation=True):
+    if _is_protected_path(str(resolved), mutation=True, own=False):
         raise PermissionError("保護された場所には記録できません")
     return resolved
 
@@ -3739,6 +3739,11 @@ def _self_test() -> None:
     )
     assert all(_command_risk(command) != "見る" for command in unsafe_read_shapes)
     assert kensa({"書く": {"path": str(Path.home() / ".zshenv"), "text": "x"}}) == "戻せない"
+    # 9/26: 自分の体（~/LocalAI_mirror）は 30B が書き換えられないが、カーネル自身の記録の置き場には書ける
+    #   （own を付け忘れて 本番の記録が「保護された場所」で止まった）。
+    assert _is_protected_path(str(KERNEL_DIR / "kyoudou.py"), mutation=True)
+    assert not _is_protected_path(str(KERNEL_DIR / "kiroku"), mutation=True, own=False)
+    assert not _is_protected_path(str(KERNEL_DIR / "kyoudou.py"))
     assert kensa({"作る": {"path": "/tmp/fixture-repo/.git/hooks/pre-commit", "指示": "x"}}) == "戻せない"
     assert _approval_required({"命令": {"cmd": "rm /tmp/fixture"}}, "戻せる")
 
