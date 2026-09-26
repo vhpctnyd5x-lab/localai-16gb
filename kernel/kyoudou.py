@@ -34,6 +34,7 @@ for _module_dir in (str(KERNEL_DIR), HERE):
         sys.path.insert(0, _module_dir)
 
 import computer
+import hako
 import kazoeru
 import machine
 import shounin
@@ -991,6 +992,42 @@ def _command_risk(command: str) -> str:
     return _command_analysis(command)[0]
 
 
+def _command_has_outbound(command: str, depth: int = 0) -> bool:
+    """門番と同じ送信判定を使い、許可する network-outbound を絞る。"""
+    if depth > 3:
+        return False
+    try:
+        groups = _shell_groups(command)
+    except ValueError:
+        return False
+    for group in groups:
+        argv = list(group)
+        while argv and os.path.basename(argv[0]).casefold() in {
+            "sudo", "command", "builtin", "nohup", "time", "env",
+        }:
+            wrapper = os.path.basename(argv.pop(0)).casefold()
+            if wrapper == "sudo":
+                break
+            while argv and argv[0].startswith("-"):
+                argv.pop(0)
+            while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+                argv.pop(0)
+        if not argv:
+            continue
+        head = os.path.basename(argv[0]).casefold()
+        if head in _SHELL_COMMANDS:
+            command_index = next(
+                (i for i, token in enumerate(argv[1:], start=1) if token in {"-c", "-lc", "-ec"}),
+                None,
+            )
+            if command_index is not None and command_index + 1 < len(argv):
+                if _command_has_outbound(argv[command_index + 1], depth + 1):
+                    return True
+        if _is_outbound_group(head, argv, _SESSION_SECRET_DIRTY):
+            return True
+    return False
+
+
 def _command_reads_secret(command: str) -> bool:
     try:
         groups = _shell_groups(command)
@@ -1274,11 +1311,28 @@ def _trash_command_targets(command: str) -> dict | None:
     }
 
 
-def _sandbox_command(command: str, **kwargs: Any) -> subprocess.CompletedProcess:
-    return subprocess.run(["/bin/zsh", "-lc", command], **kwargs)
+def _sandbox_command(
+    command: str,
+    *,
+    risk: str,
+    network_approved: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    return hako.run(
+        command,
+        risk=risk,
+        network_approved=network_approved,
+        protected_roots=_protected_roots(),
+        **kwargs,
+    )
 
 
-def _run_command(command: str, session: str = "command", step: int = 0) -> dict:
+def _run_command(
+    command: str,
+    session: str = "command",
+    step: int = 0,
+    network_approved: bool = False,
+) -> dict:
     risk = _command_risk(command)
     if risk == "禁止":
         return {"ok": False, "確認済み": False, "結果": "禁止された操作です"}
@@ -1293,6 +1347,8 @@ def _run_command(command: str, session: str = "command", step: int = 0) -> dict:
     try:
         completed = _sandbox_command(
             command,
+            risk=risk,
+            network_approved=bool(network_approved and risk == "戻せない" and _command_has_outbound(command)),
             cwd=str(KERNEL_DIR),
             env=os.environ.copy(),
             capture_output=True,
@@ -1319,6 +1375,8 @@ def _run_command(command: str, session: str = "command", step: int = 0) -> dict:
         }
     except subprocess.TimeoutExpired:
         return {"ok": False, "確認済み": False, "結果": "60秒で時間切れになりました"}
+    except hako.SandboxUnavailable:
+        return {"ok": False, "確認済み": False, "結果": "隔離できないため実行しませんでした"}
     except Exception as error:
         return {"ok": False, "確認済み": False, "結果": _redact(error)}
 
@@ -2210,10 +2268,14 @@ def _execute_tool(
     step: int,
     matched: tuple | None = None,
     request: str = "",
+    network_approved: bool = False,
 ) -> dict:
     kind, value = next(iter(te.items()))
     if kind == "命令":
-        return _run_command(str(value.get("cmd") or ""), session=session, step=step)
+        return _run_command(
+            str(value.get("cmd") or ""), session=session, step=step,
+            network_approved=network_approved,
+        )
     if kind == "読む":
         return _read_file(
             value.get("path"),
@@ -2297,18 +2359,29 @@ def _gate_and_run(
             "結果": "記録できないため実行を止めました: " + _redact(error),
         }
 
+    approval_granted = False
+    approval_needed = _approval_required(te, risk)
     if risk == "禁止":
         result = {"ok": False, "確認済み": False, "結果": "禁止された操作です"}
-    elif _approval_required(te, risk) and not _approve_if_needed(te, "戻せない"):
+    elif approval_needed and not _approve_if_needed(te, "戻せない"):
         result = {"ok": False, "確認済み": False, "結果": "承認されませんでした"}
     else:
+        approval_granted = approval_needed
         kind, payload = next(iter(te.items()))
         if kind == "読む" and _is_secret_path(payload.get("path")):
             _mark_secret_read()
         if kind == "命令" and _command_reads_secret(str(payload.get("cmd") or "")):
             _mark_secret_read()
         try:
-            result = _execute_tool(te, session, step, matched=matched, request=request)
+            network_approved = bool(
+                approval_granted
+                and kind == "命令"
+                and _command_has_outbound(str(payload.get("cmd") or ""))
+            )
+            result = _execute_tool(
+                te, session, step, matched=matched, request=request,
+                network_approved=network_approved,
+            )
             if result_note and result.get("ok") and result.get("確認済み"):
                 result["結果"] = result_note + "。" + str(result.get("結果") or "")
                 result["保存先補正"] = True
@@ -2478,8 +2551,9 @@ def _confirmed_source(steps: list[dict]) -> str | None:
 def _conversation_reply(request: str, rireki: list[dict] | None, steps: list[dict]) -> str:
     prompt = (
         "ユーザーとの会話に自然な日本語で答えてください。道具は使えません。"
-        "ここまでの結果と会話の履歴だけを根拠にし、結果にない事実を作らないでください。"
-        "未実行の操作を完了したと言わず、分からないことは分からないと伝えてください。\n"
+        "今回の確認済み記録の「結果」に書かれた中身を使って、頼みに具体的に答えてください。"
+        "ファイルの内容を聞かれたら、その中身を短くまとめるか、短ければそのまま示してください。"
+        "記録にない事実は作らず、未実行の操作を完了したとは言わないでください。\n"
         "【これまでの会話】\n" + json.dumps(_scrub(rireki or []), ensure_ascii=False)
         + "\n【今回の確認済み記録】\n" + json.dumps(_scrub(steps), ensure_ascii=False)
         + "\n【今回の発言】\n" + _clip(request, 3000)
@@ -3274,6 +3348,8 @@ def _self_test() -> None:
     global _SESSION_SECRET_DIRTY
     _SESSION_SECRET_DIRTY = True
     assert kensa({"命令": {"cmd": "curl -I https://example.invalid/"}}) == "戻せない"
+    assert _command_has_outbound("curl -X POST https://example.invalid/")
+    assert _command_has_outbound("curl -I https://example.invalid/")
     assert kensa({"命令": {"cmd": "pkill Claude"}}) == "禁止"
     assert kensa({
         "命令": {
@@ -3283,6 +3359,25 @@ def _self_test() -> None:
     assert kensa({"命令": {"cmd": "rm ~/.codex/auth.json"}}) == "禁止"
     assert kensa({"命令": {"cmd": "cat ~/.codex/AGENTS.md"}}) == "見る"
     assert kensa({"読む": {"path": "~/.claude/CLAUDE.md"}}) == "見る"
+    assert hako._sbpl_string('/tmp/a"b\\c') == '"/tmp/a\\"b\\\\c"'
+    with mock.patch.object(hako, "run", side_effect=hako.SandboxUnavailable("self-test")):
+        isolated = _run_command("pwd")
+    assert not isolated["ok"] and isolated["結果"] == "隔離できないため実行しませんでした"
+    for command, expected_network_approval in (
+        ("curl -X POST https://example.invalid/", True),
+        ("python3 -c 'print(1)'", False),
+    ):
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch(__name__ + "._log_event"))
+            stack.enter_context(mock.patch(__name__ + "._approve_if_needed", return_value=True))
+            sandbox = stack.enter_context(mock.patch(
+                __name__ + "._sandbox_command",
+                return_value=subprocess.CompletedProcess([], 0, stdout="ok", stderr=""),
+            ))
+            result = _gate_and_run({"命令": {"cmd": command}}, "self-test", 99)
+            assert result["ok"]
+            assert sandbox.call_args.kwargs["risk"] == "戻せない"
+            assert sandbox.call_args.kwargs["network_approved"] is expected_network_approval
 
     readonly_commands = (
         "sw_vers -productVersion", "uname -a", "uptime", "date +%Y-%m-%d",
