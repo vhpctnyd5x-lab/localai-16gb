@@ -513,7 +513,40 @@ class _Nagashi(io.TextIOBase):
         return "\n".join(self.all + ([self.buf] if self.buf else []))
 
 
-def handle_text_nagashi(text, q, tomeru, michi=None):
+def _kyoudou_history(cid):
+    if not cid:
+        return []
+    try:
+        conversation = chats.load(cid)
+    except Exception:
+        return []
+    if not conversation:
+        return []
+    turns = conversation.get("やりとり") or []
+    pairs = []
+    cursor = len(turns) - 1
+    while cursor > 0 and len(pairs) < 3:
+        previous, current = turns[cursor - 1], turns[cursor]
+        if previous.get("役") == "user" and current.get("役") in {"bot", "assistant"}:
+            pairs.append((previous, current))
+            cursor -= 2
+        else:
+            cursor -= 1
+    pairs.reverse()
+    result = []
+    for user_turn, assistant_turn in pairs:
+        result.append({"role": "user", "text": str(user_turn.get("文") or "")})
+        result.append({"role": "assistant", "text": str(assistant_turn.get("文") or "")})
+    while sum(len(turn["text"]) for turn in result) > 1500 and result:
+        excess = sum(len(turn["text"]) for turn in result) - 1500
+        if len(result[0]["text"]) > excess:
+            result[0]["text"] = result[0]["text"][excess:]
+        else:
+            result.pop(0)
+    return result
+
+
+def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
     """handle_text と同じ道筋を、途中経過と文字を q に流しながら通る。
     ★ 画面の「止める」= tomeru。teachers は次のかたまりで接続を切る。"""
     import teachers as _T
@@ -542,19 +575,28 @@ def handle_text_nagashi(text, q, tomeru, michi=None):
                     if michi == "kyoudou":
                         # ★ 2026-09-24 協働の輪（kyoudou.py）: 30B が 1手ずつ考え、カーネルが門番を通して動かして確かめる。
                         #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
-                        ok, shirase = moderu_youi("local:main")
-                        if not ok:
-                            print(f"\n  頭（30B）を起こせませんでした： {shirase}")
-                        else:
-                            import importlib, kyoudou as _kyoudou
-                            _kyoudou = importlib.reload(_kyoudou)   # 直した協働の輪を アプリの再起動なしで使う（9/24）
-                            _kyoudou.TOMERU = tomeru          # 画面の「止める」を 手と手の間で効かせる
-                            print("  協働: 30B が考え、カーネルが動かして確かめます")
+                        import importlib, kyoudou as _kyoudou
+                        _kyoudou = importlib.reload(_kyoudou)
+                        if _kyoudou.is_shortcut(text, rireki=rireki):
+                            _kyoudou.TOMERU = tomeru
+                            print("  協働: 近道で答えます")
                             try:
-                                kotae = _kyoudou.kotaeru(text)
+                                kotae = _kyoudou.kotaeru(text, rireki=rireki)
                             finally:
                                 _kyoudou.TOMERU = None
                             print("答え：" + kotae)
+                        else:
+                            ok, shirase = moderu_youi("local:main")
+                            if not ok:
+                                print(f"\n  頭（30B）を起こせませんでした： {shirase}")
+                            else:
+                                _kyoudou.TOMERU = tomeru
+                                print("  協働: 30B が考え、カーネルが動かして確かめます")
+                                try:
+                                    kotae = _kyoudou.kotaeru(text, rireki=rireki)
+                                finally:
+                                    _kyoudou.TOMERU = None
+                                print("答え：" + kotae)
                         kind = "協働"
                     elif S.is_command(text):
                         S.run(text, CTX); kind = "コマンド"
@@ -912,14 +954,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not cid or not chats.load(cid):
                     cid = chats.create()["id"]
                 CTX["会話id"] = cid
+                rireki = _kyoudou_history(cid)
                 chats.add_turn(cid, "user", text)
             except Exception:
                 cid = None
+                rireki = []
             q = _queue.Queue()
             tomeru = threading.Event()
             def worker():
                 try:
-                    res = handle_text_nagashi(text, q, tomeru, body.get("michi"))
+                    res = handle_text_nagashi(
+                        text, q, tomeru, body.get("michi"), rireki=rireki
+                    )
                 except Exception as e:
                     res = {"出力": f"エラー： {type(e).__name__}: {e}", "経過": "", "ミリ秒": 0,
                            "モード": CTX["設定"].get("モード", ""), "止めた": tomeru.is_set()}
