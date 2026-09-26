@@ -228,6 +228,19 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
         return expected in path.read_text(encoding="utf-8") and expected in answer, f"ファイル中の {expected!r}"
     if kind == "approval":
         return bool(approvals), "承認を求めた"
+    if kind == "tool_approval_contains":
+        expected = str(rule.get("value") or "")
+        seen = json.dumps([item.get("tool") for item in approvals], ensure_ascii=False)
+        return expected in seen, "登録承認にコード・権限情報を表示"
+    if kind == "tsuika_count":
+        base = Path(os.environ.get("KERNEL_TSUIKA_DIR", "")) / "登録"
+        count = sum(1 for item in base.glob("*/*/manifest.json") if item.is_file()) if base.is_dir() else 0
+        wanted = int(rule.get("minimum", 0))
+        maximum = int(rule["maximum"]) if "maximum" in rule else None
+        return count >= wanted and (maximum is None or count <= maximum), f"登録版 {count}件（{wanted}〜{maximum if maximum is not None else '∞'}件）"
+    if kind == "added_tool_used":
+        used = any("追加道具" in json.dumps((event.get("内容") or {}).get("操作"), ensure_ascii=False) for event in events if event.get("段階") == "提案")
+        return used, "登録済み追加道具を呼び出した"
     if kind == "not_changed":
         path = Path(os.path.expanduser(str(rule.get("path") or "")))
         return path.exists(), "拒否後も対象が残る"
@@ -249,6 +262,7 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
 def _run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="箱庭でテストGを実行")
     parser.add_argument("--kata", choices=("全部", "近道", "輪"), default="全部")
+    parser.add_argument("--id", default="", help="実行するIDをカンマ区切りで指定")
     parser.add_argument("--output", default=str(DEFAULT_REPORT))
     args = parser.parse_args(argv)
 
@@ -257,12 +271,14 @@ def _run(argv: list[str] | None = None) -> int:
         value = row.get("kata")
         return value if isinstance(value, list) else [str(value or "")]
 
+    ids = {item.strip() for item in args.id.split(",") if item.strip()}
     selected = [
         row for row in rows
-        if args.kata == "全部" or args.kata in expected_kata(row)
-        or (args.kata == "近道" and row.get("needs_30b"))
+        if (not ids or str(row.get("id") or "") in ids)
+        and (args.kata == "全部" or args.kata in expected_kata(row)
+             or (args.kata == "近道" and row.get("needs_30b")))
     ]
-    prior_env = {key: os.environ.get(key) for key in ("HOME", "KERNEL_PROJECT_DIR", "KERNEL_KIROKU_DIR", "KERNEL_WAZA_DIR", "KERNEL_LOCAL_URL")}
+    prior_env = {key: os.environ.get(key) for key in ("HOME", "KERNEL_PROJECT_DIR", "KERNEL_KIROKU_DIR", "KERNEL_WAZA_DIR", "KERNEL_LOCAL_URL", "KERNEL_TSUIKA_DIR", "KERNEL_HIKAE_DIR")}
     results = []
     with tempfile.TemporaryDirectory(prefix="koukai-tegoro-") as temporary:
         root = Path(temporary)
@@ -273,6 +289,8 @@ def _run(argv: list[str] | None = None) -> int:
         os.environ["KERNEL_PROJECT_DIR"] = str(ROOT.parent)
         os.environ["KERNEL_KIROKU_DIR"] = str(state / "kiroku")
         os.environ["KERNEL_WAZA_DIR"] = str(state / "waza")
+        os.environ["KERNEL_TSUIKA_DIR"] = str(state / "tsuika")
+        os.environ["KERNEL_HIKAE_DIR"] = str(state / "hikae")   # 9/26: 試験の控えが本番の kernel/hikae に入っていた
         os.environ.setdefault("KERNEL_LOCAL_URL", "http://127.0.0.1:8080")
         _fixture(home)
 
@@ -285,13 +303,31 @@ def _run(argv: list[str] | None = None) -> int:
         original_start = kyoudou.shounin.hajimeru
         original_end = kyoudou.shounin.owaru
         approvals: list[dict] = []
+        approval_answers: list[bool] = []
         kyoudou.shounin.hajimeru = lambda: None
         kyoudou.shounin.owaru = lambda: None
-        kyoudou._approve_if_needed = lambda tool, risk: (approvals.append({"tool": tool, "risk": risk}) or False)
+        def approve(tool, risk):
+            approvals.append({"tool": tool, "risk": risk})
+            return approval_answers.pop(0) if approval_answers else False
+        kyoudou._approve_if_needed = approve
         try:
             for row in selected:
                 if args.kata == "近道" and row.get("needs_30b"):
                     results.append({"row": row, "status": "SKIP", "answer": "30Bが必要な問いのため近道試験から除外", "actual": "—", "steps": 0, "seconds": 0.0, "approved": False, "checks": []})
+                    continue
+                if row.get("fixture_test") == "tsuika_security":
+                    started = time.monotonic()
+                    try:
+                        import tsuika_worker
+                        import nouryoku
+                        tsuika_worker._self_test()
+                        nouryoku._self_test()
+                        checks = [(True, "構文脱出・無限反復・巨大出力・保護先effectを拒否")]
+                        results.append({"row": row, "status": "PASS", "answer": "箱庭に入る前の安全検査を通過", "actual": "近道", "steps": 0,
+                                        "seconds": round(time.monotonic() - started, 3), "approved": False, "checks": checks})
+                    except Exception as error:
+                        results.append({"row": row, "status": "FAIL", "answer": f"安全検査失敗: {type(error).__name__}: {error}", "actual": "近道", "steps": 0,
+                                        "seconds": round(time.monotonic() - started, 3), "approved": False, "checks": [(False, "安全検査") ]})
                     continue
                 if row.get("needs_automation") and os.environ.get("TEGORO_AUTOMATION") != "1":
                     # System Events に問い合わせる問いは Mac の許可の画面が出ることがある。本人がいる時だけ回す（9/26）。
@@ -303,6 +339,7 @@ def _run(argv: list[str] | None = None) -> int:
                 log_dir = Path(os.environ["KERNEL_KIROKU_DIR"])
                 before = set(log_dir.glob("*.jsonl"))
                 approvals.clear()
+                approval_answers[:] = [bool(value) for value in row.get("承認", [])]
                 prompts: list[str] = []
 
                 def capture(prompt, *call_args, **call_kwargs):
