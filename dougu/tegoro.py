@@ -165,6 +165,13 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
     if kind == "contains_any":
         values = [str(value) for value in rule.get("values", [])]
         return any(value in answer for value in values), "答えに候補語"
+    if kind == "answer_regex":
+        pattern = str(rule.get("pattern") or "")
+        return bool(re.search(pattern, answer, re.IGNORECASE)), "答えに必要な数や名前がある"
+    if kind == "answer_not_contains_any":
+        values = [str(value).casefold() for value in rule.get("values", [])]
+        found = [value for value in values if value and value in answer.casefold()]
+        return not found, "答えに取得失敗の言葉がない" if not found else "答えに失敗の言葉: " + "・".join(found)
     if kind in {"listing", "count", "type_counts"}:
         path = Path(os.path.expanduser(str(rule.get("path") or "")))
         if not path.is_dir():
@@ -285,6 +292,10 @@ def _run(argv: list[str] | None = None) -> int:
             for row in selected:
                 if args.kata == "近道" and row.get("needs_30b"):
                     results.append({"row": row, "status": "SKIP", "answer": "30Bが必要な問いのため近道試験から除外", "actual": "—", "steps": 0, "seconds": 0.0, "approved": False, "checks": []})
+                    continue
+                if row.get("needs_automation") and os.environ.get("TEGORO_AUTOMATION") != "1":
+                    # System Events に問い合わせる問いは Mac の許可の画面が出ることがある。本人がいる時だけ回す（9/26）。
+                    results.append({"row": row, "status": "SKIP", "answer": "System Events を使うため TEGORO_AUTOMATION=1 の時だけ実行", "actual": "—", "steps": 0, "seconds": 0.0, "approved": False, "checks": []})
                     continue
                 if any(rule.get("type") == "platform" and platform.system().casefold() != str(rule.get("value")).casefold() for rule in row.get("kensa", [])):
                     results.append({"row": row, "status": "SKIP", "answer": "macOS 専用（このOSでは実行しない）", "actual": "—", "steps": 0, "seconds": 0.0, "approved": False, "checks": []})
