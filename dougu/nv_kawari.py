@@ -20,7 +20,8 @@ import urllib.request
 
 DEFAULT_UPSTREAM = "https://integrate.api.nvidia.com/v1/chat/completions"
 LOG = Path(__file__).resolve().parent / "kekka" / "nv_kawari.jsonl"
-DROP = {"grammar", "json_schema", "cache_prompt", "chat_template_kwargs",
+# chat_template_kwargs は渡す（kimi-k3 は enable_thinking=False で考えを省く。9/26 試し）
+DROP = {"grammar", "json_schema", "cache_prompt",
         "n_probs", "id_slot", "slot_id", "mirostat", "mirostat_tau",
         "mirostat_eta", "repeat_penalty", "repeat_last_n", "penalize_nl",
         "top_k", "min_p", "typical_p", "tfs_z", "n_keep", "n_predict",
@@ -99,11 +100,11 @@ def record(path, model, status, elapsed, attempts, usage, kind):
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
-def query(upstream, key, body, model, log=LOG, kind="kawari", delay=1):
+def query(upstream, key, body, model, log=LOG, kind="kawari", delay=1, tries=2):
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     start = time.monotonic()
     status, raw, attempts = 502, b"", 0
-    for attempt in (1, 2):
+    for attempt in range(1, tries + 1):
         attempts = attempt
         request = urllib.request.Request(
             upstream, data=data,
@@ -121,8 +122,8 @@ def query(upstream, key, body, model, log=LOG, kind="kawari", delay=1):
             raw = b'{"error":"upstream timeout"}' if timed_out else b'{"error":"upstream unavailable"}'
         if status not in (429, 502, 503, 504) and status < 500:
             break
-        if attempt == 1:
-            time.sleep(delay)
+        if attempt < tries:
+            time.sleep(delay * 2 ** (attempt - 1))
     usage = {}
     if status == 200:
         try:
@@ -135,9 +136,9 @@ def query(upstream, key, body, model, log=LOG, kind="kawari", delay=1):
     return status, raw
 
 
-def proxy_response(body, model, upstream, key, log=LOG, delay=1):
+def proxy_response(body, model, upstream, key, log=LOG, delay=1, tries=2):
     outgoing, grammar = prepare(body, model)
-    status, result = query(upstream, key, outgoing, model, log, delay=delay)
+    status, result = query(upstream, key, outgoing, model, log, delay=delay, tries=tries)
     if status == 200:
         for choice in result.get("choices", []):
             message = choice.get("message") or {}
@@ -164,7 +165,7 @@ def serve(model, port, upstream, key, log=LOG):
                 if size < 1 or size > 16 * 1024 * 1024:
                     raise ValueError("body size")
                 body = json.loads(self.rfile.read(size))
-                status, result = proxy_response(body, model, upstream, key, log)
+                status, result = proxy_response(body, model, upstream, key, log, delay=5, tries=5)
             except (ValueError, TypeError) as error:
                 status, result = 400, json.dumps({"error": str(error)}).encode()
             except Exception:
@@ -197,7 +198,7 @@ def judge(model, files, upstream, key, log=LOG):
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": f"ファイル名: {name}\nHTML:\n{html}"}],
                 "temperature": 0, "stream": False}
-            status, result = query(upstream, key, body, model, log, kind="hantei")
+            status, result = query(upstream, key, body, model, log, kind="hantei", delay=5, tries=5)
             if status != 200:
                 raise RuntimeError(f"upstream HTTP {status}")
             content = clean_content(result["choices"][0]["message"]["content"], True)

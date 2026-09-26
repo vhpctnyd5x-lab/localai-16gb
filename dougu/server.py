@@ -577,7 +577,7 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                         #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
                         import importlib, kyoudou as _kyoudou
                         _kyoudou = importlib.reload(_kyoudou)
-                        if _kyoudou.is_shortcut(text):
+                        if _kyoudou.is_shortcut(text, rireki=rireki):
                             _kyoudou.TOMERU = tomeru
                             print("  協働: 近道で答えます")
                             try:

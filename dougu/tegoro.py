@@ -114,8 +114,31 @@ def _filtered(visible: list[str], counts: dict[str, int], mode: str) -> tuple[li
     return visible, len(visible)
 
 
+_ROW = {"started": 0.0, "junbi": {}}   # 9/26: 問いごとの開始時刻と 前もって置いたファイル（html_new・html_grown が使う）
+
+
 def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], approvals: list[dict]) -> tuple[bool, str]:
     kind = rule.get("type")
+    if kind == "html_new":
+        # ファイル名は 30B が決める。問いの間に書かれ、言葉を含み、形の検査に通る .html があればよい。
+        import sakusei
+        folder = Path(os.path.expanduser(str(rule.get("dir") or "")))
+        words = [str(word) for word in rule.get("contains", [])]
+        for page in sorted(folder.glob("*.html")):
+            text = page.read_text(encoding="utf-8", errors="replace")
+            if page.stat().st_mtime >= _ROW["started"] - 1 and all(word in text for word in words) and sakusei.validate_html(text)[0]:
+                return True, f"新しいページ {page.name}"
+        return False, f"新しいページがない: {folder.name}/*.html（{'・'.join(words)}）"
+    if kind == "html_grown":
+        import sakusei
+        path = Path(os.path.expanduser(str(rule.get("path") or "")))
+        if not path.is_file():
+            return False, f"HTMLがない: {path.name}"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        before = _ROW["junbi"].get(str(path), "")
+        valid, reason = sakusei.validate_html(text)
+        grown = text != before and len(text) >= float(rule.get("min_ratio") or 1.3) * max(len(before), 1)
+        return valid and grown, f"{reason}・大きさ {len(before)}→{len(text)}字"
     if kind == "no_tools":
         used = [event for event in events if event.get("段階") in {"提案", "操作"}]
         return not used, "道具を使わず回答"
@@ -185,7 +208,9 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
         path = Path(os.path.expanduser(str(rule.get("path") or "")))
         match = re.search(str(rule.get("pattern") or ""), path.read_text(encoding="utf-8"))
         expected = match.group(1).strip() if match and match.groups() else (match.group(0) if match else "")
-        return bool(expected) and expected in answer, "ファイルから抽出した値"
+        # **太字** や「」などの飾りは比べない（9/26: 合言葉は **早い・安い・賢い** を kimi が正しく答えて不合格だった）
+        plain = lambda text: re.sub(r"[*_`「」『』\s]", "", text)
+        return bool(plain(expected)) and plain(expected) in plain(answer), "ファイルから抽出した値"
     if kind == "file_contains":
         path = Path(os.path.expanduser(str(rule.get("path") or "")))
         expected = str(rule.get("value") or "")
@@ -217,9 +242,13 @@ def _run(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     rows = [json.loads(line) for line in DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
+    def expected_kata(row: dict) -> list[str]:
+        value = row.get("kata")
+        return value if isinstance(value, list) else [str(value or "")]
+
     selected = [
         row for row in rows
-        if args.kata == "全部" or row.get("kata") == args.kata
+        if args.kata == "全部" or args.kata in expected_kata(row)
         or (args.kata == "近道" and row.get("needs_30b"))
     ]
     prior_env = {key: os.environ.get(key) for key in ("HOME", "KERNEL_PROJECT_DIR", "KERNEL_KIROKU_DIR", "KERNEL_WAZA_DIR", "KERNEL_LOCAL_URL")}
@@ -268,6 +297,12 @@ def _run(argv: list[str] | None = None) -> int:
                     return original_ask(prompt, *call_args, **call_kwargs)
 
                 kyoudou._ask_local = capture
+                _ROW["started"], _ROW["junbi"] = time.time(), {}
+                for item in row.get("junbi", []):
+                    target = Path(os.path.expanduser(str(item.get("path") or "")))
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(str(item.get("text") or ""), encoding="utf-8")
+                    _ROW["junbi"][str(target)] = str(item.get("text") or "")
                 started = time.monotonic()
                 try:
                     answer = kyoudou.kotaeru(str(row.get("toi") or ""), rireki=row.get("rireki"))
@@ -285,10 +320,14 @@ def _run(argv: list[str] | None = None) -> int:
                 actual = "近道" if any(event.get("段階") == "近道" for event in events) else "輪"
                 steps = len({event.get("手") for event in events if isinstance(event.get("手"), int) and event.get("手", 0) > 0})
                 checks = []
-                kata_ok = actual == row.get("kata")
-                checks.append((kata_ok, f"想定 {row.get('kata')} / 実際 {actual}"))
+                wanted_kata = "/".join(expected_kata(row))
+                kata_ok = actual in expected_kata(row)
+                checks.append((kata_ok, f"想定 {wanted_kata} / 実際 {actual}"))
                 for rule in row.get("kensa", []):
-                    ok, label = _check(rule, answer, events, prompts, approvals)
+                    try:
+                        ok, label = _check(rule, answer, events, prompts, approvals)
+                    except Exception as error:   # 採点の失敗で 試験全体を止めない（9/26 kimi で落ちた）
+                        ok, label = False, f"採点できない: {type(error).__name__}: {error}"
                     checks.append((ok, label))
                 passed = all(ok for ok, _label in checks)
                 results.append({"row": row, "status": "PASS" if passed else "FAIL", "answer": answer, "actual": actual, "steps": steps, "seconds": elapsed, "approved": bool(approvals), "checks": checks})
