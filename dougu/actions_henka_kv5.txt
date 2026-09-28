@@ -1,0 +1,4 @@
+# 5GB の中で KV と文脈を小さくして、重みの置き場を空ける（9/29、Codex の案）。土台は -c 8192・KV f16・fa off。枝 hakaru-henka-...-hkkv5 で走る。
+moto|--spec-type ngram-simple --spec-ngram-simple-size-m 16
+kvk8v4|--spec-type ngram-simple --spec-ngram-simple-size-m 16 -fa on -ctk q8_0 -ctv q4_0
+c4096_kvk8v4|--spec-type ngram-simple --spec-ngram-simple-size-m 16 -c 4096 -fa on -ctk q8_0 -ctv q4_0

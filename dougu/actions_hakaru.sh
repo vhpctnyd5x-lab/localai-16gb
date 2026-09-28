@@ -31,6 +31,8 @@ parse_branch(){
   fi
   if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q and -m2507 cannot be combined' >&2; return 2; fi
   if [[ "${b:0:12}" == hakaru-henka && "$b" =~ (^|-)henka(-|$) ]]; then HENKA_FILE=dougu/actions_henka.txt; else HENKA_FILE=""; fi
+  # 9/29: -hk名前 で比べる表を dougu/actions_henka_名前.txt にする（例 -hkkv5）
+  if [[ -n "$HENKA_FILE" && "$b" =~ (^|-)hk([A-Za-z0-9_]+)(-|$) ]]; then HENKA_FILE="dougu/actions_henka_${BASH_REMATCH[2]}.txt"; fi
   if [[ -z "${KAGIRI:-}" ]]; then
     if [[ "$b" =~ ^hakaru-zenbu(-|$) ]]; then KAGIRI=0
     elif [[ -n "$HENKA_FILE" ]]; then KAGIRI=16
@@ -398,6 +400,27 @@ if [[ -n "$TRANSFORM" ]]; then
   NEW_M="$W/transform_${JIKKEN}.gguf"
   PYTHONPATH="$W/llama.cpp/gguf-py${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" "$K/dougu/$TRANSFORM" "$M" "$NEW_M"
   rm -f "$M"; M="$NEW_M"; log "変換済み頭脳を使う: $TRANSFORM"
+fi
+
+# 3.5 disk の速さ（メモリ上限の時だけ）。上限の中では重みを disk から読み直すので、runner と Mac の差を見積もる（9/29）。
+if [[ -n "${MEM_GB:-}" ]]; then
+  { echo; echo "## disk（page cache を捨ててから読む）"; } >> "$OUT"
+  sync; echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+  python3 - "$M" >> "$OUT" <<'PY' || echo 'disk: 測れなかった' >> "$OUT"
+import os, random, sys, time
+path = sys.argv[1]; size = os.path.getsize(path); fd = os.open(path, os.O_RDONLY)
+head = min(size // 2, 2 << 30); done = 0; start = time.time()
+while done < head:
+    chunk = os.pread(fd, 16 << 20, done)
+    if not chunk: break
+    done += len(chunk)
+seq = done / (time.time() - start) / 1e9
+random.seed(0); count = 2000; block = 128 << 10; start = time.time()
+for _ in range(count):
+    os.pread(fd, block, random.randrange(head, size - block) // 4096 * 4096)
+took = time.time() - start
+print(f"続けて読む {seq:.2f} GB/s（先頭 {head >> 20} MiB）・飛び飛びに 128KiB を {count} 回 {count * block / took / 1e6:.0f} MB/s（{count / took:.0f} 回/秒）")
+PY
 fi
 
 # 4. 速さ（読み込み pp512・書き出し tg128、3回）
