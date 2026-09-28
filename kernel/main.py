@@ -169,7 +169,7 @@ def _machine_ask(kiken_do: str, cfg: dict):
         if kiken_do != "跡" and shounin.TOIKAKE is None and not cfg.get("確認", True):
             return True
         shirushi = "【戻せません】" if kiken_do == "跡" else ""
-        return shounin.kiku(f"{shirushi}{n} をします")
+        return shounin.kiku(f"{shirushi}{n} をします", risk="戻せない" if kiken_do == "跡" else "戻せる")
     return _ask
 
 

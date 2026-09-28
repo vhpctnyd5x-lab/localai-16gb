@@ -55,7 +55,7 @@ IDLE_LIMIT = 240
 # 窓が生きている限り畳まないので、万一の取りこぼし用に **絶対の上限** を置く。
 # 12 時間 合図が来なければ、窓が居ようと畳む（8.6GB を握ったまま何日も残らないため）。
 HARD_LIMIT = 12 * 3600
-PORT = 0                      # 空いている番号を OS に選んでもらう
+PORT = int(os.environ.get("KERNEL_PORT", "0"))  # 0 なら OS に選んでもらう
 
 # 画面と本体をつなぐ、ひとつぶんの状態
 CTX = {"設定": None, "記憶": None, "会話": [], "kernel": kernel}
@@ -64,7 +64,7 @@ _LOCK = threading.Lock()
 
 # ---------------------------------------------------------------- 手元のモデル
 
-_MODELS = os.path.join(os.path.expanduser("~"), "LocalAI_mirror", "models")
+_MODELS = os.environ.get("KERNEL_MODELS_DIR") or os.path.join(os.path.expanduser("~"), "LocalAI_mirror", "models")
 # ★ 2026-09-08: LocalAI改良 フォルダが LocalAI/ の下へ移動して、ここが
 #   行き止まりになっていた（＝手元の先生が立ち上がらない）。
 #   二度と同じことで壊れないよう、**心当たりを順に見て、在るものを使う**。
@@ -575,9 +575,25 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                     if michi == "kyoudou":
                         # ★ 2026-09-24 協働の輪（kyoudou.py）: 30B が 1手ずつ考え、カーネルが門番を通して動かして確かめる。
                         #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
-                        import importlib, kyoudou as _kyoudou
-                        _kyoudou = importlib.reload(_kyoudou)
-                        if _kyoudou.is_shortcut(text, rireki=rireki):
+                        import importlib
+                        _jiyuu = None
+                        if cfg.get("輪") == "新":
+                            # 写しでは dougu/、本番では kernel/ または koukai/dougu/ に置ける。
+                            for p in (os.path.join(os.path.dirname(HERE), "dougu"),
+                                      os.path.join(os.path.dirname(HERE), "koukai", "dougu")):
+                                if os.path.isdir(p) and p not in sys.path:
+                                    sys.path.append(p)
+                            try:
+                                _jiyuu = importlib.import_module("jiyuu")
+                                if not callable(getattr(_jiyuu, "kotaeru", None)):
+                                    raise ImportError("jiyuu.kotaeru がありません")
+                            except Exception as e:
+                                print(f"  新しい輪を読み込めません：{type(e).__name__}: {e}。旧に戻します")
+                                _jiyuu = None
+                        import kyoudou as _kyoudou
+                        if (_jiyuu is not None and _kyoudou.is_shortcut(text, rireki=rireki)
+                                and getattr(_jiyuu, "chikamichi_ok", lambda t: True)(text)):
+                            # 9/28: 時刻・電池・外付けなど一瞬で答えられる問いは、30B を起こさず近道で答える（速さはカーネル）。
                             _kyoudou.TOMERU = tomeru
                             print("  協働: 近道で答えます")
                             try:
@@ -585,18 +601,53 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                             finally:
                                 _kyoudou.TOMERU = None
                             print("答え：" + kotae)
-                        else:
+                        elif _jiyuu is not None:
                             ok, shirase = moderu_youi("local:main")
                             if not ok:
                                 print(f"\n  頭（30B）を起こせませんでした： {shirase}")
                             else:
+                                import kyoudou as _kyoudou
                                 _kyoudou.TOMERU = tomeru
-                                print("  協働: 30B が考え、カーネルが動かして確かめます")
+                                print("  協働: 新しい輪で進めます")
+                                try:
+                                    mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
+                                            else cfg.get("許可モード", "自動"))
+                                    args = {"rireki": rireki, "mode": mode}
+                                    def on_event(ev):
+                                        if isinstance(ev, dict) and ev.get("type") in ("tool_start", "tool_end", "note"):
+                                            q.put({"操作イベント": ev})
+                                    try:
+                                        kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
+                                    except TypeError as e:
+                                        if "on_event" not in str(e):
+                                            raise
+                                        kotae = _jiyuu.kotaeru(text, **args)
+                                finally:
+                                    _kyoudou.TOMERU = None
+                                print("答え：" + kotae)
+                        else:
+                            import kyoudou as _kyoudou
+                            _kyoudou = importlib.reload(_kyoudou)
+                            if _kyoudou.is_shortcut(text, rireki=rireki):
+                                _kyoudou.TOMERU = tomeru
+                                print("  協働: 近道で答えます")
                                 try:
                                     kotae = _kyoudou.kotaeru(text, rireki=rireki)
                                 finally:
                                     _kyoudou.TOMERU = None
                                 print("答え：" + kotae)
+                            else:
+                                ok, shirase = moderu_youi("local:main")
+                                if not ok:
+                                    print(f"\n  頭（30B）を起こせませんでした： {shirase}")
+                                else:
+                                    _kyoudou.TOMERU = tomeru
+                                    print("  協働: 30B が考え、カーネルが動かして確かめます")
+                                    try:
+                                        kotae = _kyoudou.kotaeru(text, rireki=rireki)
+                                    finally:
+                                        _kyoudou.TOMERU = None
+                                    print("答え：" + kotae)
                         kind = "協働"
                     elif S.is_command(text):
                         S.run(text, CTX); kind = "コマンド"
@@ -724,7 +775,7 @@ def state():
         "手元の一覧": moderu_ichiran(),
         "手元のいま": _IMA["key"],
         "手元は休止中": bool(_TATANDA[0]),
-        "会話": chats.listing(),
+        "会話": chats.listing(include_archived=True),
         "組": chats.groups(),
         # 削除は SQLite の soft delete。通常の一覧からは消すが、あとで戻せる。
         "ゴミ箱": [item for item in chats.listing(include_archived=True, include_deleted=True)
@@ -814,15 +865,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return h in ("127.0.0.1", "localhost", "::1", "")
 
     def _ok_origin(self):
-        """よそのページから叩かれていないことを確かめる"""
-        o = self.headers.get("Origin")
-        if not o:
-            return True                 # 同じページからの読み込みには付かない
+        """Origin があれば、このサーバーのポートまで照合する。"""
+        return self._same_origin(self.headers.get("Origin"))
+
+    def _same_origin(self, value):
+        if not value:
+            return True
         try:
-            u = urllib.parse.urlparse(o)
-        except Exception:
+            u = urllib.parse.urlparse(value)
+            port = self.server.server_address[1]
+            return (u.scheme == "http" and u.netloc in
+                    (f"127.0.0.1:{port}", f"localhost:{port}"))
+        except ValueError:
             return False
-        return u.hostname in ("127.0.0.1", "localhost", "::1")
+
+    def _ok_post(self):
+        if not self._ok_host():
+            return False
+        if not self._same_origin(self.headers.get("Origin")) or not self._same_origin(self.headers.get("Referer")):
+            return False
+        return secrets.compare_digest(self.headers.get("X-Token", ""), TOKEN)
 
     def _ok_token(self):
         """合言葉を、きっちり同じかどうかで確かめる。
@@ -891,6 +953,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json({"error": "合言葉が違います"}, 403)
             LAST_PING[0] = time.time()
             return self._json(state())
+        if path == "/settings":
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            choices = {"モード": ["本番", "練習"], "許可モード": ["手動", "自動", "バイパス"],
+                       "輪": ["新", "旧"], "考える深さ": [-1, 0, 1, 2, 3]}
+            schema = {k: {"説明": S._HELP.get(k, ""), "型": ("真偽" if isinstance(v, bool)
+                      else "数" if isinstance(v, int) else "一覧" if isinstance(v, list) else "文字"),
+                      "選択肢": choices.get(k, [])} for k, v in S.DEFAULTS.items()}
+            return self._json({"設定": CTX["設定"], "項目": schema})
         if path == "/commands":
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
@@ -913,7 +984,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(404, "ありません", "text/plain; charset=utf-8")
 
     def do_POST(self):
-        if not self._ok_token():
+        if not self._ok_post():
             return self._json({"error": "合言葉が違います"}, 403)
         n = int(self.headers.get("Content-Length", 0) or 0)
         if n > 4_000_000:
@@ -1328,6 +1399,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             k, v = body.get("鍵"), body.get("値")
             if k not in S.DEFAULTS:
                 return self._json({"error": "知らない設定です"}, 400)
+            choices = {"モード": ("本番", "練習"),
+                       "許可モード": ("手動", "自動", "バイパス"),
+                       "輪": ("新", "旧"), "考える深さ": (-1, 0, 1, 2, 3)}
+            if k in choices and (isinstance(v, bool) or v not in choices[k]):
+                return self._json({"error": "選べない値です"}, 400)
+            expected = S.DEFAULTS[k]
+            if (isinstance(expected, bool) and not isinstance(v, bool) or
+                isinstance(expected, int) and not isinstance(expected, bool) and (isinstance(v, bool) or not isinstance(v, int)) or
+                isinstance(expected, list) and (not isinstance(v, list) or not all(isinstance(x, str) for x in v)) or
+                isinstance(expected, str) and not isinstance(v, str)):
+                return self._json({"error": "値の種類が違います"}, 400)
+            if k == "会話の長さ" and not 1 <= v <= 100:
+                return self._json({"error": "会話の長さは1〜100にしてください"}, 400)
             CTX["設定"][k] = v
             if k not in S.NEVER_SAVE:
                 S.save(CTX["設定"])

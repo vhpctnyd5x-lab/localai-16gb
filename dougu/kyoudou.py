@@ -2591,13 +2591,13 @@ def _approve_if_needed(te: dict, risk: str) -> bool:
             + "\n試験結果: " + json.dumps(preview.get("試験結果"), ensure_ascii=False)
             + "\n--- tool.py ---\n" + str(preview.get("コード", ""))
         )
-        return shounin.kiku(bun)
+        return shounin.kiku(bun, risk=risk)
     if isinstance(te, dict) and "追加道具の実行" in te:
-        return shounin.kiku("登録済み追加道具を実行してよいですか。\n" + json.dumps(te["追加道具の実行"], ensure_ascii=False, indent=2))
+        return shounin.kiku("登録済み追加道具を実行してよいですか。\n" + json.dumps(te["追加道具の実行"], ensure_ascii=False, indent=2), risk=risk)
     if isinstance(te, dict) and "追加道具の効果" in te:
-        return shounin.kiku("追加道具の effects を実行してよいですか。\n" + json.dumps(te["追加道具の効果"], ensure_ascii=False, indent=2))
+        return shounin.kiku("追加道具の effects を実行してよいですか。\n" + json.dumps(te["追加道具の効果"], ensure_ascii=False, indent=2), risk=risk)
     description = _clip(json.dumps(_scrub(te), ensure_ascii=False), 300)
-    return shounin.kiku("協働の輪: 次の操作をしてよいですか: " + description)
+    return shounin.kiku("協働の輪: 次の操作をしてよいですか: " + description, risk=risk)
 
 
 def _permission_failure(history: list[dict]) -> bool:

@@ -1,0 +1,10 @@
+{"id": "J01", "toi": "~/Desktop に 作業メモ.txt を作って「明日の作業: 買い物」と書き、中身を読んで確認して", "check": {"type": "has", "path": "Desktop/作業メモ.txt", "text": "明日の作業"}}
+{"id": "J02", "toi": "~/Downloads の old.tmp をゴミ箱へ移し、元の場所から消えたか確かめて", "check": {"type": "trash", "path": "Downloads/old.tmp"}}
+{"id": "J03", "toi": "~/Documents/meeting.txt の締切を読み、答えて", "check": {"type": "answer", "text": "10月15日"}}
+{"id": "J04", "toi": "~/Documents の meeting.txt を ~/Desktop/整理 へ移し、確認して", "check": {"type": "exists", "path": "Desktop/整理/meeting.txt"}}
+{"id": "J05", "toi": "試験用の外付け ~/Volumes/TestSSD にある台帳.txt を探して中身を教えて", "check": {"type": "answer", "text": "外付け確認"}}
+{"id": "J06", "toi": "ターミナルで pwd を実行して結果を教えて", "check": {"type": "answer_home"}}
+{"id": "J07", "toi": "WebでPythonの公式ドキュメントを調べ、URLを1つ教えて", "check": {"type": "answer", "text": "python.org"}}
+{"id": "J08", "toi": "TextEditを開く命令を示し、試験用なので実行前に承認を求めて", "mode": "手動", "check": {"type": "approval"}}
+{"id": "J09", "toi": "Macの音量設定を読んで現在値を教えて", "check": {"type": "answer_regex", "pattern": "音量.{0,8}\\d+"}}
+{"id": "J10", "toi": "Macの音量を35に変えてから読み直して。試験用なので承認を求めて", "mode": "手動", "check": {"type": "approval"}}

@@ -37,7 +37,8 @@ ALIASES = {
     "ultra": "nvidia/nemotron-3-ultra-550b-a55b",      # いちばん賢い。遅い
     "fast":  "nvidia/nemotron-3.5-lightning-30b-a3b",  # 速い。軽い
     "code":  "openai/gpt-oss-120b",                    # プログラム向き
-    "deep":  "deepseek-ai/deepseek-v4-pro-0813",       # よく考える
+    "deep":  "deepseek-ai/deepseek-v4.1-flash",       # 9/28 実測で応答
+    "glm":   "z-ai/glm-5.3-flash",                    # 9/28 実測で応答
     # 2026-08-27 実測で、この鍵から呼べないもの（消した）:
     #   meta/llama-3.3-70b-instruct   → 410 提供終了
     #   z-ai/glm-5.2                  → 410 提供終了

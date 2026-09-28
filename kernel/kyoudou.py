@@ -1434,28 +1434,39 @@ def _run_command(
         return {"ok": False, "確認済み": False, "結果": _redact(error)}
 
 
+def _safe_range(start: str | None, end: str | None) -> tuple[int, int]:
+    """30B の行の指定を直して使う（0行目・逆順・広すぎ・数でない物は直す。読み取りを止めない。9/28）。"""
+    def number(value):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    first, last = number(start), number(end)
+    if first is None or first < 1:
+        first = 1
+    if last is None:
+        last = first + 199
+    if last < first:
+        first, last = (last, first) if last >= 1 else (first, first + 199)
+    if last - first > 500:
+        last = first + 500
+    return first, last
+
+
 def _line_range(text: str, start: str | None, end: str | None) -> str:
     if start is None and end is None:
         return text
-    first = int(start or "1")
-    last = int(end or str(first + 199))
-    if first < 1 or last < first:
-        raise ValueError("行番号の範囲が正しくありません")
-    if last - first > 500:
-        raise ValueError("一度に読む範囲は500行以内です")
+    first, last = _safe_range(start, end)
     lines = text.splitlines(keepends=True)
     return "".join(lines[first - 1:last])
 
 
 def _widen_line_range(text: str, start: str | None, end: str | None) -> tuple[int, int, bool]:
-    first = int(start or "1")
-    last = int(end or str(first + 199))
-    if first < 1 or last < first:
-        raise ValueError("行番号の範囲が正しくありません")
-    if last - first > 500:
-        raise ValueError("一度に読む範囲は500行以内です")
+    first, last = _safe_range(start, end)
     line_count = len(text.splitlines())
-    if first > line_count or last - first + 1 >= READ_CONTEXT_LINES:
+    if first > line_count:   # 終わりより先を指したら、終わりの側を見せる
+        return max(1, line_count - READ_CONTEXT_LINES + 1), max(1, line_count), True
+    if last - first + 1 >= READ_CONTEXT_LINES:
         return first, last, False
     width = min(READ_CONTEXT_LINES, line_count)
     center = (first + min(last, line_count)) // 2
@@ -1558,9 +1569,7 @@ def _read_file(
     archive_path = Path(path).resolve()
     is_kiroku = _inside_path(str(archive_path), str(KIROKU_DIR.resolve()))
     if len(text) <= READ_ALL_IF_UNDER_CHARS:
-        if start is not None or end is not None:
-            _line_range(text, start, end)
-        result_text = text
+        result_text = text   # 小さいファイルは範囲の指定に関係なく全部返す（範囲の誤りで止めない）
         if result_text and not result_text.endswith("\n"):
             result_text += "\n"
         result_text += "（全体を返しました）"
@@ -1602,7 +1611,7 @@ _MUTATING_REQUEST = re.compile(
 _COUNT_REQUEST = re.compile(r"いくつ|何個|何件|何枚|何本|何冊|何人|何ファイル|何フォルダ|何ディレクトリ|数を|数えて|数は|件数")
 _CONTENT_REQUEST = re.compile(
     r"何が|なにが|何.{0,2}ある|なに.{0,2}ある|入って|中身|一覧|どんな(?:もの|ファイル)?|"
-    r"何のファイル|なにのファイル|リスト|見せて|見たい|教えて|どれ"
+    r"何のファイル|なにのファイル|なんのファイル|リスト|見せて|見たい|教えて|どれ"
 )
 _LARGEST_REQUEST = re.compile(r"(?:一番|いちばん|最も).{0,5}大きい|大きい.{0,5}(?:ファイル|もの)|最大(?:の)?(?:ファイル)?|largest", re.IGNORECASE)
 _RECENT_REQUEST = re.compile(r"最近(?:に)?(?:変更|更新)された|最近|(?:直近|最新|新しい順|更新日時|変更日時|更新日|変更日|更新された|変更された)", re.IGNORECASE)
@@ -1790,6 +1799,56 @@ def _mac_system_shortcut(request: str) -> str | None:
     return "。".join(pieces) + "。"
 
 
+def _external_volume_request(request: str) -> bool:
+    return bool(re.search(r"外部\s*SSD|外付け|外部(?:の)?ディスク|外部ストレージ|USB.{0,4}(?:ディスク|ドライブ|メモリ)", request, re.IGNORECASE)
+                and re.search(r"つなが|繋が|接続|何が|なにが|一覧|教えて|ある|容量|空き", request))
+
+
+def _volume_is_internal(device: str) -> bool | None:
+    """diskutil で内蔵かを聞く。聞けない時は None（その時は起動ディスク以外を外付けとみなす）。"""
+    try:
+        import plistlib
+        out = subprocess.run(["diskutil", "info", "-plist", device], check=True, capture_output=True, timeout=5).stdout
+        value = plistlib.loads(out).get("Internal")
+        return bool(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _external_volumes_shortcut(request: str) -> str | None:
+    if not _external_volume_request(request):
+        return None
+    volumes = Path("/Volumes")
+    try:
+        mounted = {}
+        output = subprocess.run(["mount"], check=True, text=True, capture_output=True, timeout=5).stdout
+        for line in output.splitlines():
+            if " on " not in line or " (" not in line:
+                continue
+            device, rest = line.split(" on ", 1)
+            place, options = rest.rsplit(" (", 1)
+            mounted[place] = (device, options.split(",", 1)[0].rstrip(")"))
+        root_device = mounted.get("/", ("", ""))[0]
+        root_disk = re.match(r"/dev/(disk\d+)", root_device)
+        rows = []
+        for path in sorted(volumes.iterdir(), key=lambda item: item.name.casefold()):
+            if path.name.startswith(".") or path.is_symlink() or not path.is_dir() or str(path) not in mounted:
+                continue
+            device, format_name = mounted[str(path)]
+            disk = re.match(r"/dev/(disk\d+)", device)
+            if (root_disk and disk and disk.group(1) == root_disk.group(1)) or os.path.samefile(path, "/"):
+                continue
+            if _volume_is_internal(device) is True:   # BOOTCAMP など内蔵の別の区画は外付けではない
+                continue
+            usage = os.statvfs(path)
+            size = usage.f_blocks * usage.f_frsize / 1e9
+            free = usage.f_bavail * usage.f_frsize / 1e9
+            rows.append(f"{path.name}（形式 {format_name}、容量 {size:.1f}GB、空き {free:.1f}GB）")
+    except (OSError, subprocess.SubprocessError):
+        return "外部ボリュームを確認できませんでした。"
+    return "接続中の外部ボリューム: " + ("、".join(rows) if rows else "ありません") + "。"
+
+
 _MAC_STATE_LABELS = {
     "電池": "バッテリー残量",
     "開いているアプリ": "開いているアプリ",
@@ -1871,6 +1930,9 @@ def _quick_answer(request: str, session: str) -> str | None:
         return "どういたしまして。"
     if _has_mutating_request(request) and not _asks_running_apps_only(request):
         return None
+    answer = _external_volumes_shortcut(request)
+    if answer is not None:
+        return _with_source(answer, "/Volumes")
     answer = _folder_shortcut(request)
     if answer is not None:
         location = _folder_location(request)
@@ -2017,14 +2079,41 @@ def _asks_where_seen(request: str) -> bool:
     return bool(re.search(r"どこを見た|どこで確認|見た所|どこから", str(request or "")))
 
 
+def _self_reply(request: str, rireki: list[dict] | None) -> str | None:
+    text = str(request or "").strip()
+    if len(text) > 30:   # 長い頼みの中の「AI」「誰」は自分への問いではない
+        return None
+    if re.search(r"(?:あなた|君|きみ|お前)(?:は|って|が)?\s*(?:AI|ＡＩ|人工知能|人間|誰|だれ|何者|なにもの)", text, re.IGNORECASE) \
+            or re.fullmatch(r"(?:AI|ＡＩ)(?:なの|なん(?:です)?か|ですか)?[?？。!！]*", text, re.IGNORECASE):
+        return "はい、AI です。この Mac の中で動く Qwen3-30B とカーネルで答えています。"
+    if re.search(r"(?:AI|ＡＩ|あなた|君|きみ)が作った(?:の|んですか|のですか|ん)?[?？。!！]*$", text, re.IGNORECASE):
+        previous = next((str(turn.get("text") or "") for turn in reversed(rireki or [])
+                         if turn.get("role") == "assistant"), "")
+        if re.search(r"保存先:.*\.html|ページを作", previous, re.IGNORECASE):
+            return "はい。直前のページは、この Mac の中で動く AI（Qwen3-30B とカーネル）で作りました。"
+        return "私はこの Mac の中で動く AI（Qwen3-30B とカーネル）です。直前に作った記録はありません。"
+    return None
+
+
 def _source_from_history(rireki: list[dict] | None) -> str | None:
     for turn in reversed(rireki or []):
         if turn.get("role") != "assistant":
             continue
         match = re.search(r"[（(]見た所:\s*([^）)]+)[）)]", str(turn.get("text") or ""))
-        if match:
-            return match.group(1).strip()
+        return match.group(1).strip() if match else None
     return None
+
+
+def _restyle_page_path(request: str, rireki: list[dict] | None) -> Path | None:
+    if not re.search(r"かっこよくない|格好よくない|ダサい|見た目.{0,8}(?:悪い|直して)|デザイン.{0,8}(?:悪い|直して)", request):
+        return None
+    previous = next((str(turn.get("text") or "") for turn in reversed(rireki or [])
+                     if turn.get("role") == "assistant"), "")
+    match = re.search(r"保存先:\s*(~?/[^\s、。）」]+\.html?)", previous, re.IGNORECASE)
+    if not match:
+        return None
+    path = Path(os.path.expanduser(match.group(1)))
+    return path if path.is_file() and path.suffix.casefold() in {".html", ".htm"} else None
 
 
 def _implicit_folder_request(request: str, rireki: list[dict] | None) -> str | None:
@@ -2058,6 +2147,8 @@ def _base_shortcut(text: str) -> bool:
         return True
     if not request or (_has_mutating_request(request) and not _asks_running_apps_only(request)):
         return False
+    if _external_volume_request(request):
+        return True
     if _is_bare_recheck(request) or _asks_where_seen(request) or _DETAIL_REQUEST.search(request):
         return False
     if _folder_location(request) and (
@@ -2086,6 +2177,8 @@ def is_shortcut(text: str, rireki: list[dict] | None = None) -> bool:
         previous = _previous_user_request(rireki)
         return bool(previous and _base_shortcut(previous))
     if _asks_where_seen(request):
+        return True
+    if _self_reply(request, rireki) is not None:
         return True
     implicit = _implicit_folder_request(request, rireki)
     if implicit and _base_shortcut(implicit):
@@ -2498,13 +2591,13 @@ def _approve_if_needed(te: dict, risk: str) -> bool:
             + "\n試験結果: " + json.dumps(preview.get("試験結果"), ensure_ascii=False)
             + "\n--- tool.py ---\n" + str(preview.get("コード", ""))
         )
-        return shounin.kiku(bun)
+        return shounin.kiku(bun, risk=risk)
     if isinstance(te, dict) and "追加道具の実行" in te:
-        return shounin.kiku("登録済み追加道具を実行してよいですか。\n" + json.dumps(te["追加道具の実行"], ensure_ascii=False, indent=2))
+        return shounin.kiku("登録済み追加道具を実行してよいですか。\n" + json.dumps(te["追加道具の実行"], ensure_ascii=False, indent=2), risk=risk)
     if isinstance(te, dict) and "追加道具の効果" in te:
-        return shounin.kiku("追加道具の effects を実行してよいですか。\n" + json.dumps(te["追加道具の効果"], ensure_ascii=False, indent=2))
+        return shounin.kiku("追加道具の effects を実行してよいですか。\n" + json.dumps(te["追加道具の効果"], ensure_ascii=False, indent=2), risk=risk)
     description = _clip(json.dumps(_scrub(te), ensure_ascii=False), 300)
-    return shounin.kiku("協働の輪: 次の操作をしてよいですか: " + description)
+    return shounin.kiku("協働の輪: 次の操作をしてよいですか: " + description, risk=risk)
 
 
 def _permission_failure(history: list[dict]) -> bool:
@@ -3248,6 +3341,20 @@ def kotaeru(text: str, rireki: list[dict] | None = None) -> str:
                           if source else "記録では前の答えを確認していません。見た場所の記録はありません。")
                 _log_event(session, 0, "結果", {"ok": True, "確認済み": False, "結果": answer})
                 return _redact(answer)
+            answer = _self_reply(request, rireki)
+            if answer is not None:
+                _log_event(session, 0, "近道", {"答え": answer})
+                _log_event(session, 0, "結果", {"ok": True, "確認済み": False, "結果": answer})
+                return _redact(answer)
+            page = _restyle_page_path(request, rireki)
+            if page is not None:
+                instruction = ("元の題名・見出し・事実を残す。配色を2〜3色に整理し、余白と行間を広げ、"
+                               "カードの角丸・影・並びを具体的に作り直す。" + request)
+                result = _gate_and_run({"作る": {"path": str(page), "形式": "html", "指示": instruction}},
+                                       session=session, step=0, request=request)
+                answer = (f"ページの見た目を作り直しました（保存先: {_display_path(page)}）。"
+                          if result.get("ok") and result.get("確認済み") else str(result.get("結果") or "作り直せませんでした"))
+                return _redact(answer)
             if _is_bare_recheck(request):
                 previous = _previous_user_request(rireki)
                 if previous and _base_shortcut(previous):
@@ -3701,6 +3808,14 @@ def _self_test() -> None:
         assert any(call.args[2] == "近道" and call.args[1] == 0 for call in events.call_args_list)
         assert is_shortcut("ありがとう")
         assert kotaeru("ありがとう") == "どういたしまして。"
+        assert is_shortcut("あなたはAI？")
+        assert "Qwen3-30B とカーネル" in kotaeru("あなたはAI？")
+        assert _safe_range("0", "5") == (1, 5) and _safe_range("20", "5") == (5, 20) and _safe_range("x", None) == (1, 200)
+        assert _line_range("a\nb\nc\n", "3", "1") == "a\nb\nc\n"
+        for other in ("自分でAIを作る方法を教えて", "この曲を歌ってるのは誰なの？", "AIが作った曲を探して", "この人は何者？"):
+            assert _self_reply(other, None) is None, other
+        assert "作りました" in kotaeru("AIが作ったの？", [
+            {"role": "assistant", "text": "保存先: ~/Desktop/自己紹介.html"}])
         assert not ask.called
 
     with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
@@ -3723,6 +3838,20 @@ def _self_test() -> None:
         assert "（見た所: ~/Desktop）" in answer and not ask.called
         unknown = kotaeru("ほんとに？どこを見た？", rireki=history)
         assert "記録では" in unknown and "確認していません" in unknown
+        assert not ask.called
+
+    with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+        page = Path(temporary) / "自己紹介.html"
+        page.write_text("<html><title>花子</title><body>読書</body></html>", encoding="utf-8")
+        history = [{"role": "assistant", "text": f"保存先: {page}"}]
+        stack.enter_context(mock.patch.object(shounin, "hajimeru"))
+        stack.enter_context(mock.patch.object(shounin, "owaru"))
+        stack.enter_context(mock.patch(__name__ + "._log_event"))
+        ask = stack.enter_context(mock.patch(__name__ + "._ask_local"))
+        gate = stack.enter_context(mock.patch(__name__ + "._gate_and_run", return_value={"ok": True, "確認済み": True}))
+        assert "作り直しました" in kotaeru("全然かっこよくない。色と余白を直して", history)
+        assert gate.call_args.args[0]["作る"]["path"] == str(page)
+        assert "題名・見出し・事実を残す" in gate.call_args.args[0]["作る"]["指示"]
         assert not ask.called
 
     with ExitStack() as stack:

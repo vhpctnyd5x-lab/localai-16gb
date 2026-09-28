@@ -96,6 +96,7 @@ def build_profile(
     home: str | os.PathLike[str] | None = None,
     tmpdir: str | os.PathLike[str] | None = None,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    deny_unlink: bool = False,
 ) -> str:
     """risk と承認状態から SBPL profile を作る。"""
     if risk not in _RISKS:
@@ -141,6 +142,12 @@ def build_profile(
     for pattern in _PACKAGE_PATTERNS:
         lines.append(f'(deny file-write* (regex #"{pattern}"))')
 
+    if deny_unlink and risk in {"戻せる", "戻せない"}:
+        # 9/28: 新しい輪は、どの書き方でも消せない（rm・python の remove・mv も元を消すので止まる）。移動と削除はカーネルの move・trash で行う。
+        lines.append("(deny file-write-unlink)")
+        keep = ["/private/var/folders", "/private/tmp"] + ([os.path.realpath(tmpdir)] if tmpdir else [])
+        lines.append("(allow file-write-unlink " + " ".join(f"(subpath {_sbpl_string(p)})" for p in dict.fromkeys(keep)) + ")")
+
     if risk == "戻せない" and network_approved:
         lines.append("(allow network-outbound)")
 
@@ -174,6 +181,7 @@ def run(
     risk: str,
     network_approved: bool = False,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    deny_unlink: bool = False,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     env = kwargs.get("env")
@@ -184,6 +192,7 @@ def run(
         home=(env or os.environ).get("HOME"),
         tmpdir=(env or os.environ).get("TMPDIR"),
         protected_roots=protected_roots,
+        deny_unlink=deny_unlink,
     )
     try:
         completed = subprocess.run(

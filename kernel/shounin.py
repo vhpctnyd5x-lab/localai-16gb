@@ -40,7 +40,7 @@ def kotaeru(ident: str, kotae: str) -> bool:
         return True
 
 
-def kiku(bun: str, iu=None) -> bool:
+def kiku(bun: str, iu=None, risk: str | None = None) -> bool:
     """「bun をしていい？」と聞く。True=する。"""
     if JIDOU:
         if iu: iu("  ▶ %s（試験: 自動で許可）" % bun)
@@ -68,7 +68,7 @@ def kiku(bun: str, iu=None) -> bool:
     with _LOCK:
         _MACHI[ident] = {"event": ev, "答え": None, "文": bun, "時": time.time()}
     try:
-        TOIKAKE({"承認": {"id": ident, "文": bun}})
+        TOIKAKE({"承認": {"id": ident, "文": bun, "危険度": risk}})
         ok = ev.wait(MATSU_BYOU)
         with _LOCK:
             m = _MACHI.pop(ident, {})

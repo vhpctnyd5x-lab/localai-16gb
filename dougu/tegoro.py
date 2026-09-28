@@ -21,6 +21,82 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATA = ROOT / "monosashi" / "tegoro.jsonl"
 DEFAULT_REPORT = HERE / "kekka" / "tegoro.md"
+JIYUU_DATA = ROOT / "monosashi" / "jiyuu.jsonl"
+
+
+RUN_START = time.time()
+
+
+def _run_jiyuu(args) -> int:
+    """一時HOMEの10問を新しい輪へ渡す。実行時だけ30Bが必要。"""
+    import jiyuu
+    import kyoudou
+    rows = [json.loads(line) for line in JIYUU_DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
+    ids = {part.strip() for part in args.id.split(",") if part.strip()}
+    rows = [row for row in rows if not ids or row["id"] in ids]
+    results = []
+    saved = {key: os.environ.get(key) for key in ("HOME", "KERNEL_KIROKU_DIR", "KERNEL_HIKAE_DIR", "KERNEL_TSUIKA_DIR", "KERNEL_WAZA_DIR", "KERNEL_JIYUU_ROUTE")}
+    old_kiroku = kyoudou.KIROKU_DIR
+    old_hikae = kyoudou.HIKAE_DIR
+    old_approve = kyoudou._approve_if_needed
+    try:
+        with tempfile.TemporaryDirectory(prefix="koukai-jiyuu-") as temporary:
+            root = Path(temporary)
+            for row in rows:
+                home = root / row["id"] / "home"
+                home.mkdir(parents=True)
+                _fixture(home)
+                _write(home / "Volumes" / "TestSSD" / "台帳.txt", "外付け確認\n")
+                state = root / row["id"] / "state"
+                os.environ.update({"HOME": str(home), "KERNEL_KIROKU_DIR": str(state / "kiroku"),
+                                   "KERNEL_HIKAE_DIR": str(state / "hikae"), "KERNEL_TSUIKA_DIR": str(state / "tsuika"),
+                                   "KERNEL_WAZA_DIR": str(state / "waza"), "KERNEL_JIYUU_ROUTE": "試験"})
+                kyoudou.KIROKU_DIR = state / "kiroku"
+                kyoudou.HIKAE_DIR = state / "hikae"
+                approvals = []
+                def deny(te, risk):
+                    approvals.append(te)
+                    return False
+                kyoudou._approve_if_needed = deny
+                begun = time.monotonic()
+                try:
+                    answer = jiyuu.kotaeru(row["toi"], mode=row.get("mode", "自動"))
+                except Exception as error:
+                    answer = f"実行エラー: {type(error).__name__}: {error}"
+                seconds = round(time.monotonic() - begun, 3)
+                check = row["check"]
+                target = home / check.get("path", "")
+                kind = check["type"]
+                passed = (check.get("text", "") in answer if kind == "answer" else
+                          target.is_file() and check["text"] in target.read_text(encoding="utf-8") if kind == "has" else
+                          target.exists() if kind == "exists" else
+                          not target.exists() and any(p.name.startswith(target.name) for p in (home / ".Trash").glob("*")) if kind == "trash" else
+                          bool(approvals) if kind == "approval" else
+                          str(home) in answer if kind == "answer_home" else
+                          bool(re.search(check["pattern"], answer)) if kind == "answer_regex" else bool(answer.strip()))
+                keep = ROOT / "dougu" / "kekka" / "jiyuu_logs" / time.strftime("%m%d_%H%M", time.localtime(RUN_START)) / row["id"]   # 9/28: 一時の記録は消えるので、問ごとに残す
+                if (state / "kiroku").is_dir():
+                    shutil.copytree(state / "kiroku", keep, dirs_exist_ok=True)
+                if "上限に達しました" in answer or "時間切れ" in answer:
+                    passed = False   # 9/28: 終われなかった答えは、仕事が済んでいても失敗
+                results.append((row["id"], passed, seconds, answer))
+    finally:
+        kyoudou.KIROKU_DIR = old_kiroku
+        kyoudou.HIKAE_DIR = old_hikae
+        kyoudou._approve_if_needed = old_approve
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    output = Path(args.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# 新しい輪の10問", "", "| ID | 判定 | 秒 | 答え |", "|---|---|---:|---|"]
+    lines += [f"| {ident} | {'PASS' if ok else 'FAIL'} | {seconds} | {answer.replace('|', '｜').replace(chr(10), '<br>')} |" for ident, ok, seconds, answer in results]
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"jiyuu: PASS {sum(ok for _, ok, _, _ in results)} / FAIL {sum(not ok for _, ok, _, _ in results)}")
+    print(f"結果: {output}")
+    return 1 if any(not ok for _, ok, _, _ in results) else 0
 
 
 def _write(path: Path, value: str | bytes, mtime: float | None = None) -> None:
@@ -264,10 +340,15 @@ def _check(rule: dict, answer: str, events: list[dict], prompts: list[str], appr
 
 def _run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="箱庭でテストGを実行")
+    parser.add_argument("--wa", choices=("kyoudou", "jiyuu"), default="kyoudou")
     parser.add_argument("--kata", choices=("全部", "近道", "輪"), default="全部")
     parser.add_argument("--id", default="", help="実行するIDをカンマ区切りで指定")
     parser.add_argument("--output", default=str(DEFAULT_REPORT))
     args = parser.parse_args(argv)
+    if args.wa == "jiyuu":
+        if args.output == str(DEFAULT_REPORT):
+            args.output = str(HERE / "kekka" / "jiyuu.md")
+        return _run_jiyuu(args)
 
     rows = [json.loads(line) for line in DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
     def expected_kata(row: dict) -> list[str]:
