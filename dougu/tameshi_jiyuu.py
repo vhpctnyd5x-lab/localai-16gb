@@ -447,6 +447,26 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert "ネットを使う命令は承認が要ります" in seen[1][-1]["content"]
     checks += 1
 
+    # 飾りを除いた本文を優先し、検索語の前後200字だけを返す。
+    decorated = ("<html><head><title> Python Downloads </title><script>secret()</script></head>"
+                 "<body><nav>メニュー</nav><header>Notice: fallback</header><noscript>scripts did not run</noscript>"
+                 "<aside>広告</aside><main><h1>Latest Python 3.14.2</h1><form>検索欄</form>"
+                 "<article>Download Python 3.14.2</article><svg>装飾</svg></main>"
+                 "<footer>連絡先</footer></body></html>")
+    extracted = jiyuu._page_text(decorated)
+    assert extracted.startswith("題: Python Downloads\n") and "3.14.2" in extracted
+    assert all(word not in extracted for word in ("メニュー", "fallback", "scripts did not run", "広告", "検索欄", "装飾", "連絡先", "secret"))
+    assert jiyuu._page_text("<title>別題</title><body><nav>飾り</nav><div role='main'>本文</div></body>") == "題: 別題\n本文"
+    assert jiyuu._page_text("<title>題</title><body><nav>飾り</nav>本文</body>") == "題: 題\n本文"
+    assert len(jiyuu._page_text("<body><main>" + "文" * 4000 + "</main></body>")) == 3000
+    checks += 1
+
+    sample = "a" * 230 + "needle" + "b" * 230
+    assert jiyuu._page_text("<title>探す</title><body><main>" + sample + "</main></body>", "needle") == "題: 探す\n" + "a" * 200 + "needle" + "b" * 200
+    assert jiyuu._page_text("<title>探す</title><body><main>本文</main></body>", "missing") == "題: 探す\n見つかりませんでした"
+    assert jiyuu._page_text("<body><main>" + ("needle" + "x" * 401) * 6 + "</main></body>", "needle").count("needle") == 5
+    checks += 1
+
     # Chromeは独立profileで本文だけを返し、open/tabsは別入口。
     class FakeChrome:
         """9/28: 本物の Chrome は DOM を書いても終わらない。出力のファイルに書いて、止められるのを待つ形にする。"""
@@ -464,8 +484,30 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
             assert got["結果"] == "見える本文" and "--headless=new" in popen.call_args.args[0]
             assert "kernel-ai/chrome/read-" in next(x for x in popen.call_args.args[0] if x.startswith("--user-data-dir="))
             stopped.assert_called_once()
-    with mock.patch.object(jiyuu.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
+    jiyuu._outbound().request = "Chromeでhttps://example.org/を読んで"
+    with mock.patch.object(jiyuu.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as opened:
+        assert jiyuu._run("chrome", {"action": "open", "url": "https://example.org"}, "戻せる", "test") == {"ok": False, "結果": "読むだけなら chrome read を使ってください"}
+        opened.assert_not_called()
+        jiyuu._outbound().request = "Chromeでhttps://example.org/を開いて"
         assert jiyuu._run("chrome", {"action": "open", "url": "https://example.org"}, "戻せる", "test")["ok"]
+        opened.assert_called_once()
+    # 9/29: 頼まれていない open は、断らずに開かずに読む。
+    with mock.patch.object(jiyuu.subprocess, "run") as opened, \
+         mock.patch.object(jiyuu.subprocess, "Popen", side_effect=lambda *a, **k: FakeChrome(k["stdout"])), \
+         mock.patch.object(jiyuu.os, "killpg"):
+        replies = iter([{"content": "", "tool_calls": [call("chrome", action="open", url="https://example.org")]},
+                        {"content": "完了"}])
+        seen = []
+        def ask_open(messages, thinking=False, final=False):
+            seen.append(json.loads(json.dumps(messages)))
+            return next(replies)
+        with mock.patch.object(jiyuu, "_ask", side_effect=ask_open):
+            assert jiyuu.kotaeru("Chromeで https://example.org を読んで", mode="読むだけ") == "完了"
+        assert "見える本文" in seen[1][-1]["content"] and "開かずに読みました" in seen[1][-1]["content"]
+        opened.assert_not_called()
+        seen = conversation([call("chrome", action="open", url="https://example.org")], mode="読むだけ")
+        assert "読むだけの設定なので" in seen[1][-1]["content"]
+        opened.assert_not_called()
     with mock.patch("browser.tabs", return_value=[{"題": "例", "url": "https://example.org"}]):
         assert jiyuu._run("chrome", {"action": "tabs"}, "見る", "test")["結果"][0]["題"] == "例"
     checks += 1

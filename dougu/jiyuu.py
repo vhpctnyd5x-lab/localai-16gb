@@ -32,6 +32,7 @@ SYSTEM = ("あなたはMacの作業係。計画し、結果を見て日本語で
           "見つからなければfindでホーム以下を探す。変更後はfindかreadで確認。"
           "Macの状態はmac、指定ファイルはread、アプリはshのopen -a、設定はshのdefaults read。"
           "同じ手を繰り返さず、拒否を迂回しない。未知はshiru→web。"
+          "読んだ結果に無ければ『見つかりませんでした』。記憶で補わない。"
           "手順はskill、senseiは最後。道具なしで終了。")
 
 _OUTBOUND = threading.local()
@@ -43,6 +44,10 @@ def _outbound():
         _OUTBOUND.web_urls = set()
         _OUTBOUND.read_contents = []
     return _OUTBOUND
+
+
+def _chrome_open_requested():
+    return any(word in _outbound().request for word in ("開いて", "見せて", "表示", "タブ"))
 
 
 def _url_risk(url: str) -> str:
@@ -133,7 +138,7 @@ TOOLS = [
     _tool("skill", "手順を読む。", {"name": _s("スキル名")}, ["name"]),
     _tool("shiru", "学んだ知識を探す。", {"query": _s("知りたいこと")}, ["query"]),
     _tool("sensei", "道具の失敗2回後だけ外の先生へ相談。承認要。", {"question": _s("相談すること")}, ["question"]),
-    _tool("chrome", "Chromeで開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s("URL")}, ["action"]),
+    _tool("chrome", "Chromeで開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s("URL"), "find": _s("探す言葉")}, ["action"]),
 ]
 SPECS = {item["function"]["name"]: item["function"]["parameters"] for item in TOOLS}
 JOBS: dict[str, tuple[subprocess.Popen, Path, threading.Thread]] = {}
@@ -276,21 +281,21 @@ def _normalize(args: dict) -> dict:
 def _record(session, step, phase, data, route):
     gate._log_event(session, step, phase, {"輪": "jiyuu", "経路": route, **data})
 
-def _short(result, session, step):
+def _short(result, session, step, limit=1200):
     raw = json.dumps(result, ensure_ascii=False, default=str)
     gate._register_secret_values(raw)
     sensitive = (gate._SESSION_SECRET_DIRTY or gate._contains_secret_value(raw)
                  or gate._AUTH_URL.search(raw) or gate._CARD_NUMBER.search(raw))
     body = gate._redact(raw) if sensitive else raw
-    if len(body) <= 1200:
+    if len(body) <= limit:
         return body
     if sensitive:
-        return body[:1200]
+        return body[:limit]
     path = gate._kiroku_dir() / f"{session}_{step}_{uuid.uuid4().hex[:8]}_output.txt"
     path.write_text(body, encoding="utf-8")
     marker = f"\n… 全文: {path} …\n"
-    half = max(0, (1200 - len(marker)) // 2)
-    return body[:half] + marker + body[-(1200 - len(marker) - half):]
+    half = max(0, (limit - len(marker)) // 2)
+    return body[:half] + marker + body[-(limit - len(marker) - half):]
 
 def _compact(messages, hard=False):
     """文脈を 8192 の6割に保つ。30B が返した本当のトークン数で測る（日本語は1字≒1トークンで、字数の見積もりは甘かった）。"""
@@ -600,30 +605,53 @@ def _external_teachers(settei):
 
 
 class _BodyText(html.parser.HTMLParser):
+    _SKIP = {"nav", "header", "footer", "aside", "noscript", "script", "style", "svg", "form"}
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
     def __init__(self):
         super().__init__()
-        self.in_body = False
-        self.skip = 0
-        self.parts = []
+        self.stack = []
+        self.title_parts = []
+        self.body_parts = []
+        self.main_parts = []
 
     def handle_starttag(self, tag, attrs):
-        if tag == "body":
-            self.in_body = True
-        if tag in ("script", "style", "noscript"):
-            self.skip += 1
+        if tag not in self._VOID:
+            self.stack.append((tag, tag in ("main", "article") or str(dict(attrs).get("role") or "").lower() == "main"))
 
     def handle_endtag(self, tag):
-        if tag == "body":
-            self.in_body = False
-        if tag in ("script", "style", "noscript") and self.skip:
-            self.skip -= 1
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
 
     def handle_data(self, data):
-        if self.in_body and not self.skip and data.strip():
-            self.parts.append(data.strip())
+        if not data.strip() or any(tag in self._SKIP for tag, _ in self.stack):
+            return
+        if any(tag == "title" for tag, _ in self.stack):
+            self.title_parts.append(data)
+        elif any(tag == "body" for tag, _ in self.stack):
+            self.body_parts.append(data)
+            if any(focus for _, focus in self.stack):
+                self.main_parts.append(data)
 
 
-def _chrome_read(url):
+def _page_text(source, find=None):
+    parser = _BodyText()
+    parser.feed(source)
+    title = re.sub(r"\s+", " ", " ".join(parser.title_parts)).strip()
+    body = re.sub(r"\s+", " ", " ".join(parser.main_parts or parser.body_parts)).strip()
+    heading = f"題: {title}\n" if title else ""
+    if find and find.strip():
+        matches = list(re.finditer(re.escape(find.strip()), body, re.I))[:5]
+        if not matches:
+            return (heading + "見つかりませんでした")[:3000]
+        return (heading + "\n".join(body[max(0, match.start() - 200):match.end() + 200]
+                                    for match in matches))[:3000]
+    return (heading + body)[:3000]
+
+
+def _chrome_read(url, find=None):
     """専用 profile の headless Chrome でページを読む。
     9/28: Chrome は DOM を1〜4秒で書き終えても、子の process が出力を握ったまま終わらない。
     出力をファイルに受けて </html> が来たら止める（前は終わりを待って30秒で時間切れ）。"""
@@ -654,9 +682,7 @@ def _chrome_read(url):
         output = dom.read_bytes()
         if not output.strip():
             return {"ok": False, "結果": "Chromeでページを読めませんでした（30秒で出てきませんでした）"}
-        parser = _BodyText()
-        parser.feed(output.decode("utf-8", errors="replace"))
-        return {"ok": True, "結果": " ".join(parser.parts)[:2000]}
+        return {"ok": True, "結果": _page_text(output.decode("utf-8", errors="replace"), find)}
 
 
 def _run(name, args, risk, session, approved=False, settei=None):
@@ -675,11 +701,13 @@ def _run(name, args, risk, session, approved=False, settei=None):
     if name == "chrome":
         action = args["action"]
         if action == "open":
+            if not _chrome_open_requested():
+                return {"ok": False, "結果": "読むだけなら chrome read を使ってください"}
             completed = subprocess.run(["open", "-a", "Google Chrome", args["url"]],
                                        capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
             return {"ok": completed.returncode == 0, "結果": "Chromeで開きました" if completed.returncode == 0 else "Chromeで開けませんでした"}
         if action == "read":
-            return _chrome_read(args["url"])
+            return _chrome_read(args["url"], args.get("find"))
         import browser
         return {"ok": True, "結果": browser.tabs()}
     if name == "sh":
@@ -932,10 +960,14 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                     return "20手の上限に達しました。"
                 used += 1
                 ident = call.get("id") if isinstance(call, dict) else "call_" + uuid.uuid4().hex[:8]
-                name, args = None, None
+                name, args, as_read = None, None, False
                 try:
                     name, args = _valid(call)
                     args = _normalize(args)
+                    # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
+                    as_read = name == "chrome" and args.get("action") == "open" and not _chrome_open_requested()
+                    if as_read:
+                        args = {**args, "action": "read"}
                     signature = name + json.dumps(args, ensure_ascii=False, sort_keys=True)
                     risk = "同じ手" if signature in seen else _risk(name, args)
                     seen.add(signature)
@@ -981,10 +1013,12 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                     result = {"ok": False, "結果": gate._redact(error)}
                     if name != "sensei":
                         failures += 1
+                if as_read and result.get("ok"):
+                    result = {**result, "結果": "（開くのは頼まれていないので、開かずに読みました）\n" + str(result.get("結果", ""))}
                 if name is not None and args is not None:
                     _emit(on_event, {"type": "tool_end", "id": ident, "ok": bool(result.get("ok")),
                                      "summary": _display(result.get("結果", "完了"))})
-                tool_content = _short(result, session, step)
+                tool_content = _short(result, session, step, limit=3300 if name == "chrome" and args.get("action") == "read" else 1200)
                 _record(session, step, "結果", result, route)
                 messages.append({"role": "tool", "tool_call_id": ident, "content": tool_content})
             if used >= 16:
