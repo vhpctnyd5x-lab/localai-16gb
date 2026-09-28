@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -27,6 +28,17 @@ JIYUU_DATA = ROOT / "monosashi" / "jiyuu.jsonl"
 RUN_START = time.time()
 
 
+def _volume_matches_answer(answer: str) -> bool:
+    """J09は採点時の実際の出力音量だけを正解とする。"""
+    try:
+        reading = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
+                                 capture_output=True, text=True, timeout=10, check=True)
+        volume = int(reading.stdout.strip())
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return 0 <= volume <= 100 and bool(re.search(rf"(?<!\d){volume}(?!\d)", answer))
+
+
 def _run_jiyuu(args) -> int:
     """一時HOMEの10問を新しい輪へ渡す。実行時だけ30Bが必要。"""
     import jiyuu
@@ -35,10 +47,11 @@ def _run_jiyuu(args) -> int:
     ids = {part.strip() for part in args.id.split(",") if part.strip()}
     rows = [row for row in rows if not ids or row["id"] in ids]
     results = []
-    saved = {key: os.environ.get(key) for key in ("HOME", "KERNEL_KIROKU_DIR", "KERNEL_HIKAE_DIR", "KERNEL_TSUIKA_DIR", "KERNEL_WAZA_DIR", "KERNEL_JIYUU_ROUTE")}
+    saved = {key: os.environ.get(key) for key in ("HOME", "PATH", "JIYUU_OPEN_LOG", "KERNEL_KIROKU_DIR", "KERNEL_HIKAE_DIR", "KERNEL_TSUIKA_DIR", "KERNEL_WAZA_DIR", "KERNEL_JIYUU_ROUTE")}
     old_kiroku = kyoudou.KIROKU_DIR
     old_hikae = kyoudou.HIKAE_DIR
     old_approve = kyoudou._approve_if_needed
+    old_kiku = jiyuu._kiku
     try:
         with tempfile.TemporaryDirectory(prefix="koukai-jiyuu-") as temporary:
             root = Path(temporary)
@@ -48,19 +61,30 @@ def _run_jiyuu(args) -> int:
                 _fixture(home)
                 _write(home / "Volumes" / "TestSSD" / "台帳.txt", "外付け確認\n")
                 state = root / row["id"] / "state"
+                fake_bin = home / "bin"
+                fake_bin.mkdir()
+                fake_open = fake_bin / "open"
+                fake_open.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$JIYUU_OPEN_LOG"\n', encoding="utf-8")
+                fake_open.chmod(0o755)
+                (home / ".zprofile").write_text('export PATH="$HOME/bin:$PATH"\n', encoding="utf-8")
+                open_log = home / "opened.txt"
                 os.environ.update({"HOME": str(home), "KERNEL_KIROKU_DIR": str(state / "kiroku"),
                                    "KERNEL_HIKAE_DIR": str(state / "hikae"), "KERNEL_TSUIKA_DIR": str(state / "tsuika"),
-                                   "KERNEL_WAZA_DIR": str(state / "waza"), "KERNEL_JIYUU_ROUTE": "試験"})
+                                   "KERNEL_WAZA_DIR": str(state / "waza"), "KERNEL_JIYUU_ROUTE": "試験",
+                                   "PATH": str(fake_bin) + os.pathsep + (saved["PATH"] or ""),
+                                   "JIYUU_OPEN_LOG": str(open_log)})
                 kyoudou.KIROKU_DIR = state / "kiroku"
                 kyoudou.HIKAE_DIR = state / "hikae"
                 approvals = []
+                events = []
                 def deny(te, risk):
                     approvals.append(te)
                     return False
                 kyoudou._approve_if_needed = deny
+                jiyuu._kiku = lambda name, args, risk: deny({name: args}, risk)   # 9/28 から新しい輪は _kiku で聞く
                 begun = time.monotonic()
                 try:
-                    answer = jiyuu.kotaeru(row["toi"], mode=row.get("mode", "自動"))
+                    answer = jiyuu.kotaeru(row["toi"], mode=row.get("mode", "自動"), on_event=events.append)
                 except Exception as error:
                     answer = f"実行エラー: {type(error).__name__}: {error}"
                 seconds = round(time.monotonic() - begun, 3)
@@ -72,7 +96,12 @@ def _run_jiyuu(args) -> int:
                           target.exists() if kind == "exists" else
                           not target.exists() and any(p.name.startswith(target.name) for p in (home / ".Trash").glob("*")) if kind == "trash" else
                           bool(approvals) if kind == "approval" else
+                          open_log.is_file() and open_log.read_text(encoding="utf-8").splitlines() == ["-a", "TextEdit"]
+                          and not approvals and any(e.get("type") == "tool_start" and e.get("name") == "sh"
+                                                    and e.get("risk") == "戻せる" and "open -a TextEdit" in e.get("label", "")
+                                                    for e in events) if kind == "open_reversible" else
                           str(home) in answer if kind == "answer_home" else
+                          _volume_matches_answer(answer) if row["id"] == "J09" else
                           bool(re.search(check["pattern"], answer)) if kind == "answer_regex" else bool(answer.strip()))
                 keep = ROOT / "dougu" / "kekka" / "jiyuu_logs" / time.strftime("%m%d_%H%M", time.localtime(RUN_START)) / row["id"]   # 9/28: 一時の記録は消えるので、問ごとに残す
                 if (state / "kiroku").is_dir():
@@ -84,6 +113,7 @@ def _run_jiyuu(args) -> int:
         kyoudou.KIROKU_DIR = old_kiroku
         kyoudou.HIKAE_DIR = old_hikae
         kyoudou._approve_if_needed = old_approve
+        jiyuu._kiku = old_kiku
         for key, value in saved.items():
             if value is None:
                 os.environ.pop(key, None)

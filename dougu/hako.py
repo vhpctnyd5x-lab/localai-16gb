@@ -129,6 +129,8 @@ def build_profile(
     lines.append("(allow network-outbound (remote unix-socket))")
 
     if risk in {"戻せる", "戻せない"}:
+        # LaunchServices と Apple Events はアプリ操作に必要。見る profile には渡さない。
+        lines.extend(("(allow lsopen)", "(allow appleevent-send)"))
         lines.append("(allow file-write*)")
     else:
         write_paths = ['(literal "/dev/null")', '(literal "/dev/tty")']

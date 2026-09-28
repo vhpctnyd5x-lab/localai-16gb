@@ -17,6 +17,7 @@ import http.server
 import socketserver
 import subprocess
 import urllib.parse
+import gakushuu
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -60,6 +61,59 @@ PORT = int(os.environ.get("KERNEL_PORT", "0"))  # 0 なら OS に選んでもら
 # 画面と本体をつなぐ、ひとつぶんの状態
 CTX = {"設定": None, "記憶": None, "会話": [], "kernel": kernel}
 _LOCK = threading.Lock()
+_GAKUSHUU_PROCESS = None
+_GAKUSHUU_PROCESS_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _gakushuu_busy():
+    marker = gakushuu.folder() / "busy"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()), encoding="ascii")
+    try:
+        yield
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def _gakushuu_process(on):
+    global _GAKUSHUU_PROCESS
+    with _GAKUSHUU_PROCESS_LOCK:
+        if _GAKUSHUU_PROCESS and _GAKUSHUU_PROCESS.poll() is not None:
+            _GAKUSHUU_PROCESS = None
+        pid_file = gakushuu.folder() / "worker.pid"
+        try:
+            old_pid = int(pid_file.read_text(encoding="ascii"))
+        except (OSError, ValueError):
+            old_pid = None
+        if old_pid and (not _GAKUSHUU_PROCESS or old_pid != _GAKUSHUU_PROCESS.pid):
+            try:
+                command = subprocess.run(["/bin/ps", "-p", str(old_pid), "-o", "command="],
+                                         capture_output=True, text=True, timeout=3).stdout
+                if os.path.join(HERE, "gakushuu.py") in command:
+                    os.kill(old_pid, signal.SIGTERM)
+                    for _ in range(50):
+                        try:
+                            os.kill(old_pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        os.kill(old_pid, signal.SIGKILL)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if on and _GAKUSHUU_PROCESS is None:
+            _GAKUSHUU_PROCESS = subprocess.Popen([sys.executable, os.path.join(HERE, "gakushuu.py")],
+                                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                                 stderr=subprocess.DEVNULL)
+        elif not on and _GAKUSHUU_PROCESS is not None:
+            _GAKUSHUU_PROCESS.terminate()
+            try:
+                _GAKUSHUU_PROCESS.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _GAKUSHUU_PROCESS.kill()
+                _GAKUSHUU_PROCESS.wait(timeout=2)
+            _GAKUSHUU_PROCESS = None
 
 
 # ---------------------------------------------------------------- 手元のモデル
@@ -477,9 +531,11 @@ def _atatameru():
 
 def boot():
     cfg = S.load()
+    (gakushuu.folder() / "busy").unlink(missing_ok=True)
     CTX["設定"] = cfg
     S._apply(cfg, CTX)
     CTX["記憶"] = chat.Memory(cli.MEMDB)
+    _gakushuu_process(cfg.get("事前学習", {}).get("入", False))
     threading.Thread(target=_atatameru, daemon=True).start()
     return cfg
 
@@ -550,7 +606,7 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
     """handle_text と同じ道筋を、途中経過と文字を q に流しながら通る。
     ★ 画面の「止める」= tomeru。teachers は次のかたまりで接続を切る。"""
     import teachers as _T
-    with _LOCK, _temoto_tsukau():
+    with _LOCK, _gakushuu_busy(), _temoto_tsukau():
         t0 = time.time()
         cfg = CTX["設定"]
         keep = cfg.get("考える様子")
@@ -612,16 +668,22 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                                 try:
                                     mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
                                             else cfg.get("許可モード", "自動"))
-                                    args = {"rireki": rireki, "mode": mode}
+                                    args = {"rireki": rireki, "mode": mode, "settei": cfg}
                                     def on_event(ev):
                                         if isinstance(ev, dict) and ev.get("type") in ("tool_start", "tool_end", "note"):
                                             q.put({"操作イベント": ev})
                                     try:
                                         kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
                                     except TypeError as e:
-                                        if "on_event" not in str(e):
+                                        if "settei" not in str(e) and "on_event" not in str(e):
                                             raise
-                                        kotae = _jiyuu.kotaeru(text, **args)
+                                        args.pop("settei", None)
+                                        try:
+                                            kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
+                                        except TypeError as e2:
+                                            if "on_event" not in str(e2):
+                                                raise
+                                            kotae = _jiyuu.kotaeru(text, **args)
                                 finally:
                                     _kyoudou.TOMERU = None
                                 print("答え：" + kotae)
@@ -688,7 +750,7 @@ def _split_answer(out):
 
 def handle_text(text):
     """入力ひとつを処理して、画面に出す中身を返す"""
-    with _LOCK, _temoto_tsukau():
+    with _LOCK, _gakushuu_busy(), _temoto_tsukau():
         t0 = time.time()
         # 画面から使うときは、途中経過も必ず取る。
         # 吹き出しには出さず、右のターミナルに流すため
@@ -933,6 +995,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path in ("/skills", "/gakushuu"):
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            if path == "/skills":
+                return self._json({"スキル": gakushuu.skills()})
+            running = _GAKUSHUU_PROCESS is not None and _GAKUSHUU_PROCESS.poll() is None
+            return self._json(gakushuu.overview(CTX["設定"], running))
         if path in ("/", "/index.html"):
             if not self._ok_token():
                 return self._send(403, "合言葉が違います", "text/plain; charset=utf-8")
@@ -993,7 +1062,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
         except Exception:
             return self._json({"error": "読めませんでした"}, 400)
+        if not isinstance(body, dict):
+            return self._json({"error": "項目が違います"}, 400)
         path = self.path.split("?")[0]
+
+        if path == "/skills":
+            try:
+                return self._json(gakushuu.change_skill(body))
+            except (ValueError, OSError) as e:
+                return self._json({"error": str(e)}, 400)
+        if path == "/gakushuu":
+            try:
+                updated = gakushuu.validate(CTX["設定"].get("事前学習", {}), body)
+                CTX["設定"]["事前学習"] = updated
+                S.save(CTX["設定"])
+                _gakushuu_process(updated["入"])
+                running = _GAKUSHUU_PROCESS is not None and _GAKUSHUU_PROCESS.poll() is None
+                return self._json(gakushuu.overview(CTX["設定"], running))
+            except (ValueError, OSError) as e:
+                return self._json({"error": str(e)}, 400)
 
         if path == "/pick":
             # ★ ファイル・フォルダを **画面で選ぶ**（Mac の標準の窓）。場所を文字で打たせない。
@@ -1405,6 +1492,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if k in choices and (isinstance(v, bool) or v not in choices[k]):
                 return self._json({"error": "選べない値です"}, 400)
             expected = S.DEFAULTS[k]
+            if k == "事前学習":
+                try:
+                    v = gakushuu.validate(CTX["設定"].get(k, {}), v)
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 400)
             if (isinstance(expected, bool) and not isinstance(v, bool) or
                 isinstance(expected, int) and not isinstance(expected, bool) and (isinstance(v, bool) or not isinstance(v, int)) or
                 isinstance(expected, list) and (not isinstance(v, list) or not all(isinstance(x, str) for x in v)) or
@@ -1416,6 +1508,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if k not in S.NEVER_SAVE:
                 S.save(CTX["設定"])
             S._apply(CTX["設定"], CTX)
+            if k == "事前学習":
+                _gakushuu_process(v["入"])
             return self._json({"ok": True, "設定": CTX["設定"][k]})
 
         # ---- 気づいたこと（虫マーク）----
@@ -1581,6 +1675,7 @@ def serve():
         httpd.serve_forever()
     finally:
         httpd.server_close()
+        _gakushuu_process(False)
         _temoto_shimau()
 
 

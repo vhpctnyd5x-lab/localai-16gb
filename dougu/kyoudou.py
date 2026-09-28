@@ -8,6 +8,7 @@ import ast
 import datetime as dt
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -35,7 +36,12 @@ for _module_dir in (str(KERNEL_DIR), HERE):
         sys.path.insert(0, _module_dir)
 
 import computer
-import hako
+# computer が先に本番の hako を読み込んでも、この写しの門番は同じ場所の hako を使う。
+_hako_spec = importlib.util.spec_from_file_location("kyoudou_hako", Path(HERE) / "hako.py")
+if _hako_spec is None or _hako_spec.loader is None:
+    raise ImportError("hako.py を読み込めません")
+hako = importlib.util.module_from_spec(_hako_spec)
+_hako_spec.loader.exec_module(hako)
 import kazoeru
 import machine
 import shounin
@@ -702,34 +708,45 @@ def _path_candidates(
     return [os.path.realpath(lexical)]
 
 
+def _osascript_reads_only(argv: list[str]) -> bool:
+    return _osascript_risk(argv) == "見る"
+
+
+def _osascript_risk(argv: list[str]) -> str:
+    if len(argv) != 3 or argv[:2] != ["osascript", "-e"]:
+        return "戻せない"
+    script = argv[2].strip()
+    if re.search(r"(?i)\bdo\s+shell\s+script\b|\bempty\s+(?:the\s+)?trash\b", script):
+        return "禁止"
+    if re.search(r'(?is)tell\s+application\s+["\']?(?:Terminal|iTerm2?|System Events)["\']?', script) and re.search(r"(?i)\b(?:do\s+script|write\s+text|keystroke|key\s+code|click)\b", script):
+        return "禁止"
+    if re.search(r"(?i)\b(?:do\s+script|write\s+text|keystroke|key\s+code)\b", script):
+        return "禁止"
+    if re.search(r'[;\r\n]|\b(?:then|end\s+tell|delete|make|run\s+script)\b', script, re.I):
+        return "戻せない"
+    prefix = r'(?:tell\s+application\s+["\'][^"\']+["\']\s+to\s+)?'
+    if re.fullmatch(rf'(?is){prefix}(?:get|count)\s+(?:volume\s+settings|output\s+volume|current\s+date|name\s+of\s+(?:frontmost\s+application|front\s+window|every\s+application|application(?:\s+["\'][^"\']+["\'])?)|subject\s+of\s+messages?(?:\s+\d+)?\s+of\s+(?:inbox|mailbox\s+["\'][^"\']+["\'])|(?:count\s+of\s+)?(?:messages|unread\s+messages|windows|name\s+of\s+messages)(?:\s+of\s+(?:inbox|mailbox\s+["\'][^"\']+["\']|application\s+["\'][^"\']+["\']))?)', script) or script == 'output volume of (get volume settings)':
+        return "見る"
+    if re.fullmatch(rf'(?is){prefix}(?:activate|launch|quit)(?:\s+application\s+["\'][^"\']+["\'])?|set\s+volume\s+(?:output\s+volume\s+)?\d{{1,3}}|display\s+notification\s+["\'][^"\']*["\'](?:\s+with\s+title\s+["\'][^"\']*["\'])?', script):
+        return "戻せる"
+    return "戻せない"
+
+
 def _is_outbound_group(head: str, argv: list[str], dirty: bool) -> bool:
     lowered = [argument.casefold() for argument in argv]
     joined = " ".join(lowered)
-    urls = any(argument.startswith(("http://", "https://")) for argument in lowered)
-    if head in {"ssh", "scp", "sftp", "ftp", "nc", "netcat", "socat", "rsync"}:
+    if head in {"ssh", "scp", "sftp", "ftp", "nc", "netcat", "socat"}:
         return True
-    if head == "git" and len(lowered) > 1 and lowered[1] in {"push", "send-email"}:
+    if head == "rsync":
+        return any(argument.startswith("rsync://") or ":" in argument and not argument.startswith("-")
+                   for argument in lowered[1:])
+    if head == "git" and any(word in lowered[1:] for word in {"clone", "pull", "push", "fetch", "send-email"}):
         return True
     if head in {"mail", "mailx", "sendmail", "mutt", "msmtp", "imsg"}:
         return True
     if head in {"curl", "wget"}:
-        upload_flags = {
-            "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
-            "--form", "--form-string", "--upload-file", "--post-data",
-            "--post-file", "-t",
-        }
-        has_post = any(
-            argument in upload_flags
-            or argument.startswith(("--data=", "--form=", "--upload-file=", "--post-data="))
-            or argument in {"-x", "--request", "--method"}
-            and index + 1 < len(lowered)
-            and lowered[index + 1] in {"post", "put", "patch", "delete"}
-            or argument.startswith("-x")
-            and argument[2:] in {"post", "put", "patch", "delete"}
-            for index, argument in enumerate(lowered)
-        )
-        return has_post or (dirty and urls)
-    if head in {"open", "xdg-open", "start"} and urls:
+        return True
+    if head in {"pip", "pip3", "brew", "npm", "pnpm", "yarn"} and "install" in lowered[1:]:
         return True
     if head in {"pip", "pip3", "twine"} and any(word in lowered for word in ("upload", "publish", "push")):
         return True
@@ -957,7 +974,11 @@ def _command_analysis(command: str, depth: int = 0) -> tuple[str, bool]:
         ):
             secret_read = True
 
-        if head in {"kill", "killall", "pkill", "chmod", "chown", "chflags", "launchctl", "shutdown", "reboot", "defaults"}:
+        if head == "defaults" and len(argv) >= 2 and argv[1].casefold() in {"read", "domains", "find"}:
+            pass
+        elif head == "osascript" and _osascript_reads_only(argv):
+            pass
+        elif head in {"kill", "killall", "pkill", "chmod", "chown", "chflags", "launchctl", "shutdown", "reboot", "defaults"}:
             irreversible = True
             all_read_only = False
         elif head in {"python", "python3", "node", "nodejs", "ruby", "perl", "osascript"}:
@@ -966,23 +987,13 @@ def _command_analysis(command: str, depth: int = 0) -> tuple[str, bool]:
         elif _is_outbound_group(head, argv, _SESSION_SECRET_DIRTY or secret_read):
             irreversible = True
             all_read_only = False
-        elif head in {"curl", "wget"}:
-            if _SESSION_SECRET_DIRTY and any(
-                argument.startswith(("http://", "https://")) for argument in argv
-            ):
-                irreversible = True
-                all_read_only = False
-            elif any(
-                argument in {"-o", "--output", "-O", "--output-document"}
-                or argument.startswith(("--output=", "--output-document="))
-                for argument in argv
-            ):
-                changed = True
-                all_read_only = False
         elif head == "git" and len(argv) > 1 and argv[1].casefold() in {
             "push", "send-email", "reset", "clean", "restore", "checkout", "switch",
         }:
             irreversible = True
+            all_read_only = False
+        elif head == "open":
+            changed = True
             all_read_only = False
         elif head in _DELETE_COMMANDS:
             changed = True
@@ -1415,14 +1426,17 @@ def _run_command(
         if completed.stderr:
             output += ("\n" if output else "") + completed.stderr
         _register_secret_values(output)
+        network_blocked = _command_has_outbound(command) and not network_approved and (completed.returncode != 0 or not output.strip())
+        if network_blocked:
+            output = "ネットに出られませんでした（ネットを使う命令は承認が要ります。Web を読むなら web か chrome read）"
         result_text = output or ("出力なし" if completed.returncode == 0 else "命令が失敗しました")
         if len(result_text) > LONG_MATERIAL_CHARS:
             result_text = _material_result(result_text, "command_output", session, step)
         else:
             result_text = _redact(result_text)
         return {
-            "ok": completed.returncode == 0,
-            "確認済み": completed.returncode == 0,
+            "ok": completed.returncode == 0 and not network_blocked,
+            "確認済み": completed.returncode == 0 and not network_blocked,
             "終了コード": completed.returncode,
             "結果": result_text,
         }

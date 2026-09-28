@@ -5,6 +5,6 @@
 {"id": "J05", "toi": "試験用の外付け ~/Volumes/TestSSD にある台帳.txt を探して中身を教えて", "check": {"type": "answer", "text": "外付け確認"}}
 {"id": "J06", "toi": "ターミナルで pwd を実行して結果を教えて", "check": {"type": "answer_home"}}
 {"id": "J07", "toi": "WebでPythonの公式ドキュメントを調べ、URLを1つ教えて", "check": {"type": "answer", "text": "python.org"}}
-{"id": "J08", "toi": "TextEditを開く命令を示し、試験用なので実行前に承認を求めて", "mode": "手動", "check": {"type": "approval"}}
+{"id": "J08", "toi": "TextEditを open -a で開き、開けたか教えて", "check": {"type": "open_reversible"}}
 {"id": "J09", "toi": "Macの音量設定を読んで現在値を教えて", "check": {"type": "answer_regex", "pattern": "音量.{0,8}\\d+"}}
 {"id": "J10", "toi": "Macの音量を35に変えてから読み直して。試験用なので承認を求めて", "mode": "手動", "check": {"type": "approval"}}

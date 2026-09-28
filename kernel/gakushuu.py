@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""会話を邪魔せず Wikipedia と記録から知識・技の候補を貯める。"""
+import json
+import fcntl
+import hashlib
+import os
+import re
+import socket
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = Path.home() / "Library" / "Application Support" / "kernel-ai"
+DEFAULT = {"入": False, "上限MB": 2048, "充電中だけ": True,
+           "出どころ": {"Wikipedia": True, "振り返り": True},
+           "振り返りで外の先生に聞く": False, "会話の言葉から学ぶ題を選ぶ": False}
+
+
+def folder():
+    return Path(os.environ.get("KERNEL_GAKUSHUU_DIR", ROOT / "gakushuu"))
+
+
+def skills_folder():
+    return Path(os.environ.get("KERNEL_SKILLS_DIR", ROOT / "skills"))
+
+
+def _read(path, default):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def _write(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _state():
+    return _read(folder() / "state.json", {})
+
+
+def _log(message):
+    p = folder() / "log.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() and p.stat().st_size >= 5 * 1024 * 1024:
+        os.replace(p, p.with_suffix(".jsonl.1"))
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"時刻": time.strftime("%Y-%m-%d %H:%M:%S"), "文": str(message)}, ensure_ascii=False) + "\n")
+
+
+def _status(message, **more):
+    s = _state()
+    s.update({"いま": message, "更新": time.time(), **more})
+    _write(folder() / "state.json", s)
+
+
+def _db():
+    p = folder() / "chishiki.sqlite3"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(p, timeout=5)
+    db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chishiki USING fts5(title, text, source UNINDEXED, url UNINDEXED, added UNINDEXED)")
+    return db
+
+
+def used_bytes():
+    total = 0
+    for p in folder().rglob("*"):
+        if p.is_file():
+            total += p.stat().st_size
+    for p in skills_folder().glob("*.md"):
+        try:
+            if (item := _parse_skill(p, "本人")) and item["made_by"] == "カーネル":
+                total += p.stat().st_size
+        except (OSError, UnicodeError):
+            pass
+    return total
+
+
+def charging():
+    try:
+        result = subprocess.run(["pmset", "-g", "batt"], capture_output=True,
+                                text=True, timeout=3, check=True)
+        return "AC Power" in result.stdout or "charging" in result.stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _names():
+    with _db() as db:
+        return {r[0] for r in db.execute("SELECT title FROM chishiki")}
+
+
+def _recent_topics():
+    import kyoudou as gate
+    out = []
+    dbpath = Path(os.environ.get("KERNEL_CHATS_DB", ROOT / "chats.sqlite3"))
+    if dbpath.exists():
+        try:
+            with sqlite3.connect(f"file:{dbpath}?mode=ro", uri=True, timeout=2) as db:
+                out += [r[0] for r in db.execute("SELECT text FROM turns WHERE role='user' ORDER BY id DESC LIMIT 30")]
+        except (OSError, sqlite3.Error):
+            pass
+    out += [x["題"] for x in _records()[:20] if x.get("題")]
+    safe = []
+    for line in out:
+        if (re.search(r'(?:~|/)[^\s、。，]+|\b[^\s/]+\.[A-Za-z0-9]{1,8}\b', line)
+                or gate._looks_sensitive_content(line) or gate._contains_secret_value(line)):
+            continue
+        safe += re.findall(r"[一-龥ァ-ヶー]{2,14}", gate._scrub(line))
+    return safe[:100]
+
+
+def _records():
+    base = Path(os.environ.get("KERNEL_KIROKU_DIR", HERE / "kiroku"))
+    if not base.is_dir():
+        return []
+    found = []
+    for p in sorted(base.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)[:80]:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines() if p.suffix == ".jsonl" else [p.read_text(encoding="utf-8")]
+            request = ""
+            if p.suffix == ".jsonl":
+                for first in lines[:5]:
+                    event = json.loads(first)
+                    if event.get("段階") == "開始":
+                        request = str((event.get("内容") or {}).get("依頼", ""))
+                        break
+            for line in lines[-30:]:
+                obj = json.loads(line)
+                content = json.dumps(obj, ensure_ascii=False)
+                detail = obj.get("内容") if isinstance(obj.get("内容"), dict) else {}
+                slow = (any(k in content for k in ("timeout", "時間切れ", "遅い", "遅かった"))
+                        or isinstance(detail.get("ミリ秒"), (int, float)) and detail["ミリ秒"] >= 30000)
+                bad = (any(k in content for k in ("失敗", "error", "例外", "拒否"))
+                       or obj.get("段階") == "結果" and detail.get("ok") is False)
+                if not (slow or bad):
+                    continue
+                topic = str(request or obj.get("入力") or obj.get("質問") or obj.get("題") or detail.get("入力", ""))[:200]
+                ident = hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+                tools = [str(x.get("内容", {}).get("道具", "")) for x in map(json.loads, lines)
+                         if isinstance(x.get("内容"), dict) and x.get("段階") == "提案"]
+                found.append({"題": topic, "文": content[:2500], "道具": [x for x in tools if x],
+                              "成否": "失敗" if bad else "遅い", "識別": p.name + ":" + ident})
+        except (OSError, ValueError, TypeError):
+            continue
+    return found
+
+
+def _topic(state, known, use_conversation=False):
+    import crawler
+    queue = list(state.get("次の題", [])) + (_recent_topics() if use_conversation else []) + crawler.SEEDS
+    for title in queue:
+        title = str(title).strip()[:80]
+        if title and title not in known and title not in state.get("見た題", []) and "/" not in title:
+            return title
+    return None
+
+
+def learn_once(cfg, *, wiki_module=None):
+    """1記事だけ。外部依存は試験時に差し替え可能。"""
+    if wiki_module is None:
+        import wiki as wiki_module
+        # wiki.py の共通キャッシュも学習の置き場に寄せ、本体のフォルダを書き換えない。
+        wiki_module.CACHE = str(folder() / "wiki_cache.json")
+    opts = cfg.get("事前学習", DEFAULT)
+    if (folder() / "busy").exists():
+        _status("会話中なので休み")
+        return False
+    if opts.get("充電中だけ", True) and not charging():
+        _status("充電を待っています")
+        return False
+    limit = opts.get("上限MB", 2048) * 1024 * 1024
+    if used_bytes() >= limit:
+        _status("容量の上限で休み")
+        return False
+    known = _names()
+    state = _state()
+    title = _topic(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
+    if not title:
+        _status("次の題を待っています")
+        return False
+    # wiki.py が User-Agent と2秒以上の間隔を管理する。
+    article = wiki_module.ask(title, chars=5000)
+    if not article or not article.get("本文"):
+        _status("記事が見つかりません", 最後の題=title,
+                見た題=(state.get("見た題", []) + [title])[-500:])
+        _log(f"記事なし: {title}")
+        return False
+    actual = article.get("題", title)
+    body = article["本文"]
+    if actual in known:
+        _status("既に覚えた記事", 見た題=(state.get("見た題", []) + [title])[-500:])
+        return False
+    if used_bytes() + len(body.encode("utf-8")) + 8192 > limit:
+        _status("容量の上限で休み")
+        return False
+    with _db() as db:
+        if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (actual,)).fetchone():
+            return False
+        db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
+                   (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
+    remaining = [x for x in state.get("次の題", []) if x != title]
+    remaining += [x for x in article.get("ほかの候補", []) if isinstance(x, str) and x not in known]
+    _log(f"Wikipedia: {actual}")
+    _status(f"記事を覚えた: {actual}", 最後の題=actual, 次の題=remaining[:100],
+            見た題=(state.get("見た題", []) + [title])[-500:])
+    return True
+
+
+def _skill_name(name):
+    if (not isinstance(name, str) or not name.strip() or len(name) > 40
+            or "/" in name or "\\" in name or ".." in name
+            or any(ord(c) < 32 for c in name)):
+        raise ValueError("名前は40字以内で、/ や .. を含めないでください")
+    return name.strip()
+
+
+def _parse_skill(path, place):
+    raw = path.read_text(encoding="utf-8")
+    m = re.match(r"\A---\n(.*?)\n---\n?(.*)\Z", raw, re.S)
+    if not m:
+        return None
+    meta = dict(line.split(":", 1) for line in m[1].splitlines() if ":" in line)
+    meta = {k.strip(): v.strip() for k, v in meta.items()}
+    if meta.get("name", path.stem) != path.stem:
+        return None
+    return {"name": meta.get("name", path.stem), "description": meta.get("description", ""),
+            "on": meta.get("on") == "true", "made_by": meta.get("made_by", "最初から"),
+            "body": m[2], "場所": place}
+
+
+def skills():
+    out = {}
+    for base, place in ((HERE / "skills", "最初から"), (skills_folder(), "本人")):
+        if base.is_dir():
+            for p in sorted(base.glob("*.md")):
+                try:
+                    item = _parse_skill(p, place)
+                    if item:
+                        out[p.stem] = item
+                except (OSError, UnicodeError):
+                    pass
+    return list(out.values())
+
+
+def _skill_text(name, description, on, made_by, body):
+    if not isinstance(description, str) or "\n" in description or "\r" in description or len(description) > 60:
+        raise ValueError("説明は1行60字以内です")
+    if not isinstance(body, str):
+        raise ValueError("本文は文字にしてください")
+    return f"---\nname: {name}\ndescription: {description}\non: {str(on).lower()}\nmade_by: {made_by}\n---\n{body}"
+
+
+def change_skill(body):
+    action = body.get("動き")
+    name = _skill_name(body.get("name"))
+    original = next((s for s in skills() if s["name"] == name), None)
+    user_path = skills_folder() / (name + ".md")
+    if action == "保存":
+        description = body.get("description", original["description"] if original else "")
+        text = body.get("body", original["body"] if original else "")
+        on = body.get("on", original["on"] if original else True)
+        if not isinstance(on, bool):
+            raise ValueError("on は真偽値にしてください")
+        made_by = original["made_by"] if original and original["made_by"] == "カーネル" else "本人"
+    elif action in ("切替", "ゴミ箱"):
+        if not original:
+            raise ValueError("そのスキルはありません")
+        description, text, made_by = original["description"], original["body"], original["made_by"]
+        on = body.get("on", not original["on"]) if action == "切替" else False
+        if not isinstance(on, bool):
+            raise ValueError("on は真偽値にしてください")
+        if action == "ゴミ箱" and user_path.exists():
+            trash = Path(os.environ.get("KERNEL_TRASH_DIR", Path.home() / ".Trash"))
+            trash.mkdir(parents=True, exist_ok=True)
+            target = trash / user_path.name
+            i = 1
+            while target.exists():
+                target = trash / f"{name}-{i}.md"
+                i += 1
+            shutil.move(str(user_path), str(target))
+            return {"ok": True, "スキル": skills()}
+    else:
+        raise ValueError("動きが違います")
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(_skill_text(name, description, on, made_by, text), encoding="utf-8")
+    return {"ok": True, "スキル": skills()}
+
+
+def reflect_once(cfg, *, ask=None, network=None):
+    opts = cfg.get("事前学習", DEFAULT)
+    if not opts.get("出どころ", {}).get("振り返り"):
+        return False
+    state = _state()
+    if time.time() - state.get("最後の提案時刻", 0) < 3600:
+        return False
+    seen = set(state.get("見た記録", []))
+    record = next((r for r in _records() if r["識別"] not in seen), None)
+    if not record:
+        return False
+    if not opts.get("振り返りで外の先生に聞く", False):
+        _write(folder() / "state.json", {**state, "見た記録": (list(seen) + [record["識別"]])[-100:]})
+        _log("手元で振り返り: " + record.get("成否", "記録あり"))
+        return True
+    if not cfg.get("先生を使う"):
+        return False
+    external = [x for x in (cfg.get("先生") or [])
+                if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
+    if not external:
+        return False
+    if network is None:
+        try:
+            socket.create_connection(("ja.wikipedia.org", 443), timeout=3).close()
+            network = True
+        except OSError:
+            network = False
+    if not network:
+        return False
+    if ask is None:
+        import sensei
+        ask = sensei.kiku
+    import kyoudou as gate
+    request = record.get("題", "")
+    gate._register_secret_values(request)
+    request = re.sub(r'(?:~|/)[^\s、。，]+|\b[^\s/]+\.[A-Za-z0-9]{1,8}\b', "[ファイル]", request)
+    request = gate._scrub(request)
+    tool_names = [name for name in record.get("道具", []) if re.fullmatch(r"[A-Za-z_]{1,30}", name)]
+    question = ("次に同じ頼みが来た時の具体的な手順を日本語で短く提案してください。\n"
+                + "依頼: " + request + "\n道具: " + ", ".join(tool_names)
+                + "\n成否: " + record.get("成否", "不明"))
+    question = gate._scrub(question)
+    response = ask(question, {**cfg, "先生": external}, timeout=60)
+    answer = str(response.get("答え", "")).strip()
+    state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
+    _write(folder() / "state.json", state)
+    if not answer or response.get("error"):
+        return False
+    # 同じ本文の提案はファイル名が違っても重ねない。
+    if any(s["body"].strip() == answer for s in skills()):
+        return False
+    stem = re.sub(r"[^一-龥ぁ-んァ-ヶー\w-]", "", record["題"])[:28] or "振り返り"
+    existing = {s["name"] for s in skills()}
+    name = stem
+    i = 2
+    while name in existing:
+        name = f"{stem}-{i}"
+        i += 1
+    path = skills_folder() / (name + ".md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    skill_text = _skill_text(name, "失敗した頼みを次に進める手順", False, "カーネル", answer)
+    if used_bytes() + len(skill_text.encode("utf-8")) > opts.get("上限MB", 2048) * 1024 * 1024:
+        return False
+    path.write_text(skill_text, encoding="utf-8")
+    _log(f"技を提案: {name}")
+    _status(f"技を提案: {name}", 最後の提案時刻=time.time())
+    return True
+
+
+def overview(cfg, running=False):
+    opts = {**DEFAULT, **cfg.get("事前学習", {})}
+    try:
+        with _db() as db:
+            count = db.execute("SELECT count(*) FROM chishiki").fetchone()[0]
+    except sqlite3.Error:
+        count = 0
+    try:
+        lines = _tail_lines(folder() / "log.jsonl", 20)
+        logs = [_read_line(line) for line in lines]
+    except OSError:
+        logs = []
+    return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
+            "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills())},
+            "使った容量MB": round(used_bytes() / 1024 / 1024, 2), "上限MB": opts["上限MB"],
+            "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
+            "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
+            "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"], "記録": logs}
+
+
+def _tail_lines(path, count):
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        end = stream.tell()
+        data = b""
+        while end > 0 and data.count(b"\n") <= count:
+            size = min(4096, end)
+            end -= size
+            stream.seek(end)
+            data = stream.read(size) + data
+    return data.decode("utf-8", errors="replace").splitlines()[-count:]
+
+
+def _read_line(line):
+    try:
+        obj = json.loads(line)
+        return obj.get("文", line)
+    except ValueError:
+        return line
+
+
+def validate(current, patch):
+    if not isinstance(patch, dict) or any(k not in DEFAULT for k in patch):
+        raise ValueError("設定の項目が違います")
+    value = {**DEFAULT, **current}
+    for key in ("入", "充電中だけ", "振り返りで外の先生に聞く", "会話の言葉から学ぶ題を選ぶ"):
+        if key in patch and not isinstance(patch[key], bool):
+            raise ValueError(f"{key} は真偽値にしてください")
+    if "上限MB" in patch and (isinstance(patch["上限MB"], bool) or not isinstance(patch["上限MB"], int) or not 1 <= patch["上限MB"] <= 102400):
+        raise ValueError("上限MB は1〜102400にしてください")
+    if "出どころ" in patch:
+        src = patch["出どころ"]
+        if not isinstance(src, dict) or any(k not in DEFAULT["出どころ"] or not isinstance(v, bool) for k, v in src.items()):
+            raise ValueError("出どころの値が違います")
+        value["出どころ"] = {**value.get("出どころ", {}), **src}
+    value.update({k: v for k, v in patch.items() if k != "出どころ"})
+    return value
+
+
+def run():
+    directory = folder()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = (directory / "worker.lock").open("a+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return
+    (directory / "worker.pid").write_text(str(os.getpid()), encoding="ascii")
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    def stop(_signal, _frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    import settings
+    try:
+        while True:
+            started = time.monotonic()
+            try:
+                cfg = settings.load()
+                if not cfg.get("事前学習", {}).get("入"):
+                    break
+                opts = cfg["事前学習"]
+                if (folder() / "busy").exists():
+                    _status("会話中なので休み")
+                elif opts.get("充電中だけ", True) and not charging():
+                    _status("充電を待っています")
+                elif used_bytes() >= opts.get("上限MB", 2048) * 1024 * 1024:
+                    _status("容量の上限で休み")
+                else:
+                    if opts.get("出どころ", {}).get("Wikipedia", True):
+                        learn_once(cfg)
+                    reflect_once(cfg)
+            except Exception as e:
+                _log(f"例外: {type(e).__name__}: {e}")
+                _status("失敗を記録し、次を待っています")
+            time.sleep(max(1, 2 - (time.monotonic() - started)))
+    finally:
+        _status("停止中")
+        (directory / "worker.pid").unlink(missing_ok=True)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+if __name__ == "__main__":
+    run()

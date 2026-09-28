@@ -657,6 +657,15 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
 .sheet{max-height:80vh}.settings-layout{min-height:0;max-height:calc(80vh - 62px);overflow:hidden}.settings-content{min-height:0;overflow-y:auto}.sheet .icon-close{width:32px;height:32px;padding:6px;display:grid;place-items:center}.sheet .icon-close svg{width:18px;height:18px}
 @media(max-width:720px){#log{min-width:0;overflow-x:hidden}.composer{min-width:0;padding:8px 12px 12px}.composer .box{max-width:100%;min-width:0}.turn{padding-left:0;padding-right:0}.turn.user .bubble{max-width:100%}#ctxmeter2,#ctxmeter2.visible{display:none!important}.settings-layout{max-height:calc(80vh - 62px)}.settings-content{overflow-y:auto}}
 @media(max-width:390px){#permission-btn{font-size:12px;padding:3px 7px}#in{width:100%}.approval-card{padding:11px}.composer-hint{font-size:11px}}
+/* 事前学習・スキルと会話メニュー */
+.tabs{align-items:center;gap:4px}.tabs .tab{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;flex:1;min-width:0;min-height:38px;padding:5px 3px;border-radius:8px;color:var(--dim);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}.tabs .tab.on{background:var(--sel)!important;color:var(--fg)!important}.tabs .tab:hover{background:var(--sel)}
+.grouprow{position:relative;z-index:2;margin-bottom:0!important;min-height:42px}.grouprow #chat-menu{display:grid!important;place-items:center;width:38px;min-width:38px!important;height:38px;min-height:38px!important;padding:0!important;line-height:1!important;touch-action:manipulation;position:relative;z-index:3}.grouprow #chat-menu[aria-expanded="true"]{background:var(--sel);color:var(--fg)}
+#chatlist{position:relative;z-index:1}.crow .dots{all:unset;box-sizing:border-box;display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;min-height:34px;margin:-4px -4px -4px auto;border-radius:7px;opacity:0;cursor:pointer;position:relative;z-index:2;touch-action:manipulation}.crow:hover .dots,.crow:focus-within .dots,.crow .dots:focus-visible{opacity:1}.crow .dots:hover{background:var(--sel)}
+#workview{display:none;flex:1;min-height:0;overflow:auto;padding:28px max(20px,calc((100% - 54rem)/2)) 40px}body.view-skills #workview,body.view-gakushuu #workview{display:block}body.view-skills #log,body.view-skills .composer,body.view-gakushuu #log,body.view-gakushuu .composer{display:none}
+.work-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}.work-head h1{font-size:22px;line-height:1.4}.work-head .sp{flex:1}.work-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:15px}.work-card h2{font-size:15px;margin-bottom:12px}.work-note{color:var(--dim);font-size:13px;line-height:1.7}.work-status{color:var(--accent);font-weight:700}.work-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.work-stat{font-size:25px;font-weight:700;line-height:1.4}.work-stat small{display:block;font-size:12px;color:var(--dim);font-weight:400}.work-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.work-row .sp{flex:1}.work-control{display:flex;align-items:center;gap:9px;cursor:pointer}.work-control input{accent-color:var(--accent);width:18px;height:18px}.work-control.big{font-size:17px;font-weight:700}.work-control.big input{width:26px;height:26px}.work-field{display:flex;flex-direction:column;gap:4px;margin:12px 0;font-size:13px}.work-field input,.work-field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}.work-field textarea{min-height:230px;resize:vertical}.work-field input[type=number]{max-width:150px}.work-meter{height:12px;background:var(--sel);border-radius:20px;overflow:hidden;margin:8px 0}.work-meter span{display:block;height:100%;background:var(--accent)}.work-log{max-height:240px;overflow:auto;padding-left:20px;font-size:12px;color:var(--dim)}.work-log li{margin:6px 0;overflow-wrap:anywhere}.skill-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.skill-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}.skill-card.active{border-color:var(--accent)}.skill-card>button:first-child{all:unset;display:block;width:100%;cursor:pointer}.skill-card h2{font-size:15px;overflow-wrap:anywhere}.skill-card p{font-size:12px;color:var(--dim);margin:5px 0 10px;overflow-wrap:anywhere}.skill-card .made{font-size:11px;color:var(--faint)}.skill-card .work-row{margin-top:9px}.skill-editor{margin-top:18px}.work-error{color:var(--danger);margin:10px 0}
+.nav button.on{background:var(--sel);color:var(--fg)}
+@media(max-width:720px){#workview{padding:17px 14px 25px}.work-card{padding:15px}.work-grid{grid-template-columns:1fr}.tabs .tab{font-size:11px}body.sidebar-open aside{z-index:60}}
+@media(max-width:390px){.work-head h1{font-size:19px}.skill-list{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -669,7 +678,8 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
     <!-- ★ 2026-09-07「ホーム」タブを外した。
          押してもカーネルと見た目が変わらず、二重だったため。
          「はじめの画面に戻る」は 左の「新しい会話」でできる。 -->
-    <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>カーネル</div>
+    <button class="tab on" data-view="kernel" type="button" aria-current="page">カーネル</button>
+    <button class="tab" data-view="gakushuu" type="button">事前学習</button>
     <button id="side-collapse" type="button" title="帯をたたむ" aria-label="帯をたたむ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
   </div>
 
@@ -682,12 +692,13 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
   <nav class="nav">
     <button id="new-chat-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新しいチャット</button>
     <button id="search-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg>検索</button>
+    <button id="skills-btn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h13a3 3 0 0 1 3 3v13H7a3 3 0 0 0-3 3V4zM4 20a3 3 0 0 1 3-3h13"/></svg>スキル</button>
   </nav>
 
   <div class="grouprow">
     <span class="t">チャット</span>
     <span class="sp"></span>
-    <button id="chat-menu" type="button" title="チャットのメニュー" aria-label="チャットのメニュー">…</button>
+    <button id="chat-menu" type="button" title="チャットのメニュー" aria-label="チャットのメニュー" aria-haspopup="menu" aria-expanded="false">…</button>
     <button id="c-new" title="新しい会話をはじめる">新規</button>
     <button id="c-arch" title="しまったものも見る">しまったもの</button>
     <button id="c-trash" title="ゴミ箱を見る">ゴミ箱</button>
@@ -715,7 +726,7 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
 <main>
   <header>
     <button id="sidebar-toggle" type="button" aria-label="会話一覧を開く"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-    <button id="modelbtn" type="button" aria-label="モデルを選ぶ">カーネル＋Qwen3-30B <span>⌄</span></button>
+    <button id="modelbtn" type="button" aria-label="モデルを選ぶ">カーネル＋Qwen3-30B-A3B <span>⌄</span></button>
     <span class="tagchip" id="h-place">練習モード</span>
     <div class="kyoka" role="group" aria-label="許可モード">
       <span class="kyoka-label">許可</span>
@@ -734,6 +745,7 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
     </span>
   </header>
   <div id="kyoka-note" hidden>確認なしで進めます（完全削除・Claude/Codex を壊す・秘密を送る・守りの設定を切る、は止めます）</div>
+  <section id="workview" aria-live="polite"></section>
 
   <div id="log">
     <div class="empty" id="empty">
@@ -796,7 +808,7 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
 <script>
 const TOKEN = "__TOKEN__";
 const VIEW_QUERY = new URLSearchParams(location.search);
-let DEMO = location.protocol === "file:" || VIEW_QUERY.get("demo") === "empty";
+let DEMO = location.protocol === "file:" || ["empty","1"].includes(VIEW_QUERY.get("demo"));
 // 住所に合言葉が残らないようにする（履歴やRefererに載せない）
 try { history.replaceState(null, "", location.pathname); } catch(e){}
 const log = document.getElementById("log");
@@ -823,6 +835,7 @@ document.querySelectorAll("[data-kyoka]").forEach(btn => btn.onclick = async () 
 
 /* ---------- 表示 ---------- */
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+function modelDisplay(s){return String(s).replace(/Qwen3-30B(?!-A3B)/g,"Qwen3-30B-A3B");}
 
 function paint(text){
   const inline = s => esc(s).replace(/`([^`]+)`/g,"<code>$1</code>")
@@ -1007,17 +1020,131 @@ function showHome(){
   log.querySelectorAll(".chip").forEach(c => c.onclick = () => send(c.textContent));
 }
 
-/* ---------- 上のタブ（カーネル）----------
-   ★ 2026-09-07「ホーム」タブを外した。カーネルと中身が同じで意味が無かった。
-   残った「カーネル」は、押すと いまの会話に戻る。                     */
-document.querySelectorAll(".tab").forEach(t => {
-  t.style.cursor = "pointer";
-  t.onclick = async () => {
-    document.querySelectorAll(".tab").forEach(x => x.classList.toggle(
-      "on", x === t));
-    if (ST.いま) await openChat(ST.いま);   // いまの会話を開き直す
+/* ---------- カーネル／事前学習／スキル ---------- */
+const workview = document.getElementById("workview");
+let VIEW = "kernel", SKILLS = [], SKILL_INDEX = -2, LEARNING = null;
+function setView(view){
+  VIEW = view;
+  document.body.classList.toggle("view-skills",view === "skills");
+  document.body.classList.toggle("view-gakushuu",view === "gakushuu");
+  document.querySelectorAll(".tabs .tab").forEach(b=>{
+    const on = b.dataset.view === (view === "gakushuu" ? "gakushuu" : "kernel");
+    b.classList.toggle("on",on);
+    if(on)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");
+  });
+  document.getElementById("skills-btn").classList.toggle("on",view === "skills");
+  document.body.classList.remove("sidebar-open");
+  if(view === "skills")loadSkills();
+  if(view === "gakushuu")loadLearning();
+}
+document.querySelectorAll(".tabs .tab").forEach(b=>b.onclick=()=>setView(b.dataset.view));
+document.getElementById("skills-btn").onclick=()=>setView("skills");
+
+async function skillAction(payload){
+  try{
+    const r=await api("/skills",{method:"POST",body:JSON.stringify(payload)});
+    if(r.error)throw Error(r.error);
+    await loadSkills();
+  }catch(e){shiraseru("スキルを変更できませんでした: "+e.message);}
+}
+async function loadSkills(){
+  if(VIEW !== "skills")return;
+  try{
+    const r=await api("/skills");
+    if(r.error)throw Error(r.error);
+    SKILLS=Array.isArray(r.スキル)?r.スキル:[];
+    if(SKILL_INDEX >= SKILLS.length)SKILL_INDEX=-2;
+    drawSkills();
+  }catch(e){workview.innerHTML=`<div class="work-error">${esc("スキルを読めませんでした: "+e.message)}</div>`;}
+}
+function drawSkills(){
+  const selected=SKILLS[SKILL_INDEX];
+  workview.innerHTML=`<div class="work-head"><h1>スキル</h1><span class="sp"></span><button class="btn go" id="skill-new" type="button">新しいスキル</button></div>
+    <p class="work-note" style="margin-bottom:16px">使う技を選び、本文を見たり直したりできます。</p>
+    <div class="skill-list">${SKILLS.map((s,i)=>`<article class="skill-card ${i===SKILL_INDEX?"active":""}">
+      <button type="button" data-skill="${i}" aria-label="${esc(s.name)}を開く"><h2>${esc(s.name)}</h2><p>${esc(s.description||"説明はありません")}</p></button>
+      <span class="made">${esc(s.made_by||"本人")} · ${esc(s.場所||"本人")}</span>
+      <div class="work-row"><label class="work-control"><input type="checkbox" data-toggle="${i}" ${s.on?"checked":""}>オン</label><span class="sp"></span>
+      ${!s.on && s.made_by==="カーネル"?`<button class="btn" type="button" data-adopt="${i}">採用</button>`:""}
+      ${s.場所==="本人"?`<button class="btn bad" type="button" data-trash="${i}" aria-label="${esc(s.name)}をゴミ箱へ">ゴミ箱</button>`:""}</div></article>`).join("")}</div>
+    <div id="skill-editor" class="skill-editor"></div>`;
+  workview.querySelector("#skill-new").onclick=()=>{SKILL_INDEX=-1;drawSkills();workview.querySelector("#skill-name").focus();};
+  workview.querySelectorAll("[data-skill]").forEach(b=>b.onclick=()=>{SKILL_INDEX=+b.dataset.skill;drawSkills();workview.querySelector("#skill-editor").scrollIntoView({block:"nearest"});});
+  workview.querySelectorAll("[data-toggle]").forEach(b=>b.onchange=()=>{const s=SKILLS[+b.dataset.toggle];skillAction({動き:"切替",name:s.name,on:b.checked});});
+  workview.querySelectorAll("[data-adopt]").forEach(b=>b.onclick=()=>{const s=SKILLS[+b.dataset.adopt];skillAction({動き:"切替",name:s.name,on:true});});
+  workview.querySelectorAll("[data-trash]").forEach(b=>b.onclick=async()=>{
+    const s=SKILLS[+b.dataset.trash];
+    if(!await tashikame(`「${s.name}」をゴミ箱へ移します。`,"ゴミ箱へ",true,"あとで戻せます。"))return;
+    SKILL_INDEX=-2;skillAction({動き:"ゴミ箱",name:s.name});
+  });
+  if(selected || SKILL_INDEX===-1){
+    const editor=workview.querySelector("#skill-editor");
+    editor.innerHTML=`<form class="work-card"><h2>${selected?"スキルの本文":"新しいスキル"}</h2>
+      <label class="work-field">名前<input id="skill-name" type="text" maxlength="40" required value="${esc(selected?.name||"")}" ${selected?"readonly":""}></label>
+      <label class="work-field">説明（60字まで）<input id="skill-desc" type="text" maxlength="60" value="${esc(selected?.description||"")}"></label>
+      <label class="work-field">本文<textarea id="skill-body">${esc(selected?.body||"")}</textarea></label>
+      <div class="work-row"><label class="work-control"><input id="skill-on" type="checkbox" ${selected?.on||!selected?"checked":""}>オン</label><span class="sp"></span><button class="btn go" type="submit">保存</button></div></form>`;
+    editor.querySelector("form").onsubmit=async e=>{
+      e.preventDefault();
+      const name=editor.querySelector("#skill-name").value.trim();
+      if(!name || /[/\\\n\r\0]/.test(name) || name.includes("..")){shiraseru("名前は40字以内で、/ や .. は使えません");return;}
+      await skillAction({動き:"保存",name,description:editor.querySelector("#skill-desc").value.trim(),
+        body:editor.querySelector("#skill-body").value,on:editor.querySelector("#skill-on").checked});
+      SKILL_INDEX=SKILLS.findIndex(s=>s.name===name);
+      drawSkills();
+    };
+  }
+}
+
+async function updateLearning(payload){
+  try{
+    const r=await api("/gakushuu",{method:"POST",body:JSON.stringify(payload)});
+    if(r.error)throw Error(r.error);
+    await loadLearning();
+  }catch(e){shiraseru("事前学習を変更できませんでした: "+e.message);await loadLearning();}
+}
+async function loadLearning(){
+  if(VIEW !== "gakushuu")return;
+  try{
+    const r=await api("/gakushuu");
+    if(r.error)throw Error(r.error);
+    LEARNING=r;drawLearning();
+  }catch(e){workview.innerHTML=`<div class="work-error">${esc("事前学習を読めませんでした: "+e.message)}</div>`;}
+}
+function drawLearning(){
+  const g=LEARNING||{}, count=g.数||{}, source=g.出どころ||{};
+  const used=Math.max(0,Number(g.使った容量MB)||0), limit=Math.max(1,Number(g.上限MB)||2048);
+  const percent=Math.min(100,Math.round(used/limit*100));
+  workview.innerHTML=`<div class="work-head"><h1>事前学習</h1><span class="sp"></span><span class="work-status">${g.動いている?"学習中":g.入?"待機中":"オフ"}</span></div>
+    <div class="work-card"><div class="work-row"><label class="work-control big"><input id="learn-on" type="checkbox" ${g.入?"checked":""}>事前学習 ${g.入?"オン":"オフ"}</label></div>
+      <p class="work-note" style="margin-top:12px">Qwen の重みは変えません。調べた知識と技を貯めて、Qwen が道具で使えるようにします</p>
+      <p style="margin-top:13px">いま: <strong>${esc(g.いま||"待機中")}</strong></p></div>
+    <div class="work-grid"><div class="work-card work-stat">${esc(count.記事??0)}<small>記事</small></div><div class="work-card work-stat">${esc(count.技の提案??0)}<small>技の提案</small></div></div>
+    <div class="work-card"><h2>容量</h2><div class="work-meter" role="progressbar" aria-label="使った容量" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><span style="width:${percent}%"></span></div><p class="work-note">${esc(used)} MB / ${esc(limit)} MB</p><label class="work-field">上限（MB）<input id="learn-limit" type="number" min="1" step="1" value="${esc(limit)}"></label><button class="btn" id="learn-save-limit" type="button">上限を保存</button></div>
+    <div class="work-card"><h2>学ぶ条件</h2><div class="work-row"><label class="work-control"><input id="learn-wiki" type="checkbox" ${source.Wikipedia?"checked":""}>Wikipedia</label><label class="work-control"><input id="learn-review" type="checkbox" ${source.振り返り?"checked":""}>振り返り</label><label class="work-control"><input id="learn-charge" type="checkbox" ${g.充電中だけ?"checked":""}>充電中だけ</label></div><div class="work-row"><label class="work-control"><input id="learn-external-review" type="checkbox" ${g.振り返りで外の先生に聞く?"checked":""}>振り返りで外の先生に聞く</label><label class="work-control"><input id="learn-chat-topic" type="checkbox" ${g.会話の言葉から学ぶ題を選ぶ?"checked":""}>会話の言葉から学ぶ題を選ぶ</label></div><p class="work-note">入にすると、外の先生へ頼みの文と道具名・成否、Wikipediaへ会話から選んだ題を送ります。秘密とファイル名・場所は除きます。</p></div>
+    <div class="work-card"><h2>直近の記録</h2><ol class="work-log">${(g.記録||[]).map(x=>`<li>${esc(typeof x==="string"?x:JSON.stringify(x))}</li>`).join("")||"<li>まだありません</li>"}</ol></div>
+    <div class="work-card"><div class="work-row"><h2>技の提案</h2><span class="sp"></span><button class="btn" id="learn-skills" type="button">すべてのスキルを見る</button></div><div id="learn-proposals" class="skill-list"></div></div>`;
+  workview.querySelector("#learn-on").onchange=e=>updateLearning({入:e.target.checked});
+  workview.querySelector("#learn-save-limit").onclick=()=>{
+    const value=Number(workview.querySelector("#learn-limit").value);
+    if(!Number.isInteger(value)||value<1){shiraseru("上限は1 MB以上の整数にしてください");return;}
+    updateLearning({上限MB:value});
   };
-});
+  workview.querySelector("#learn-charge").onchange=e=>updateLearning({充電中だけ:e.target.checked});
+  workview.querySelector("#learn-external-review").onchange=e=>updateLearning({振り返りで外の先生に聞く:e.target.checked});
+  workview.querySelector("#learn-chat-topic").onchange=e=>updateLearning({会話の言葉から学ぶ題を選ぶ:e.target.checked});
+  for(const id of ["learn-wiki","learn-review"]){workview.querySelector("#"+id).onchange=()=>updateLearning({出どころ:{Wikipedia:workview.querySelector("#learn-wiki").checked,振り返り:workview.querySelector("#learn-review").checked}});}
+  workview.querySelector("#learn-skills").onclick=()=>setView("skills");
+  api("/skills").then(r=>{
+    if(VIEW!=="gakushuu"||!workview.querySelector("#learn-proposals"))return;
+    const proposals=(r.スキル||[]).filter(s=>s.made_by==="カーネル"&&!s.on);
+    const box=workview.querySelector("#learn-proposals");
+    box.innerHTML=proposals.map((s,i)=>`<article class="skill-card"><h2>${esc(s.name)}</h2><p>${esc(s.description||"")}</p><div class="work-row"><span class="made">カーネルの提案</span><span class="sp"></span><button class="btn go" data-proposal="${i}" type="button">採用</button>${s.場所==="本人"?`<button class="btn bad" data-reject="${i}" type="button">見送り</button>`:""}</div></article>`).join("")||'<p class="work-note">まだ提案はありません。</p>';
+    box.querySelectorAll("[data-proposal]").forEach(b=>b.onclick=()=>skillAction({動き:"切替",name:proposals[+b.dataset.proposal].name,on:true}).then(loadLearning));
+    box.querySelectorAll("[data-reject]").forEach(b=>b.onclick=()=>skillAction({動き:"ゴミ箱",name:proposals[+b.dataset.reject].name}).then(loadLearning));
+  }).catch(()=>{});
+}
+setInterval(()=>{if(VIEW==="gakushuu"&&!document.hidden&&document.activeElement?.id!=="learn-limit")loadLearning();},5000);
 
 function drawChats(){
   CHAT_SIG = JSON.stringify([ST.会話,ST.ゴミ箱,ST.いま,ARCH,TRASH,SEL,[...ERANDA]]);
@@ -1121,7 +1248,7 @@ function drawChats(){
         <div class="crow ${c.id===ST.いま?"on":""}" data-id="${c.id}">
           ${SEL ? `<input type="checkbox" data-sel="${c.id}" ${ERANDA.has(c.id)?"checked":""}>` : ""}
           <span class="nm" title="${esc(c.題)}">${esc(c.題)}</span>
-          <span class="dots" data-menu="${c.id}" role="button" tabindex="0" aria-label="会話のメニュー">⋯</span>
+          <button class="dots" data-menu="${esc(c.id)}" type="button" aria-label="${esc(c.題)}のメニュー">⋯</button>
         </div>`).join("")).join("");
   chatlist.querySelectorAll(".crow").forEach(r => {
     r.onclick = e => {
@@ -1137,6 +1264,7 @@ function drawChats(){
 }
 
 async function openChat(id){
+  if(VIEW!=="kernel")setView("kernel");
   const r = await api("/chat/open", {method:"POST", body:JSON.stringify({id})});
   if (r.error) return;
   log.innerHTML = "";
@@ -1214,6 +1342,7 @@ function chatMenu(id){
 
 document.getElementById("c-new").onclick = async () => {
   await api("/chat/new",{method:"POST",body:JSON.stringify({})});
+  setView("kernel");
   showHome(); refresh();
 };
 /* ================================================================
@@ -1227,13 +1356,15 @@ document.getElementById("c-new").onclick = async () => {
    ここに並ぶ物は すべて すでに server.py / chats.py にある。
    ================================================================ */
 let DD = null;
-function closeDrop(){ if (DD) { DD.remove(); DD = null; } }
+function closeDrop(){ if (DD) { DD.remove(); DD = null; } document.getElementById("chat-menu").setAttribute("aria-expanded","false"); }
 document.addEventListener("click", e => {
   if (DD && !e.target.closest(".dropdown")
          && !e.target.closest("#more-btn") && !e.target.closest("#net-btn"))
     closeDrop();
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrop(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && DD){const wasChat=document.getElementById("chat-menu").getAttribute("aria-expanded")==="true";closeDrop();if(wasChat)document.getElementById("chat-menu").focus();} });
+window.addEventListener("resize",closeDrop);
+document.getElementById("chatlist").addEventListener("scroll",closeDrop);
 
 const DICON = {
   art:'<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
@@ -1261,8 +1392,10 @@ function dsv(k){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 
 function openDrop(anchor, items, opts={}){
   closeDrop();
+  if(anchor.id==="chat-menu")anchor.setAttribute("aria-expanded","true");
   const d = document.createElement("div");
   d.className = "dropdown" + (opts.twoLine ? " two-line" : "") + (opts.model ? " model-drop" : "");
+  if(anchor.id==="chat-menu")d.setAttribute("role","menu");
   d.innerHTML = items.map((it, i) => {
     if (it.区切り) return '<div class="sepline"></div>';
     if (it.見出し) return '<div class="ttl">' + esc(it.見出し) + '</div>';
@@ -1272,7 +1405,7 @@ function openDrop(anchor, items, opts={}){
       + (it.説明 ? '<span class="item-desc">' + esc(it.説明) + '</span>' : '') + '</span>'
       + (it.選択 ? '<span class="check" aria-hidden="true">✓</span>' : '')
       + (it.次 ? dsv("chevron").replace("<svg",'<svg class="chevron"') : '') + '</div>';
-    return '<div class="it' + (it.危ない ? " danger" : "") + '" data-i="' + i + '">'
+    return '<div class="it' + (it.危ない ? " danger" : "") + '" data-i="' + i + '" role="' + (anchor.id==="chat-menu"?"menuitem":"button") + '" tabindex="0">'
       + dsv(it.絵) + '<span>' + esc(it.名) + '</span>'
       + (it.鍵 ? '<span class="k">' + esc(it.鍵) + '</span>' : '') + '</div>';
   }).join("");
@@ -1372,7 +1505,8 @@ document.getElementById("chat-menu").onclick=e=>{
     {名:"えらんでまとめる",絵:"chk",する:()=>document.getElementById("c-sel").click()},
     {名:"しまったもの",絵:"box",する:()=>document.getElementById("c-arch").click()},
     {名:"ゴミ箱",絵:"del",する:()=>document.getElementById("c-trash").click()}
-  ]);
+  ],{left:true});
+  DD?.querySelector(".it")?.focus();
 };
 
 /* ================================================================
@@ -2228,11 +2362,11 @@ async function refresh(){
             localStorage.setItem("kernel-destination-migrated-v1","1");
           }
         }catch(e){if(!keep) keep = "kyoudou:";}
-        let h = '<optgroup label="手元"><option value="kyoudou:">カーネル＋Qwen3-30B（おすすめ）</option>'
+        let h = '<optgroup label="手元"><option value="kyoudou:">カーネル＋Qwen3-30B-A3B（おすすめ）</option>'
           + '<option value="">カーネル（前の仕組み）</option></optgroup>';
         if (te.length){
           h += '<optgroup label="手元のモデルに じかに（外に出ません）">'
-            + te.map(x => `<option value="${esc(x.key)}">${esc(x.名)}</option>`).join("")
+            + te.map(x => `<option value="${esc(x.key)}">${esc(modelDisplay(x.名))}</option>`).join("")
             + (te.some(x=>x.key === "local:35b")
                ? '<option value="agent:local:35b">手元 Qwen3.5 エージェント（読み取り専用）</option>'
                + '<option value="computer:local:35b">AIカーソル（Qwen3.5・確認して実行）</option>' : "")
@@ -2258,7 +2392,7 @@ async function refresh(){
       atesakiChuui();
       const now = te.find(x=>x.いま);
       atesaki.title = "どこにきくか。カーネル＝相棒 ／ 手元＝モデルにじかに（外に出ない）"
-        + (now ? "\nいま載っているモデル: " + now.名 : "")
+        + (now ? "\nいま載っているモデル: " + modelDisplay(now.名) : "")
         + "\n※ エージェントは読み取り専用。AIカーソルは承認後だけ操作。手元のモデル切替は15〜60秒かかります";
     }
     document.getElementById("fukasatag").textContent =
@@ -2448,7 +2582,7 @@ setteiSheet = setteiSheetNew;
 
 const MODEL_INFO={
   "":{name:"カーネル（前の仕組み）",desc:"すぐ答える近道・辞書・ページ作り。外の先生にも相談"},
-  "kyoudou:":{name:"カーネル＋Qwen3-30B（おすすめ）",desc:"パソコン操作・ファイル整理・調べ物。一手ずつ動いて確かめる"},
+  "kyoudou:":{name:"カーネル＋Qwen3-30B-A3B（おすすめ）",desc:"パソコン操作・ファイル整理・調べ物。一手ずつ動いて確かめる"},
   "groq:openai/gpt-oss-120b":{name:"Groq 120B",desc:"外のモデルと話す。ネットが必要"},
   "groq:openai/gpt-oss-20b":{name:"Groq 20B",desc:"外の軽いモデルと話す。ネットが必要"},
   fast:{name:"NVIDIA fast",desc:"Nemotron Lightning 30B。9/28 は 17 秒で応答"},
@@ -2538,16 +2672,41 @@ const DEMO_TIME=Date.now()/1000;
 const DEMO_STATE={"モード":"本番","設定":DEMO_SETTINGS,"設定の説明":{},"札":128,"部品":48,
   "裏の係":{"動作中":false},"いれもの":{"割合":34,"使った":6,"上限":16,"文字数":1800},
   "NVIDIA":{"呼び方":"API","モデル":["fast","super","ultra","code","deep","glm"]},
-  "手元の一覧":[{"key":"local:main","名":"Qwen3-30B","いま":true}],"手元のいま":"local:main",
+  "手元の一覧":[{"key":"local:main","名":"Qwen3-30B-A3B","いま":true}],"手元のいま":"local:main",
   "組":[{"名":"旅行"}],"いま":"demo1","ゴミ箱":[],"会話":[
     {"id":"demo1","題":"デスクトップを整理","更新":DEMO_TIME,"しまった":false,"組":"","件数":4},
     {"id":"demo2","題":"調べ物のまとめ","更新":DEMO_TIME-86400,"しまった":false,"組":"","件数":6},
     {"id":"demo3","題":"旅行の持ち物","更新":DEMO_TIME-3*86400,"しまった":false,"組":"旅行","件数":8},
     {"id":"demo4","題":"メモの書き方","更新":DEMO_TIME-15*86400,"しまった":false,"組":"","件数":2}
   ]};
+const DEMO_SKILLS=[
+  {name:"ファイル整理",description:"種類ごとに確認してから安全に分ける",on:true,made_by:"最初から",場所:"最初から",body:"# ファイル整理\n移動前に一覧を見て、移動先を確かめる。"},
+  {name:"調べ物のまとめ",description:"出どころを添えて要点を整理する",on:true,made_by:"本人",場所:"本人",body:"# 調べ物のまとめ\n複数の資料を読み、出どころを残す。"},
+  {name:"遅い作業の見直し",description:"失敗した手順を短くして再確認する",on:false,made_by:"カーネル",場所:"本人",body:"# 遅い作業の見直し\nどこで時間がかかったか確認する。"}
+];
+const DEMO_LEARNING={入:true,動いている:true,いま:"Wikipedia で写真の整理方法を調べています",数:{記事:128,技の提案:1},使った容量MB:342,上限MB:2048,充電中だけ:true,出どころ:{Wikipedia:true,振り返り:true},記録:["写真の整理方法を学びました","前回の作業を振り返りました","技を1件提案しました"]};
 const DEMO_ANSWER="## 整理の結果\n\n3つのファイルを確認しました。写真は Pictures にまとめ、古いメモはゴミ箱へ移します。\n\n| 種類 | 件数 |\n| --- | ---: |\n| 写真 | 2 |\n| メモ | 1 |\n\n使った手順は次のとおりです。\n\n```text\n写真を確認 → 移す → 結果を確認\n```";
 function demoAPI(path,opt={}){
   const method=opt.method || "GET", body=opt.body ? JSON.parse(opt.body) : {};
+  if(path==="/skills"){
+    if(method==="GET")return {スキル:DEMO_SKILLS};
+    const i=DEMO_SKILLS.findIndex(s=>s.name===body.name);
+    if(body.動き==="ゴミ箱" && i>=0 && DEMO_SKILLS[i].場所==="本人")DEMO_SKILLS.splice(i,1);
+    if(body.動き==="切替" && i>=0)DEMO_SKILLS[i].on=!!body.on;
+    if(body.動き==="保存"){
+      const next={name:body.name,description:body.description||"",body:body.body||"",on:!!body.on,made_by:"本人",場所:"本人"};
+      if(i>=0)DEMO_SKILLS[i]=next;else DEMO_SKILLS.push(next);
+    }
+    DEMO_LEARNING.数.技の提案=DEMO_SKILLS.filter(s=>s.made_by==="カーネル"&&!s.on).length;
+    return {ok:true};
+  }
+  if(path==="/gakushuu"){
+    if(method==="POST"){
+      for(const key of ["入","上限MB","充電中だけ","出どころ"])if(key in body)DEMO_LEARNING[key]=body[key];
+      DEMO_LEARNING.動いている=!!DEMO_LEARNING.入;
+    }
+    return DEMO_LEARNING;
+  }
   if(path==="/settings" && method==="POST"){
     if(body.鍵 in DEMO_SETTINGS)DEMO_SETTINGS[body.鍵]=body.値;
     DEMO_STATE.モード=DEMO_SETTINGS.モード;return {ok:true,設定:body.値};
@@ -2576,11 +2735,6 @@ function renderDemo(){
   shouninSheet({id:"demo",文:"古いメモ.txt をゴミ箱へ移す",危険度:"戻せる"},node);
 }
 async function startUI(){
-  if(!DEMO && VIEW_QUERY.get("demo")==="1"){
-    try{const r=await fetch("/ping",{headers:{"X-Token":TOKEN}});
-      DEMO=!(r.ok && (r.headers.get("Content-Type")||"").includes("json"));
-    }catch(e){DEMO=true;}
-  }
   let savedTheme="system",savedSize="15";
   try{savedTheme=localStorage.getItem("kernel-theme")||"system";savedSize=localStorage.getItem("kernel-font-size")||"15";}catch(e){}
   setTheme(VIEW_QUERY.get("theme") || savedTheme,!VIEW_QUERY.has("theme"));
@@ -2598,6 +2752,8 @@ async function startUI(){
     }
     if(VIEW_QUERY.get("open")==="plus")document.getElementById("plusbtn").click();
     if(VIEW_QUERY.get("open")==="chatmenu")document.getElementById("chat-menu").click();
+    if(VIEW_QUERY.get("open")==="skills")setView("skills");
+    if(VIEW_QUERY.get("open")==="gakushuu")setView("gakushuu");
   }else{
     setInterval(refresh,4000);setInterval(ping,20000);
   }
