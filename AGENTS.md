@@ -30,7 +30,7 @@ Qwen3-30B-A3B Q2_K（Unsloth 11.3GB）、`-t 6 -ngl 0 -c 8192 -np 1 -cb -ub 256 
 ## 外部計算資源
 - GitHub Actions（無料・無制限）: `git push -f origin main:hakaru-zenbu[-switches]` → `kekka` 枝。switch: `-k`数え上げ `-j`時刻 `-n`並べ方 `-s`選び方 `-c`計算 `-t`手本 `-l`LoRA `-m2507` `-d8/-d9/-d10`。
 - Google Cloud L4: `gcloud/ryoushika.sh`（imatrix効果なし）、`gcloud/lora.sh`（1 step 130秒、表示lossは8倍）。GCS残24GB（月約$0.5）。
-- Groq/NVIDIA無料: 教材・検品。日次上限/混雑で停止（`tsukuru_tehon.py` は5人を回す）。Codex Luna: 審査 `dougu/shinsa.sh`、物差し `tsukuru_monosashi*.py`、教材 `tsukuru_tehon_luna.py`、調査。`< /dev/null` 必須。
+- Groq/NVIDIA無料: 教材・検品。日次上限/混雑で停止（`tsukuru_tehon.py` は5人を回す）。Codex（9/28〜 Sol・Luna の high、max はまれ）: 審査 `dougu/shinsa.sh`（既定 Sol）、物差し `tsukuru_monosashi*.py`、教材 `tsukuru_tehon_luna.py`、調査。`< /dev/null` 必須。
 
 ## 失敗防止
 大量実行前に1本を完走（9/24未試験で45本全停止。export漏れで道具なし測定も発生）。結果集約係に concurrency を付けない（待ちが取消）。カーネルの用件は `machine.py` と `kikai.py` の両OPSを確認（片方だけ見て9/24に10個重複）。GCP既定SAにGCS権限が必要。`a && b` は `set -e` でも失敗を止めない。起動合図が12分来なければVM削除。Codexがrepoを読めない場合、必要ソースを依頼文に貼る。
