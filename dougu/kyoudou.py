@@ -1434,28 +1434,39 @@ def _run_command(
         return {"ok": False, "確認済み": False, "結果": _redact(error)}
 
 
+def _safe_range(start: str | None, end: str | None) -> tuple[int, int]:
+    """30B の行の指定を直して使う（0行目・逆順・広すぎ・数でない物は直す。読み取りを止めない。9/28）。"""
+    def number(value):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    first, last = number(start), number(end)
+    if first is None or first < 1:
+        first = 1
+    if last is None:
+        last = first + 199
+    if last < first:
+        first, last = (last, first) if last >= 1 else (first, first + 199)
+    if last - first > 500:
+        last = first + 500
+    return first, last
+
+
 def _line_range(text: str, start: str | None, end: str | None) -> str:
     if start is None and end is None:
         return text
-    first = int(start or "1")
-    last = int(end or str(first + 199))
-    if first < 1 or last < first:
-        raise ValueError("行番号の範囲が正しくありません")
-    if last - first > 500:
-        raise ValueError("一度に読む範囲は500行以内です")
+    first, last = _safe_range(start, end)
     lines = text.splitlines(keepends=True)
     return "".join(lines[first - 1:last])
 
 
 def _widen_line_range(text: str, start: str | None, end: str | None) -> tuple[int, int, bool]:
-    first = int(start or "1")
-    last = int(end or str(first + 199))
-    if first < 1 or last < first:
-        raise ValueError("行番号の範囲が正しくありません")
-    if last - first > 500:
-        raise ValueError("一度に読む範囲は500行以内です")
+    first, last = _safe_range(start, end)
     line_count = len(text.splitlines())
-    if first > line_count or last - first + 1 >= READ_CONTEXT_LINES:
+    if first > line_count:   # 終わりより先を指したら、終わりの側を見せる
+        return max(1, line_count - READ_CONTEXT_LINES + 1), max(1, line_count), True
+    if last - first + 1 >= READ_CONTEXT_LINES:
         return first, last, False
     width = min(READ_CONTEXT_LINES, line_count)
     center = (first + min(last, line_count)) // 2
@@ -1558,9 +1569,7 @@ def _read_file(
     archive_path = Path(path).resolve()
     is_kiroku = _inside_path(str(archive_path), str(KIROKU_DIR.resolve()))
     if len(text) <= READ_ALL_IF_UNDER_CHARS:
-        if start is not None or end is not None:
-            _line_range(text, start, end)
-        result_text = text
+        result_text = text   # 小さいファイルは範囲の指定に関係なく全部返す（範囲の誤りで止めない）
         if result_text and not result_text.endswith("\n"):
             result_text += "\n"
         result_text += "（全体を返しました）"
@@ -2076,13 +2085,13 @@ def _self_reply(request: str, rireki: list[dict] | None) -> str | None:
         return None
     if re.search(r"(?:あなた|君|きみ|お前)(?:は|って|が)?\s*(?:AI|ＡＩ|人工知能|人間|誰|だれ|何者|なにもの)", text, re.IGNORECASE) \
             or re.fullmatch(r"(?:AI|ＡＩ)(?:なの|なん(?:です)?か|ですか)?[?？。!！]*", text, re.IGNORECASE):
-        return "私はこの Mac の中で動く Qwen3-30B とカーネルです。"
+        return "はい、AI です。この Mac の中で動く Qwen3-30B とカーネルで答えています。"
     if re.search(r"(?:AI|ＡＩ|あなた|君|きみ)が作った(?:の|んですか|のですか|ん)?[?？。!！]*$", text, re.IGNORECASE):
         previous = next((str(turn.get("text") or "") for turn in reversed(rireki or [])
                          if turn.get("role") == "assistant"), "")
         if re.search(r"保存先:.*\.html|ページを作", previous, re.IGNORECASE):
-            return "はい。直前のページは、この Mac の中で動く Qwen3-30B とカーネルで作りました。"
-        return "私はこの Mac の中で動く Qwen3-30B とカーネルです。直前に作った記録はありません。"
+            return "はい。直前のページは、この Mac の中で動く AI（Qwen3-30B とカーネル）で作りました。"
+        return "私はこの Mac の中で動く AI（Qwen3-30B とカーネル）です。直前に作った記録はありません。"
     return None
 
 
@@ -3801,6 +3810,8 @@ def _self_test() -> None:
         assert kotaeru("ありがとう") == "どういたしまして。"
         assert is_shortcut("あなたはAI？")
         assert "Qwen3-30B とカーネル" in kotaeru("あなたはAI？")
+        assert _safe_range("0", "5") == (1, 5) and _safe_range("20", "5") == (5, 20) and _safe_range("x", None) == (1, 200)
+        assert _line_range("a\nb\nc\n", "3", "1") == "a\nb\nc\n"
         for other in ("自分でAIを作る方法を教えて", "この曲を歌ってるのは誰なの？", "AIが作った曲を探して", "この人は何者？"):
             assert _self_reply(other, None) is None, other
         assert "作りました" in kotaeru("AIが作ったの？", [
