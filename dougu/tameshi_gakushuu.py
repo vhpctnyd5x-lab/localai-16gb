@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """事前学習とスキル API の、ネット・30B を使わない自己試験。"""
 import json
+import io
 import fcntl
 import importlib.util
 import os
@@ -34,6 +35,8 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
 
     settings.PATH = str(base / "settings.json")
     cfg = settings.load()
+    check(gakushuu.DEFAULT["充電中だけ"] is False
+          and cfg["事前学習"]["充電中だけ"] is False, "充電中だけの既定はオフ")
     cfg["事前学習"] = gakushuu.validate(cfg["事前学習"], {"入": True, "充電中だけ": False})
     settings.save(cfg)
 
@@ -130,32 +133,122 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(not (gakushuu.folder() / "worker.pid").exists(), "二重起動を止める")
         fcntl.flock(lock, fcntl.LOCK_UN)
 
-    gakushuu._records = lambda: [{"題": "試験の失敗", "文": "失敗した操作", "識別": "record-1"}]
+    record = {"題": "[ファイル] を直す", "文": "失敗した操作", "道具": ["read_file"],
+              "成否": "失敗", "識別": "record-1"}
+    gakushuu._records = lambda: [record]
+
+    class FakeHTTP:
+        def __init__(self, content, interrupt=False):
+            self.content = io.BytesIO(content)
+            self.interrupt = interrupt
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+
+        def read(self, *args):
+            return self.content.read(*args)
+
+        def readline(self):
+            line = self.content.readline()
+            if self.interrupt:
+                (gakushuu.folder() / "busy").touch()
+            return line
+
+    streams = []
+    prompts = []
+    def fake_urlopen(req, timeout=None):
+        if isinstance(req, str):
+            check(req.endswith("/health"), "30B health")
+            return FakeHTTP(b'{"status":"ok"}')
+        check(req.full_url.endswith("/v1/chat/completions"), "30B chat API")
+        payload = json.loads(req.data)
+        check(payload["stream"] and payload["max_tokens"] == 300
+              and payload["chat_template_kwargs"]["enable_thinking"] is False, "短い streaming・思考なし")
+        prompts.append(payload["messages"][0]["content"])
+        stream = FakeHTTP(('data: {"choices":[{"delta":{"content":"順に直す"}}]}\n\n'
+                           'data: [DONE]\n\n').encode("utf-8"))
+        streams.append(stream)
+        return stream
+
+    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=fake_urlopen):
+        check(gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")),
+                                    network=True), "先生オフでも30Bだけで提案")
+    check("失敗した操作" in prompts[0] and streams[0].closed, "30Bには元の記録を見せて接続を閉じる")
+    proposed = [s for s in gakushuu.skills() if s["made_by"] == "カーネル"]
+    check(len(proposed) == 1 and proposed[0]["on"] is False
+          and proposed[0]["body"].endswith("出どころ: 30B"), "30B単独の提案はオフ")
+    check("振り返り: ファイルを直す → 技を提案:" in (gakushuu.folder() / "log.jsonl").read_text(),
+          "提案の記録")
+    check(not gakushuu.reflect_once(cfg), "10分の間隔")
+    state = gakushuu._state()
+    state["最後の提案時刻"] -= 601
+    gakushuu._write(gakushuu.folder() / "state.json", state)
+    record["識別"] = "record-2"
     sent = []
     def teacher(question, config, timeout=60):
-        sent.append(question)
-        return {"答え": "手順を確認し、小さく試してから進める。", "error": None}
-    check(not gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")), network=True), "先生オフなら振り返りを休む")
-    state = gakushuu._state()
-    check("record-1" not in state.get("見た記録", []), "休止中は記録を消費しない")
-    check("外の先生が切なので休み" in (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8"), "休止を記録に書く")
-    log_text = (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8")
-    check("失敗" not in log_text, "休止時に失敗をログへ書かない")
-    gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")), network=True)
-    check((gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8").count("外の先生が切") == 1,
-          "休止は1回だけ記録する")
-    gakushuu._write(gakushuu.folder() / "state.json", {})
+        sent.append((question, config["先生"]))
+        return {"答え": "順に確かめて直す。", "error": None}
     cfg["事前学習"]["振り返りで外の先生に聞く"] = True
-    check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生の技提案")
-    check("失敗した操作" not in sent[0] and "試験の失敗" in sent[0], "先生へ記録本文を送らない")
+    cfg["先生"] = ["local:main", "groq:openai/gpt-oss-120b"]
+    with mock.patch.object(gakushuu, "_local_reflect", return_value=("秘密 /tmp/private.txt を読む", False)):
+        check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生が30Bの提案を直す")
+    check("[ファイル]" in sent[0][0] and "/tmp/private.txt" not in sent[0][0]
+          and "30Bの提案:" in sent[0][0] and "read_file" in sent[0][0]
+          and sent[0][1] == ["groq:openai/gpt-oss-120b"], "先生に伏せた文と30B提案を渡す")
     proposed = [s for s in gakushuu.skills() if s["made_by"] == "カーネル"]
-    check(len(proposed) == 1 and proposed[0]["on"] is False, "提案はオフ")
-    check(not gakushuu.reflect_once(cfg, ask=teacher, network=True), "1時間に1つ")
+    check(len(proposed) == 2 and any(s["body"].endswith("出どころ: 30B＋先生") for s in proposed),
+          "先生の答えを採用")
+
+    record["識別"] = "record-3"
+    state = gakushuu._state()
+    state["最後の提案時刻"] -= 601
+    gakushuu._write(gakushuu.folder() / "state.json", state)
+    cfg["事前学習"]["振り返りで外の先生に聞く"] = True
+    interrupted = []
+    def busy_urlopen(req, timeout=None):
+        if isinstance(req, str):
+            return FakeHTTP(b'{"status":"ok"}')
+        stream = FakeHTTP('data: {"choices":[{"delta":{"content":"途中"}}]}\n'.encode("utf-8"),
+                          interrupt=True)
+        interrupted.append(stream)
+        return stream
+    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=busy_urlopen):
+        check(not gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("busy中に先生へ送った")), network=True), "busyで30Bを中断")
+    check(interrupted[0].closed and "record-3" not in gakushuu._state().get("見た記録", []),
+          "busyで接続を閉じ、記録を使わない")
+    (gakushuu.folder() / "busy").unlink()
+
+    cfg["事前学習"]["振り返りで外の先生に聞く"] = False
+    with mock.patch.object(gakushuu, "_local_reflect", return_value=(None, False)):
+        check(not gakushuu.reflect_once(cfg) and not gakushuu.reflect_once(cfg), "30Bが寝ている")
+    log_text = (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8")
+    check(log_text.count("振り返り: 30B を待っています") == 1
+          and "record-3" not in gakushuu._state().get("見た記録", []), "待機は1回だけ・記録を使わない")
+    with mock.patch.object(gakushuu, "_local_reflect", return_value=("順に直す", False)):
+        check(not gakushuu.reflect_once(cfg), "同じ本文は重ねない")
+    check("record-3" in gakushuu._state().get("見た記録", [])
+          and len([s for s in gakushuu.skills() if s["made_by"] == "カーネル"]) == 2,
+          "重複した記録は処理済みにする")
 
     spec = importlib.util.spec_from_file_location("kernel_server_test", ROOT / "kernel" / "server.py")
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
     server.CTX["設定"] = cfg
+    server._IMA["pid"] = 12345
+    server._TSUKATTA[0] = 0
+    with mock.patch.object(server, "_temoto_shimau") as shut:
+        server._temoto_tatamu_nara()
+        check(not shut.called, "事前学習中は30Bを畳まない")
+        cfg["事前学習"]["入"] = False
+        server._temoto_tatamu_nara()
+        check(shut.call_count == 1, "切にした後は従来どおり畳む")
+    server._IMA["pid"] = None
+    cfg["事前学習"]["入"] = True
     original_popen = server.subprocess.Popen
 
     class FakeProcess:
@@ -221,6 +314,10 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(code == 200 and (base / "trash" / "私の技.md").exists(), "ゴミ箱")
         code, result = request("/gakushuu")
         check(code == 200 and result["数"]["記事"] == 3, "事前学習 GET")
+        with mock.patch.object(server, "_temoto_okosu", return_value="すでに動いています") as wake, \
+             mock.patch.object(server, "_gakushuu_process"):
+            code, result = request("/gakushuu", {"入": True})
+            check(code == 200 and wake.call_count == 1, "事前学習オンで30Bを起こす")
         code, result = request("/gakushuu", {"入": False, "上限MB": 4})
         check(code == 200 and result["入"] is False and settings.load()["事前学習"]["上限MB"] == 4,
               "事前学習 POST と保存")
@@ -229,4 +326,4 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         httpd.server_close()
         worker.join(timeout=3)
 
-print("OK: FTS5・重複・容量・充電・会話休止・技提案・skills API・gakushuu API")
+print("OK: FTS5・重複・容量・充電・会話休止・30B/先生の技提案・busy・10分・モデル保持・API")

@@ -28,6 +28,7 @@ import kyoudou as gate
 import web
 
 SYSTEM = ("あなたはMacの作業係。計画し、結果を見て日本語で答える。複数手は達成条件を決める。"
+          "ファイルを作るのはwrite。"
           "移動はmove、削除はtrash。shで消す・移すな。指定されたフォルダを使い、パス途中に~を書かない。"
           "見つからなければfindでホーム以下を探す。変更後はfindかreadで確認。"
           "Macの状態はmac、指定ファイルはread、アプリはshのopen -a、設定はshのdefaults read。"
@@ -403,6 +404,16 @@ def _valid(call):
         name = func["name"]
         spec = SPECS[name]
         args = json.loads(func["arguments"])
+        if isinstance(args, dict):
+            # 30B は使わない引数に空文字を入れがち。必須の引数は空でも残す（write の content="" は空のファイル）。
+            args = {key: value for key, value in args.items()
+                    if key in spec["required"] or (value is not None and value != "")}
+            if name == "sh":
+                if "command" in args:
+                    args.pop("job", None)
+                    args.pop("action", None)
+                elif "job" in args and "action" not in args:
+                    args["action"] = "output"
         if not isinstance(args, dict) or set(args) - set(spec["properties"]) or set(spec["required"]) - set(args):
             raise ValueError("引数の名前または必須項目が違います")
         for key, value in args.items():
@@ -904,6 +915,8 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
     gate.shounin.hajimeru()
     start = time.monotonic()
     failures = 0
+    shape_errors = 0
+    shape_error_key = None
     used = 0
     seen: set[str] = set()
     force = False
@@ -948,9 +961,12 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 answer = reply.get("content") or "完了しました。"
+                # 9/29: 承認されなかった時、30B が道具の結果の指示文（「本人に伝えて終えてください」）を読み上げることがある。
+                if denied_label and "本人に伝えて" in answer:
+                    answer = f"承認されなかったので、{denied_label}はしていません。"
                 if _raw_tool_call(answer):
                     answer = (f"承認されなかったので、{denied_label}はしていません。" if denied_label
-                              else "道具の呼び出しは実行していません。")
+                              else "道具の呼び出しの形がうまく作れず、作業できませんでした。何を・どこに作るかを具体的に頼んでください（例: デスクトップに hello.py を作って）。")
                 answer = gate._redact(answer)
                 _record(session, step, "結果", {"答え": answer}, route)
                 return answer
@@ -963,6 +979,37 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                 name, args, as_read = None, None, False
                 try:
                     name, args = _valid(call)
+                except ValueError as error:
+                    func = call.get("function", {}) if isinstance(call, dict) else {}
+                    if not isinstance(func, dict):
+                        func = {}
+                    error_key = (str(func.get("name", "")), str(error))
+                    shape_errors = shape_errors + 1 if error_key == shape_error_key else 1
+                    shape_error_key = error_key
+                    raw_args = func.get("arguments", "")
+                    try:
+                        shown_args = json.dumps(json.loads(raw_args), ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        shown_args = str(raw_args)
+                    _record(session, step, "形の誤り",
+                            {"道具": gate._redact(str(func.get("name", ""))),
+                             "入力": gate._redact(shown_args)[:300], "誤り": str(error)}, route)
+                    result = {"ok": False, "結果": str(error)}
+                    if shape_errors >= 2:
+                        result["例"] = ('sh: {"command": "python3 ~/Desktop/hello.py"} / '
+                                        'write: {"path": "~/Desktop/hello.py", "content": "print(\'hello\')"}')
+                    failures += 1
+                    _record(session, step, "結果", result, route)
+                    messages.append({"role": "tool", "tool_call_id": ident,
+                                     "content": _short(result, session, step)})
+                    if shape_errors >= 4:
+                        answer = "道具の呼び出しの形を4回直せず、作業できませんでした。何を・どこに作るか具体的に頼んでください。"
+                        _record(session, step, "結果", {"答え": answer}, route)
+                        return answer
+                    continue
+                shape_errors = 0
+                shape_error_key = None
+                try:
                     args = _normalize(args)
                     # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
                     as_read = name == "chrome" and args.get("action") == "open" and not _chrome_open_requested()

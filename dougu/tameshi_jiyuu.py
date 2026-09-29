@@ -98,6 +98,14 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     checks += 1
     def call(tool_name, **args):
         return {"id": "c1", "type": "function", "function": {"name": tool_name, "arguments": json.dumps(args, ensure_ascii=False)}}
+    # 空値を捨てた後も sh の command/job は片方だけにする。
+    assert jiyuu._valid(call("sh", command="python3 ~/Desktop/hello.py", job="", action=""))[1] == {
+        "command": "python3 ~/Desktop/hello.py"}
+    assert jiyuu._valid(call("sh", command="", job="work-1"))[1] == {"job": "work-1", "action": "output"}
+    assert jiyuu._valid(call("sh", command="pwd", job="work-1", action="stop"))[1] == {"command": "pwd"}
+    assert jiyuu._valid(call("sh", job="work-1"))[1] == {"job": "work-1", "action": "output"}
+    assert jiyuu._valid(call("sh", command="pwd", job=None, action=None))[1] == {"command": "pwd"}
+    checks += 1
     def conversation(calls, mode="自動"):
         replies = iter([{"content": "", "tool_calls": calls}, {"content": "完了"}])
         seen = []
@@ -597,5 +605,50 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         with mock.patch.object(jiyuu, "_kiku", return_value=False):
             denied = jiyuu.kotaeru("音量を35にする", mode="手動")
     assert "承認されなかったので" in denied and "set volume output 35" in denied and "<tool_call>" not in denied
+    checks += 1
+
+    # 形の誤りは記録し、2回目に例を返し、4回目に短く停止する。
+    malformed = call("sh", command="", job="")
+    recorded = []
+    original_record = jiyuu._record
+    def record_shape(*args):
+        recorded.append(args)
+        return original_record(*args)
+    replies = iter([{"content": "", "tool_calls": [malformed]},
+                    {"content": "", "tool_calls": [malformed]},
+                    {"content": "完了"}])
+    prompts = []
+    def ask_shape(messages, **kwargs):
+        prompts.append(json.loads(json.dumps(messages)))
+        return next(replies)
+    with mock.patch.object(jiyuu, "_record", side_effect=record_shape):
+        with mock.patch.object(jiyuu, "_ask", side_effect=ask_shape):
+            assert jiyuu.kotaeru("パイソンでファイルを作って") == "完了"
+    shape_logs = [entry for entry in recorded if entry[2] == "形の誤り"]
+    assert len(shape_logs) == 2 and all(entry[3]["道具"] == "sh" for entry in shape_logs)
+    assert all(len(entry[3]["入力"]) <= 300 for entry in shape_logs)
+    examples = json.loads(prompts[-1][-1]["content"])["例"]
+    assert '"command": "python3 ~/Desktop/hello.py"' in examples
+    assert '"path": "~/Desktop/hello.py"' in examples
+    checks += 1
+
+    replies = iter([{"content": "", "tool_calls": [malformed]} for _ in range(4)])
+    with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)) as ask_four:
+        stopped = jiyuu.kotaeru("パイソンでファイルを作って")
+    assert ask_four.call_count == 4 and "4回" in stopped and "作業できませんでした" in stopped
+    assert "道具の呼び出しは実行していません" not in stopped
+    raw = '<tool_call>{"name":"sh","arguments":{"command":"pwd"}}</tool_call>'
+    with mock.patch.object(jiyuu, "_ask", return_value={"content": raw, "tool_calls": []}):
+        fallback = jiyuu.kotaeru("パイソンでファイルを作って")
+    assert "形がうまく作れず" in fallback and "デスクトップに hello.py" in fallback
+    # 9/29: 必須の引数は空でも残す（空のファイルを作れる）。
+    assert jiyuu._valid({"function": {"name": "write", "arguments": json.dumps({"path": "~/a.txt", "content": ""})}})[1] == {"path": "~/a.txt", "content": ""}
+    # 9/29: 承認されなかった時の指示文の読み上げは、決まった文に差し替える。
+    replies = iter([{"content": "", "tool_calls": [call("sh", command="curl https://example.org")]},
+                    {"content": "承認が得られませんでした。同じ手を繰り返さず、承認が要ることを本人に伝えて終えてください。"}])
+    with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)), \
+         mock.patch.object(jiyuu, "_kiku", return_value=False):
+        said = jiyuu.kotaeru("https://example.org を curl で取って", mode="自動")
+    assert said.startswith("承認されなかったので") and "本人に伝えて" not in said, said
     checks += 1
     print(f"jiyuu 自己試験: {checks}/{checks} PASS")

@@ -478,12 +478,15 @@ def _temoto_tsukau():
 
 def _temoto_tatamu_nara():
     """見張りから 5秒ごとに呼ばれる。使われずに MODERU_IDLE 秒たっていれば畳む。"""
+    if (CTX["設定"] or {}).get("事前学習", {}).get("入"):
+        return
     if not MODERU_IDLE or _TSUKAICHUU[0] or _IMA["pid"] is None:
         return
     if time.time() - _TSUKATTA[0] < MODERU_IDLE:
         return
     with _MODERU_LOCK:
-        if _TSUKAICHUU[0] or _IMA["pid"] is None:
+        if ((CTX["設定"] or {}).get("事前学習", {}).get("入")
+                or _TSUKAICHUU[0] or _IMA["pid"] is None):
             return
         sys.stderr.write("手元のモデル: %d分 使われていないので畳みます（次の頼みで起こし直す）\n" % (MODERU_IDLE // 60))
         _temoto_shimau()
@@ -536,6 +539,8 @@ def boot():
     S._apply(cfg, CTX)
     CTX["記憶"] = chat.Memory(cli.MEMDB)
     _gakushuu_process(cfg.get("事前学習", {}).get("入", False))
+    if cfg.get("事前学習", {}).get("入"):
+        _temoto_okosu("local:main")
     threading.Thread(target=_atatameru, daemon=True).start()
     return cfg
 
@@ -1077,6 +1082,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 CTX["設定"]["事前学習"] = updated
                 S.save(CTX["設定"])
                 _gakushuu_process(updated["入"])
+                if updated["入"]:
+                    _temoto_okosu("local:main")
                 running = _GAKUSHUU_PROCESS is not None and _GAKUSHUU_PROCESS.poll() is None
                 return self._json(gakushuu.overview(CTX["設定"], running))
             except (ValueError, OSError) as e:
@@ -1510,6 +1517,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             S._apply(CTX["設定"], CTX)
             if k == "事前学習":
                 _gakushuu_process(v["入"])
+                if v["入"]:
+                    _temoto_okosu("local:main")
             return self._json({"ok": True, "設定": CTX["設定"][k]})
 
         # ---- 気づいたこと（虫マーク）----

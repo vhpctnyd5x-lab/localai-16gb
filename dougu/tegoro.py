@@ -40,10 +40,12 @@ def _volume_matches_answer(answer: str) -> bool:
 
 
 def _run_jiyuu(args) -> int:
-    """一時HOMEの10問を新しい輪へ渡す。実行時だけ30Bが必要。"""
+    """一時HOMEの11問を新しい輪へ渡す。実行時だけ30Bが必要。"""
     import jiyuu
     import kyoudou
     rows = [json.loads(line) for line in JIYUU_DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows.append({"id": "J11", "toi": "パイソンでファイルを作って",
+                 "check": {"type": "python_file_or_question"}})
     ids = {part.strip() for part in args.id.split(",") if part.strip()}
     rows = [row for row in rows if not ids or row["id"] in ids]
     results = []
@@ -101,6 +103,9 @@ def _run_jiyuu(args) -> int:
                                                     and e.get("risk") == "戻せる" and "open -a TextEdit" in e.get("label", "")
                                                     for e in events) if kind == "open_reversible" else
                           str(home) in answer if kind == "answer_home" else
+                          (any(home.rglob("*.py")) or
+                           bool(re.search(r"(?:何を|どんな|内容|ファイル名|保存先|どこ).*(?:ですか|教えて|指定|ください|？|\?)", answer))
+                           and "作業できませんでした" not in answer and "道具の呼び出し" not in answer) if kind == "python_file_or_question" else
                           _volume_matches_answer(answer) if row["id"] == "J09" else
                           bool(re.search(check["pattern"], answer)) if kind == "answer_regex" else bool(answer.strip()))
                 keep = ROOT / "dougu" / "kekka" / "jiyuu_logs" / time.strftime("%m%d_%H%M", time.localtime(RUN_START)) / row["id"]   # 9/28: 一時の記録は消えるので、問ごとに残す
@@ -121,7 +126,7 @@ def _run_jiyuu(args) -> int:
                 os.environ[key] = value
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# 新しい輪の10問", "", "| ID | 判定 | 秒 | 答え |", "|---|---|---:|---|"]
+    lines = ["# 新しい輪の11問", "", "| ID | 判定 | 秒 | 答え |", "|---|---|---:|---|"]
     lines += [f"| {ident} | {'PASS' if ok else 'FAIL'} | {seconds} | {answer.replace('|', '｜').replace(chr(10), '<br>')} |" for ident, ok, seconds, answer in results]
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"jiyuu: PASS {sum(ok for _, ok, _, _ in results)} / FAIL {sum(not ok for _, ok, _, _ in results)}")

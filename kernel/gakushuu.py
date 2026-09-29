@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -36,7 +37,7 @@ LEARN_SEEDS = [
     "政治", "社会学", "心理学", "教育", "日本語", "英語", "言語", "文章", "読書", "著作権",
     "単位", "時間", "お金", "交通", "電気", "エネルギー", "食文化", "農業", "医療", "科学"
 ]
-DEFAULT = {"入": False, "上限MB": 2048, "充電中だけ": True,
+DEFAULT = {"入": False, "上限MB": 2048, "充電中だけ": False,
            "出どころ": {"Wikipedia": True, "振り返り": True},
            "振り返りで外の先生に聞く": False, "会話の言葉から学ぶ題を選ぶ": False}
 
@@ -232,7 +233,7 @@ def learn_once(cfg, *, wiki_module=None):
     if (folder() / "busy").exists():
         _status("会話中なので休み")
         return False
-    if opts.get("充電中だけ", True) and not charging():
+    if opts.get("充電中だけ", False) and not charging():
         _status("充電を待っています")
         return False
     limit = opts.get("上限MB", 2048) * 1024 * 1024
@@ -366,65 +367,120 @@ def change_skill(body):
     return {"ok": True, "スキル": skills()}
 
 
-_REST_LOGGED = False
+_WAIT_LOGGED = False
+
+
+def _local_reflect(record):
+    """起きている30Bだけに聞く。会話が始まれば途中の答えを捨てる。"""
+    busy = folder() / "busy"
+    if busy.exists():
+        return None, True
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2) as health:
+            if json.load(health).get("status") != "ok":
+                return None, False
+        if busy.exists():
+            return None, True
+        prompt = ("次に同じ頼みが来た時の具体的な手順を日本語で短く提案してください。\n"
+                  f"依頼: {record.get('題', '')}\n"
+                  f"道具: {', '.join(record.get('道具', []))}\n"
+                  f"成否: {record.get('成否', '不明')}\n"
+                  f"記録: {record.get('文', '')[:800]}")
+        payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": 300, "stream": True, "temperature": 0,
+                   "chat_template_kwargs": {"enable_thinking": False}}
+        req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+                                     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        parts = []
+        # この Mac では最初の1語まで10秒を超える（記録を読むため）。busy は語が届くたびに見る。
+        with urllib.request.urlopen(req, timeout=90) as stream:
+            while True:
+                if busy.exists():
+                    return None, True
+                line = stream.readline()
+                if busy.exists():
+                    return None, True
+                if not line:
+                    break
+                if not line.startswith(b"data: "):
+                    continue
+                data = line[6:].strip()
+                if data == b"[DONE]":
+                    break
+                chunk = json.loads(data)
+                parts.append(chunk.get("choices", [{}])[0].get("delta", {}).get("content") or "")
+        return "".join(parts).strip() or None, False
+    except (OSError, ValueError, KeyError, IndexError):
+        return None, busy.exists()
+
+
+def _safe_for_teacher(value):
+    import kyoudou as gate
+    value = str(value)
+    gate._register_secret_values(value)
+    value = re.sub(r'(?:~|/)[^\s、。，]+|\b[^\s/]+\.[A-Za-z0-9]{1,8}\b', "[ファイル]", value)
+    return gate._scrub(value)
 
 
 def reflect_once(cfg, *, ask=None, network=None):
-    global _REST_LOGGED
+    global _WAIT_LOGGED
     opts = cfg.get("事前学習", DEFAULT)
     if not opts.get("出どころ", {}).get("振り返り"):
         return False
     state = _state()
-    if time.time() - state.get("最後の提案時刻", 0) < 3600:
+    if time.time() - state.get("最後の提案時刻", 0) < 600:
         return False
     seen = set(state.get("見た記録", []))
     record = next((r for r in _records() if r["識別"] not in seen), None)
     if not record:
         return False
-    if not opts.get("振り返りで外の先生に聞く", False):
-        # 「いま」を毎回上書きすると学んでいる様子が見えなくなるので、記録に1回だけ書く。
-        if not _REST_LOGGED:
-            _log("振り返り: 外の先生が切なので休み（入にすると、うまくいかなかった頼みから技を提案します）")
-            _REST_LOGGED = True
+    local_answer, interrupted = _local_reflect(record)
+    if interrupted:
         return False
-    if not cfg.get("先生を使う"):
-        return False
+    answer = local_answer
+    source = "30B"
     external = [x for x in (cfg.get("先生") or [])
                 if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
-    if not external:
+    if opts.get("振り返りで外の先生に聞く", False) and cfg.get("先生を使う") and external:
+        if network is None:
+            try:
+                socket.create_connection(("ja.wikipedia.org", 443), timeout=3).close()
+                network = True
+            except OSError:
+                network = False
+        if network:
+            if ask is None:
+                import sensei
+                ask = sensei.kiku
+            question = ("次に同じ頼みが来た時の具体的な手順を日本語で短く直してください。\n"
+                        + "依頼: " + _safe_for_teacher(record.get("題", ""))
+                        + "\n道具: " + _safe_for_teacher(", ".join(record.get("道具", [])))
+                        + "\n成否: " + _safe_for_teacher(record.get("成否", "不明"))
+                        + "\n30Bの提案: " + _safe_for_teacher(local_answer or "（なし）"))
+            try:
+                response = ask(question, {**cfg, "先生": external}, timeout=60)
+                teacher_answer = str(response.get("答え", "")).strip()
+                if teacher_answer and not response.get("error"):
+                    answer = teacher_answer
+                    source = "30B＋先生" if local_answer else "先生"
+            except (OSError, ValueError, TypeError):
+                pass
+    if not answer:
+        if not _WAIT_LOGGED:
+            _log("振り返り: 30B を待っています")
+            _WAIT_LOGGED = True
         return False
-    if network is None:
-        try:
-            socket.create_connection(("ja.wikipedia.org", 443), timeout=3).close()
-            network = True
-        except OSError:
-            network = False
-    if not network:
-        return False
-    if ask is None:
-        import sensei
-        ask = sensei.kiku
-    import kyoudou as gate
-    request = record.get("題", "")
-    gate._register_secret_values(request)
-    request = re.sub(r'(?:~|/)[^\s、。，]+|\b[^\s/]+\.[A-Za-z0-9]{1,8}\b', "[ファイル]", request)
-    request = gate._scrub(request)
-    tool_names = [name for name in record.get("道具", []) if re.fullmatch(r"[A-Za-z_]{1,30}", name)]
-    question = ("次に同じ頼みが来た時の具体的な手順を日本語で短く提案してください。\n"
-                + "依頼: " + request + "\n道具: " + ", ".join(tool_names)
-                + "\n成否: " + record.get("成否", "不明"))
-    question = gate._scrub(question)
-    response = ask(question, {**cfg, "先生": external}, timeout=60)
-    answer = str(response.get("答え", "")).strip()
-    state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
-    _write(folder() / "state.json", state)
-    if not answer or response.get("error"):
-        return False
+    _WAIT_LOGGED = False
     # 同じ本文の提案はファイル名が違っても重ねない。
-    if any(s["body"].strip() == answer for s in skills()):
+    existing_skills = skills()
+    if any(re.sub(r"\n出どころ: (?:30B|30B＋先生|先生)\s*$", "", s["body"].strip()) == answer
+           for s in existing_skills):
+        state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
+        _write(folder() / "state.json", state)
         return False
     stem = re.sub(r"[^一-龥ぁ-んァ-ヶー\w-]", "", record["題"])[:28] or "振り返り"
-    existing = {s["name"] for s in skills()}
+    existing = {s["name"] for s in existing_skills}
     name = stem
     i = 2
     while name in existing:
@@ -432,11 +488,14 @@ def reflect_once(cfg, *, ask=None, network=None):
         i += 1
     path = skills_folder() / (name + ".md")
     path.parent.mkdir(parents=True, exist_ok=True)
-    skill_text = _skill_text(name, "失敗した頼みを次に進める手順", False, "カーネル", answer)
+    skill_text = _skill_text(name, "次に同じ頼みを進める手順", False, "カーネル",
+                             answer + "\n出どころ: " + source)
     if used_bytes() + len(skill_text.encode("utf-8")) > opts.get("上限MB", 2048) * 1024 * 1024:
         return False
     path.write_text(skill_text, encoding="utf-8")
-    _log(f"技を提案: {name}")
+    state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
+    _write(folder() / "state.json", state)
+    _log(f"振り返り: {stem} → 技を提案: {name}")
     _status(f"技を提案: {name}", 最後の提案時刻=time.time())
     return True
 
@@ -528,7 +587,7 @@ def run():
                 opts = cfg["事前学習"]
                 if (folder() / "busy").exists():
                     _status("会話中なので休み")
-                elif opts.get("充電中だけ", True) and not charging():
+                elif opts.get("充電中だけ", False) and not charging():
                     _status("充電を待っています")
                 elif used_bytes() >= opts.get("上限MB", 2048) * 1024 * 1024:
                     _status("容量の上限で休み")
