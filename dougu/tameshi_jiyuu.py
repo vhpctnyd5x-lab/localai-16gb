@@ -650,5 +650,46 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
          mock.patch.object(jiyuu, "_kiku", return_value=False):
         said = jiyuu.kotaeru("https://example.org を curl で取って", mode="自動")
     assert said.startswith("承認されなかったので") and "本人に伝えて" not in said, said
+    # 9/29: Qwen3.5 系の XML の呼び出しを読む・モデルごとの選び方・何もできなかった時の答え。
+    assert jiyuu._xml_call("<function=sh>\n<parameter=command>\nls ~/Desktop\n</parameter>\n<parameter=background>false</parameter>\n</function>") == {"name": "sh", "arguments": {"command": "ls ~/Desktop", "background": False}}
+    sent = []
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"temperature": 0.7, "presence_penalty": 1.5, "parallel_tool_calls": false, "tools": []}'}), \
+         mock.patch.object(jiyuu, "_post", side_effect=lambda payload: sent.append(payload) or {"content": "はい"}):
+        jiyuu._ask([{"role": "user", "content": "x"}])
+    assert sent[0]["temperature"] == 0.7 and sent[0]["presence_penalty"] == 1.5 and sent[0]["parallel_tool_calls"] is False and sent[0]["tools"] == jiyuu.TOOLS
+    with mock.patch.object(jiyuu, "_ask", return_value={"content": "", "tool_calls": []}):
+        assert jiyuu.kotaeru("試験", mode="自動").startswith("うまく答えを作れませんでした")
+    # 9/29: parse_tool_calls=false なら生の返事を XML でも読む（閉じの札が stop で消えても）。
+    raw_reply = "考え<tool_call>\n<function=read>\n<parameter=path>\n~/Documents/meeting.txt\n</parameter>\n</function>"
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"parse_tool_calls": false, "stop": ["</tool_call>"]}'}), \
+         mock.patch.object(jiyuu, "_post", return_value={"content": raw_reply}):
+        got = jiyuu._ask([{"role": "user", "content": "x"}])
+    assert got["content"] == "考え" and json.loads(got["tool_calls"][0]["function"]["arguments"]) == {"path": "~/Documents/meeting.txt"}, got
+    # 9/29: 読み取らない設定でも、サーバーが抜き出した呼び出しは使う。
+    parsed = {"content": "<think></think>", "tool_calls": [{"id": "c9", "type": "function", "function": {"name": "read", "arguments": '{"path": "~/a.txt"}'}}]}
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"parse_tool_calls": false}'}), \
+         mock.patch.object(jiyuu, "_post", return_value=parsed):
+        assert jiyuu._ask([{"role": "user", "content": "x"}])["tool_calls"][0]["function"]["name"] == "read"
+    # 9/29: raw_template なら /apply-template → /completion で生の文を読む（stop で閉じの札が消えても）。
+    posted = []
+    def fake_post_to(path, payload):
+        posted.append((path, payload))
+        if path == "/apply-template":
+            return {"prompt": "<|im_start|>user\nx<|im_end|>\n<|im_start|>assistant\n"}
+        return {"content": "<tool_call>\n<function=read>\n<parameter=path>\n~/a.txt\n</parameter>\n</function>\n", "tokens_evaluated": 321}
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"raw_template": true}'}), \
+         mock.patch.object(jiyuu, "_post_to", side_effect=fake_post_to):
+        got = jiyuu._ask([{"role": "user", "content": "x"}])
+    assert [p for p, _ in posted] == ["/apply-template", "/completion"] and posted[0][1]["tools"] == jiyuu.TOOLS
+    assert posted[1][1]["stop"] == ["</tool_call>"] and json.loads(got["tool_calls"][0]["function"]["arguments"]) == {"path": "~/a.txt"}
+    assert jiyuu._LAST_USAGE["prompt_tokens"] == 321
+    # 9/29: 道具が止められた後に答えの文が空なら「完了」と言わず、止められたことを伝える。
+    replies = iter([{"content": "", "tool_calls": [call("sh", command="sudo ls")]}, {"content": "", "tool_calls": []}])
+    with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)):
+        said = jiyuu.kotaeru("試験", mode="自動")
+    assert said.startswith("終わりまでできませんでした") and "禁止" in said, said
+    # 9/30: 対話の python は承認を聞かずに、write への道を返す。
+    seen = conversation([call("sh", command="python")])
+    assert "write" in seen[1][-1]["content"] and "承認" not in seen[1][-1]["content"], seen[1][-1]
     checks += 1
     print(f"jiyuu 自己試験: {checks}/{checks} PASS")

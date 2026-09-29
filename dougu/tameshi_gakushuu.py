@@ -75,10 +75,27 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
             return {"題": f"深さ記事{cls.calls}", "本文": "深さ確認の記事本文。", "ほかの候補": links}
 
     gakushuu._write(gakushuu.folder() / "state.json", {"版": gakushuu.STATE_VERSION, "次の題": []})
+    saved_depth = gakushuu.MAX_DEPTH
+    gakushuu.MAX_DEPTH = 1   # 1段の時の決まり（3段の時は下で確かめる）
     check(gakushuu.learn_once(cfg, wiki_module=DepthWiki), "種記事からリンクを追加")
     check(gakushuu.learn_once(cfg, wiki_module=DepthWiki), "深さ1の記事を学習")
     check("二段目候補" not in [x["題"] for x in gakushuu._state()["次の題"]], "深さ1からリンクを広げない")
-    old = {"版": gakushuu.STATE_VERSION - 1, "次の題": [{"題": "ゆめりあ", "深さ": 1}]}
+    gakushuu.MAX_DEPTH = saved_depth
+    check(gakushuu.MAX_DEPTH == 3, "既定は3段までたどる")
+    # 9/30: 題が尽きたら、覚えた記事を引き直してリンクを広げる（版2の state から入れ直す）。
+    v2 = {"版": 2, "見た題": ["コンピュータ", "広げる記事"], "次の題": [], "見た記録": ["x.jsonl:1"]}
+    upgraded = gakushuu._version_state(v2)
+    check(upgraded["広げる"] == [{"題": "広げる記事", "深さ": 1}] and upgraded["見た記録"] == ["x.jsonl:1"], "版2から版3へ")
+    class GrowWiki:
+        @classmethod
+        def ask(cls, title, chars=5000):
+            return {"題": title, "本文": "本文", "ほかの候補": ["広げた題一", "広げた題二", "(括弧)"]}
+    gakushuu._write(gakushuu.folder() / "state.json", {**upgraded, "見た題": list(gakushuu.LEARN_SEEDS) + upgraded["見た題"]})
+    check(not gakushuu.learn_once(cfg, wiki_module=GrowWiki), "広げる回は記事を足さない")
+    grown = gakushuu._state()
+    check([x["題"] for x in grown["次の題"]] == ["広げた題一", "広げた題二"] and all(x["深さ"] == 2 for x in grown["次の題"])
+          and grown["広げる"] == [], "覚えた記事からリンクを広げる")
+    old = {"版": 1, "次の題": [{"題": "ゆめりあ", "深さ": 1}]}
     check(gakushuu._topic(old, set(), False) == gakushuu.LEARN_SEEDS[0], "旧版の次の題を捨てる")
     check(gakushuu._version_state({"版": 1, "見た記録": ["x.jsonl:1"]})["見た記録"] == [], "旧版の見た記録を捨てる")
     plain = [x for x in gakushuu.LEARN_SEEDS if "(" not in x]
@@ -188,6 +205,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     state["最後の提案時刻"] -= 601
     gakushuu._write(gakushuu.folder() / "state.json", state)
     record["識別"] = "record-2"
+    record["題"] = "[ファイル] を読み直す"   # 9/30: 同じ頼みは1回だけ振り返るので、頼みも変える
     sent = []
     def teacher(question, config, timeout=60):
         sent.append((question, config["先生"]))
@@ -204,6 +222,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
           "先生の答えを採用")
 
     record["識別"] = "record-3"
+    record["題"] = "[ファイル] を並べる"   # 9/30: 同じ頼みは1回だけ振り返るので、頼みも変える
     state = gakushuu._state()
     state["最後の提案時刻"] -= 601
     gakushuu._write(gakushuu.folder() / "state.json", state)

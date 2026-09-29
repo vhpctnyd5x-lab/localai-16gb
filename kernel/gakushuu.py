@@ -18,7 +18,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path.home() / "Library" / "Application Support" / "kernel-ai"
-STATE_VERSION = 2
+STATE_VERSION = 3
+# 9/30: 種から1段だけだと 400記事で題が尽きて止まった。3段までたどる（1記事から5つ・同じ絞り）。
+MAX_DEPTH = 3
 # Wikipedia 日本語版にある、Mac の作業と基本知識に役立つ題。
 LEARN_SEEDS = [
     "コンピュータ", "パーソナルコンピュータ", "オペレーティングシステム", "macOS", "Unix", "Linux",
@@ -71,9 +73,13 @@ def _state():
 
 def _version_state(state):
     state = dict(state) if isinstance(state, dict) else {}
-    if state.get("版") != STATE_VERSION:
-        state["次の題"] = []
-        state["見た記録"] = []   # 前の版は、記録を「見た」にするだけで何も学んでいなかった
+    version = state.get("版")
+    if version != STATE_VERSION:
+        if version != 2:
+            state["次の題"] = []
+            state["見た記録"] = []   # 版1は、記録を「見た」にするだけで何も学んでいなかった
+        # 9/30 版3: 版2は種から1段だけで、覚えた記事のリンクを残していない。種以外の記事を「広げる」列に入れ直す。
+        state["広げる"] = [{"題": t, "深さ": 1} for t in state.get("見た題", []) if t not in LEARN_SEEDS]
     state["版"] = STATE_VERSION
     return state
 
@@ -212,7 +218,7 @@ def _topic_entry(state, known, use_conversation=False):
     queue = []
     for item in state.get("次の題", []):
         if isinstance(item, dict):
-            queue.append((item.get("題"), 1))
+            queue.append((item.get("題"), int(item.get("深さ", 1) or 1)))
         else:
             queue.append((item, 1))
     queue += [(title, 1) for title in (_recent_topics() if use_conversation else [])]
@@ -247,7 +253,24 @@ def learn_once(cfg, *, wiki_module=None):
     state = _state()
     entry = _topic_entry(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
     if not entry:
-        _status("次の題を待っています")
+        # 題が尽きたら、覚えた記事を引き直してリンクを広げる（wiki.py の手元のしまい場所を使うので軽い）。
+        grow = [x for x in state.get("広げる", []) if isinstance(x, dict) and int(x.get("深さ", 1) or 1) < MAX_DEPTH]
+        if not grow:
+            _status("次の題を待っています")
+            return False
+        item = grow[0]
+        article = wiki_module.ask(item["題"], chars=5000) or {}
+        queued = {x.get("題") if isinstance(x, dict) else x for x in state.get("次の題", [])}
+        additions = []
+        for candidate in article.get("ほかの候補", []):
+            if (_valid_title(candidate) and candidate not in known and candidate not in queued
+                    and candidate not in state.get("見た題", [])):
+                additions.append({"題": candidate.strip()[:80], "深さ": int(item.get("深さ", 1)) + 1})
+                queued.add(candidate)
+                if len(additions) == 5:
+                    break
+        _status(f"リンクを広げた: {item['題']}（{len(additions)}題）", 広げる=grow[1:],
+                次の題=(state.get("次の題", []) + additions)[:100])
         return False
     title, depth = entry
     # wiki.py が User-Agent と2秒以上の間隔を管理する。
@@ -272,14 +295,14 @@ def learn_once(cfg, *, wiki_module=None):
                    (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
     remaining = [x for x in state.get("次の題", [])
                  if (x.get("題") if isinstance(x, dict) else x) != title]
-    if depth == 0:
+    if depth < MAX_DEPTH:
         additions = []
         queued = {x.get("題") if isinstance(x, dict) else x for x in remaining}
         for candidate in article.get("ほかの候補", []):
             if (not _valid_title(candidate) or candidate in known or candidate in queued
                     or candidate in state.get("見た題", [])):
                 continue
-            additions.append({"題": candidate.strip()[:80], "深さ": 1})
+            additions.append({"題": candidate.strip()[:80], "深さ": depth + 1})
             queued.add(candidate)
             if len(additions) == 5:
                 break
@@ -373,6 +396,10 @@ def change_skill(body):
 _WAIT_LOGGED = False
 
 
+def _stem(title):
+    return re.sub(r"[^一-龥ぁ-んァ-ヶー\w-]", "", str(title))[:28] or "振り返り"
+
+
 def _local_reflect(record):
     """起きている30Bだけに聞く。会話が始まれば途中の答えを捨てる。"""
     busy = folder() / "busy"
@@ -435,7 +462,10 @@ def reflect_once(cfg, *, ask=None, network=None):
     if time.time() - state.get("最後の提案時刻", 0) < 600:
         return False
     seen = set(state.get("見た記録", []))
-    record = next((r for r in _records() if r["識別"] not in seen), None)
+    # 9/30: 道具を使わなかった雑談（「ほんとに？」など）は技にならない。同じ頼みは1回だけ（-2・-3 が並んだ）。
+    proposed = {re.sub(r"-\d+$", "", s["name"]) for s in skills() if s.get("made_by") == "カーネル"}
+    record = next((r for r in _records() if r["識別"] not in seen and r.get("道具")
+                   and _stem(r.get("題", "")) not in proposed), None)
     if not record:
         return False
     local_answer, interrupted = _local_reflect(record)
@@ -482,7 +512,7 @@ def reflect_once(cfg, *, ask=None, network=None):
         state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
         _write(folder() / "state.json", state)
         return False
-    stem = re.sub(r"[^一-龥ぁ-んァ-ヶー\w-]", "", record["題"])[:28] or "振り返り"
+    stem = _stem(record["題"])
     existing = {s["name"] for s in existing_skills}
     name = stem
     i = 2

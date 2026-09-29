@@ -328,29 +328,32 @@ def _post(payload):
     _LAST_USAGE.update(body.get("usage") or {})
     return body["choices"][0]["message"]
 
-def _ask(messages, thinking=False, final=False):
-    """final=True は道具を使わせず、答えだけを書かせる（9/28: 終わり時を 30B が決められない対策）。"""
-    payload = {"model": "local", "messages": messages, "tools": TOOLS,
-               "tool_choice": "none" if final else "auto", "cache_prompt": True,
-               "chat_template_kwargs": {"enable_thinking": thinking},
-               "max_tokens": 128 if thinking else 512, "temperature": 0.2}
-    try:
-        return _post(payload)
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
-        if re.search(r"context|exceed", body, re.I):
-            raise _ContextFull(body[:200]) from error
-        if error.code != 500:
-            raise
-    # 9/28: 30B が道具の引数の JSON を壊すと、サーバーは 500 を返す。生の返事をもらって、こちらで緩く読む。
-    payload["parse_tool_calls"] = False
-    try:
-        raw = _post(payload).get("content") or ""
-    except urllib.error.HTTPError:
-        raw = ""
+_OPT_KEYS = {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty", "parallel_tool_calls",
+             "parse_tool_calls", "stop"}
+
+
+def _xml_call(block):
+    """Qwen3.5 系の書き方: <function=名前><parameter=鍵>値</parameter></function>。"""
+    match = re.match(r"\s*<function=([^>\s]+)>(.*?)(?:</function>|$)", block, re.S)
+    if not match:
+        return None
+    args = {}
+    for key, value in re.findall(r"<parameter=([^>\s]+)>(.*?)</parameter>", match.group(2), re.S):
+        value = value.strip("\n")
+        args[key] = {"true": True, "false": False}.get(value.strip(), value)
+    return {"name": match.group(1), "arguments": args}
+
+
+def _parse_raw(raw):
+    """生の返事から道具の呼び出しを読む（Qwen3 の JSON と Qwen3.5 系の XML）。"""
+    # stop に "</tool_call>" を入れると、閉じの札は返事に残らない。足して読む。
+    if raw.count("<tool_call>") > raw.count("</tool_call>"):
+        raw += "</tool_call>"
     calls = []
     for block in re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", raw, re.S):
         data = _loose_json(block)
+        if not (isinstance(data, dict) and isinstance(data.get("name"), str)):
+            data = _xml_call(block)
         if isinstance(data, dict) and isinstance(data.get("name"), str):
             args = data.get("arguments", {})
             calls.append({"id": "call_" + uuid.uuid4().hex[:8], "type": "function",
@@ -359,6 +362,69 @@ def _ask(messages, thinking=False, final=False):
             calls.append({"id": "call_" + uuid.uuid4().hex[:8], "type": "function",
                           "function": {"name": "形が壊れた呼び出し", "arguments": "{}"}})
     return {"content": re.sub(r"<tool_call>.*?</tool_call>", "", raw, flags=re.S).strip(), "tool_calls": calls}
+
+
+def _post_to(path, payload):
+    url = os.environ.get("KERNEL_LOCAL_URL", "http://127.0.0.1:8080").rstrip("/") + path
+    request = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=240) as response:
+        return json.load(response)
+
+
+def _ask_raw(payload):
+    """9/29: 会話を文に直すのはサーバー（/apply-template）、書かせた生の文はこちらで読む（MiMo 9B）。
+    llama.cpp b31b71f は Qwen3.5 系の XML の呼び出しを、閉じの札が無いと値の終わりを越えて読み、JSON を壊す。"""
+    tools = [] if payload.get("tool_choice") == "none" else payload["tools"]
+    prompt = _post_to("/apply-template", {"messages": payload["messages"], "tools": tools,
+                                          "chat_template_kwargs": payload.get("chat_template_kwargs", {})})["prompt"]
+    body = {"prompt": prompt, "n_predict": payload["max_tokens"], "cache_prompt": True, "stop": ["</tool_call>"],
+            **{key: payload[key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty")
+               if key in payload}}
+    result = _post_to("/completion", body)
+    _LAST_USAGE.clear()
+    _LAST_USAGE["prompt_tokens"] = result.get("tokens_evaluated") or 0
+    return _parse_raw(result.get("content") or "")
+
+
+def _ask(messages, thinking=False, final=False):
+    """final=True は道具を使わせず、答えだけを書かせる（9/28: 終わり時を 30B が決められない対策）。"""
+    payload = {"model": "local", "messages": messages, "tools": TOOLS,
+               "tool_choice": "none" if final else "auto", "cache_prompt": True,
+               "chat_template_kwargs": {"enable_thinking": thinking},
+               "max_tokens": 128 if thinking else 512, "temperature": 0.2}
+    # 9/29: モデルごとの選び方（例 Qwen3.5 系は温度0.7・presence_penalty 1.5・1回に1つの呼び出し）。
+    try:
+        extra = json.loads(os.environ.get("KERNEL_JIYUU_OPTS") or "{}")
+    except ValueError:
+        extra = {}
+    payload.update({key: value for key, value in extra.items() if key in _OPT_KEYS})
+    if extra.get("raw_template"):
+        return _ask_raw(payload)
+    # 9/29: parse_tool_calls=false なら、はじめから生の返事をこちらで読む（llama.cpp b31b71f は Qwen3.5 系の
+    # XML の呼び出しで </parameter> を越えて読み、後ろの呼び出しまで1つの値にしてしまう）。
+    if payload.get("parse_tool_calls") is not False:
+        try:
+            return _post(payload)
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            if re.search(r"context|exceed", body, re.I):
+                raise _ContextFull(body[:200]) from error
+            if error.code != 500:
+                raise
+        # 9/28: 30B が道具の引数の JSON を壊すと、サーバーは 500 を返す。生の返事をもらって、こちらで緩く読む。
+        payload["parse_tool_calls"] = False
+    try:
+        reply = _post(payload)
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        if re.search(r"context|exceed", body, re.I):
+            raise _ContextFull(body[:200]) from error
+        reply = {}
+    if reply.get("tool_calls"):   # 読み取らない設定を聞かずに抜き出す形式もある（MiMo 9B）。読めた呼び出しは使う
+        return reply
+    raw = reply.get("content") or ""
+    return _parse_raw(raw)
 
 def _text_call(content: str):
     """道具の呼び出しを文字で書いた返事（例: mac\n{"what": "音量"}）を、呼び出しとして読む（9/28 J09）。"""
@@ -915,6 +981,8 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
     gate.shounin.hajimeru()
     start = time.monotonic()
     failures = 0
+    succeeded = 0
+    last_problem = ""
     shape_errors = 0
     shape_error_key = None
     used = 0
@@ -960,7 +1028,12 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                 reply["content"] = "日本語で答えられませんでした。"
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
-                answer = reply.get("content") or "完了しました。"
+                # 9/29: 道具が1つも成功していないのに「完了しました」とは言わない（返事が空・壊れた時）。
+                # 答えの文が空の時: 最後の道具が失敗していれば、それを伝える（9/29 MiMo 9B が止められた後に空で終え「完了」と出た）。
+                answer = reply.get("content") or (
+                    f"終わりまでできませんでした（{last_problem}）。" if last_problem else
+                    "完了しました。" if succeeded else
+                    "うまく答えを作れませんでした。頼み方を変えて、もう一度試してください。")
                 # 9/29: 承認されなかった時、30B が道具の結果の指示文（「本人に伝えて終えてください」）を読み上げることがある。
                 if denied_label and "本人に伝えて" in answer:
                     answer = f"承認されなかったので、{denied_label}はしていません。"
@@ -1033,6 +1106,9 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                         result = {"ok": False, "結果": "まだ使えません（自分で試してから）。道具の失敗が2回必要です。"}
                     elif name == "sensei" and (not (settei or {}).get("先生を使う") or not _external_teachers(settei) or not _network_available()):
                         result = {"ok": False, "結果": "外の先生は使えません"}
+                    elif name == "sh" and re.fullmatch(r"\s*python3?(?:\s+-i)?\s*", args.get("command", "")):
+                        # 9/30: 対話の python は砂箱では動かない（30B が J11 で3回これを呼び、承認で止まった）。
+                        result = {"ok": False, "結果": "対話の python は使えません。ファイルを作るなら write、動かすなら sh で python3 ファイル名。"}
                     elif mode == "読むだけ" and risk != "見る":
                         result = {"ok": False, "結果": "読むだけの設定なので、見る以外はしません"}
                     elif (mode == "手動" and risk != "見る" or mode == "自動" and risk == "戻せない") and not _kiku(name, args, risk):
@@ -1054,6 +1130,10 @@ def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None
                         if name == "find":
                             result = _retry_find(args, result, text)
                         result = _missing_hint(name, args, result)
+                    if result.get("ok"):
+                        succeeded += 1
+                    elif risk != "同じ手":   # 同じ手の注意は 30B への指示なので、本人には見せない
+                        last_problem = str(result.get("結果", ""))[:120]
                     if name != "sensei" and not result.get("ok"):
                         failures += 1
                 except Exception as error:
