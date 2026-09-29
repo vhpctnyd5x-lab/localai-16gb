@@ -161,10 +161,12 @@ def _records():
             if p.suffix == ".jsonl":
                 for first in lines[:5]:
                     event = json.loads(first)
-                    if event.get("段階") == "開始":
-                        request = str((event.get("内容") or {}).get("依頼", ""))
+                    # 9/29: 新しい輪の記録は「依頼」の行に「文」で残る（前の輪は「開始」の「依頼」）。
+                    if event.get("段階") in ("開始", "依頼"):
+                        content = event.get("内容") if isinstance(event.get("内容"), dict) else {}
+                        request = str(content.get("依頼") or content.get("文") or "")
                         break
-            for line in lines[-30:]:
+            for line in reversed(lines[-30:]):
                 obj = json.loads(line)
                 content = json.dumps(obj, ensure_ascii=False)
                 detail = obj.get("内容") if isinstance(obj.get("内容"), dict) else {}
@@ -180,6 +182,7 @@ def _records():
                          if isinstance(x.get("内容"), dict) and x.get("段階") == "提案"]
                 found.append({"題": topic, "文": content[:2500], "道具": [x for x in tools if x],
                               "成否": "失敗" if bad else "遅い", "識別": p.name + ":" + ident})
+                break   # 1つの頼みにつき1つ（同じ失敗の行が13あっても、振り返りは1回）
         except (OSError, ValueError, TypeError):
             continue
     return found
