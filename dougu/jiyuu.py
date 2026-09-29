@@ -37,6 +37,7 @@ SYSTEM = ("あなたはMacの作業係。計画し、結果を見て日本語で
           "手順はskill、senseiは最後。道具なしで終了。")
 
 _OUTBOUND = threading.local()
+_REQUEST_OPTS = threading.local()
 
 
 def _outbound():
@@ -398,6 +399,7 @@ def _ask(messages, thinking=False, final=False):
         extra = json.loads(os.environ.get("KERNEL_JIYUU_OPTS") or "{}")
     except ValueError:
         extra = {}
+    extra.update(getattr(_REQUEST_OPTS, "value", {}))
     payload.update({key: value for key, value in extra.items() if key in _OPT_KEYS})
     if extra.get("raw_template"):
         return _ask_raw(payload)
@@ -961,6 +963,18 @@ def _retry_find(args, result, request_text=""):
     return result
 
 def kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None, on_event=None, settei=None) -> str:
+    previous = getattr(_REQUEST_OPTS, "value", None)
+    _REQUEST_OPTS.value = (settei or {}).get("輪の選び方") or {}
+    try:
+        return _kotaeru(text, rireki=rireki, mode=mode, on_event=on_event, settei=settei)
+    finally:
+        if previous is None:
+            del _REQUEST_OPTS.value
+        else:
+            _REQUEST_OPTS.value = previous
+
+
+def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = None, on_event=None, settei=None) -> str:
     if not text or not text.strip():
         return "頼みが空です"
     mode = mode or "自動"

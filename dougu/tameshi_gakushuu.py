@@ -333,8 +333,11 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(code == 200 and (base / "trash" / "私の技.md").exists(), "ゴミ箱")
         code, result = request("/gakushuu")
         check(code == 200 and result["数"]["記事"] == 3, "事前学習 GET")
+        # 9/30: 本物の 30B が 8080 で動いていても左右されないよう、「何も載っていない」ことにする。
         with mock.patch.object(server, "_temoto_okosu", return_value="すでに動いています") as wake, \
-             mock.patch.object(server, "_gakushuu_process"):
+             mock.patch.object(server, "_gakushuu_process"), \
+             mock.patch.object(server, "_notteru", return_value=False), \
+             mock.patch.dict(server._IMA, {"key": None, "pid": None}):
             code, result = request("/gakushuu", {"入": True})
             check(code == 200 and wake.call_count == 1, "事前学習オンで30Bを起こす")
         code, result = request("/gakushuu", {"入": False, "上限MB": 4})

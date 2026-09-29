@@ -683,6 +683,18 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert [p for p, _ in posted] == ["/apply-template", "/completion"] and posted[0][1]["tools"] == jiyuu.TOOLS
     assert posted[1][1]["stop"] == ["</tool_call>"] and json.loads(got["tool_calls"][0]["function"]["arguments"]) == {"path": "~/a.txt"}
     assert jiyuu._LAST_USAGE["prompt_tokens"] == 321
+    # 頼みごとの選び方は環境変数より優先し、終われば元に戻る。
+    posted.clear()
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"raw_template": false}'}), \
+         mock.patch.object(jiyuu, "_post_to", side_effect=fake_post_to), \
+         mock.patch.object(jiyuu, "_kotaeru", side_effect=lambda *a, **k: jiyuu._ask([{"role": "user", "content": "x"}])):
+        got = jiyuu.kotaeru("試験", settei={"輪の選び方": {"raw_template": True}})
+        assert got["tool_calls"][0]["function"]["name"] == "read"
+        assert [p for p, _ in posted] == ["/apply-template", "/completion"]
+        assert not hasattr(jiyuu._REQUEST_OPTS, "value")
+        with mock.patch.object(jiyuu, "_post", return_value={"content": "通常"}):
+            assert jiyuu._ask([{"role": "user", "content": "x"}])["content"] == "通常"
+    checks += 1
     # 9/29: 道具が止められた後に答えの文が空なら「完了」と言わず、止められたことを伝える。
     replies = iter([{"content": "", "tool_calls": [call("sh", command="sudo ls")]}, {"content": "", "tool_calls": []}])
     with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)):

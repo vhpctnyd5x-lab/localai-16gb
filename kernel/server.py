@@ -218,6 +218,12 @@ MODERU = {
     },
     # ★ GLM-4.7-Flash は 2026-09-11 に落選: Mac で 6.8 t/s（30B素の6割）、6段 70% vs 100%
 }
+MODERU["local:mimo9"] = {
+    "名": "手元 MiMo-V2.6 蒸留 9B（5.4GB）",
+    "file": os.path.join(_MODELS, "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"),
+    "opts": MODERU["local:main"]["opts"].copy(),
+    "輪の選び方": {"raw_template": True},
+}
 
 # いま載っているもの。プロセスを立てたのが誰かも覚える
 _IMA = {"key": None, "pid": None}
@@ -456,6 +462,14 @@ def moderu_youi(key):
         return True, "%s に入れ替えました" % MODERU[key]["名"]
 
 
+def _gakushuu_moderu_okosu():
+    """事前学習を入れても、8080 で動作中または読み込み中のモデルを保つ。"""
+    with _MODERU_LOCK:
+        if _notteru() or (_IMA["pid"] and _pid_ikiteru(_IMA["pid"])):
+            return
+        _temoto_okosu("local:main")
+
+
 @contextlib.contextmanager
 def _temoto_tsukau():
     """頼みの間、手元のモデルを畳ませない。先生が手元なら、畳んだ後の起こし直しもここで。"""
@@ -540,7 +554,7 @@ def boot():
     CTX["記憶"] = chat.Memory(cli.MEMDB)
     _gakushuu_process(cfg.get("事前学習", {}).get("入", False))
     if cfg.get("事前学習", {}).get("入"):
-        _temoto_okosu("local:main")
+        _gakushuu_moderu_okosu()
     threading.Thread(target=_atatameru, daemon=True).start()
     return cfg
 
@@ -633,9 +647,11 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
         try:
             with contextlib.redirect_stdout(w):
                 try:
-                    if michi == "kyoudou":
+                    if michi in ("kyoudou", "kyoudou:mimo9"):
                         # ★ 2026-09-24 協働の輪（kyoudou.py）: 30B が 1手ずつ考え、カーネルが門番を通して動かして確かめる。
                         #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
+                        moderu_key = "local:mimo9" if michi == "kyoudou:mimo9" else "local:main"
+                        moderu_name = MODERU[moderu_key]["名"]
                         import importlib
                         _jiyuu = None
                         if cfg.get("輪") == "新":
@@ -663,9 +679,9 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                                 _kyoudou.TOMERU = None
                             print("答え：" + kotae)
                         elif _jiyuu is not None:
-                            ok, shirase = moderu_youi("local:main")
+                            ok, shirase = moderu_youi(moderu_key)
                             if not ok:
-                                print(f"\n  頭（30B）を起こせませんでした： {shirase}")
+                                print(f"\n  頭（{moderu_name}）を起こせませんでした： {shirase}")
                             else:
                                 import kyoudou as _kyoudou
                                 _kyoudou.TOMERU = tomeru
@@ -673,7 +689,8 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                                 try:
                                     mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
                                             else cfg.get("許可モード", "自動"))
-                                    args = {"rireki": rireki, "mode": mode, "settei": cfg}
+                                    settei = {**cfg, "輪の選び方": MODERU[moderu_key].get("輪の選び方", {})}
+                                    args = {"rireki": rireki, "mode": mode, "settei": settei}
                                     def on_event(ev):
                                         if isinstance(ev, dict) and ev.get("type") in ("tool_start", "tool_end", "note"):
                                             q.put({"操作イベント": ev})
@@ -704,12 +721,12 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                                     _kyoudou.TOMERU = None
                                 print("答え：" + kotae)
                             else:
-                                ok, shirase = moderu_youi("local:main")
+                                ok, shirase = moderu_youi(moderu_key)
                                 if not ok:
-                                    print(f"\n  頭（30B）を起こせませんでした： {shirase}")
+                                    print(f"\n  頭（{moderu_name}）を起こせませんでした： {shirase}")
                                 else:
                                     _kyoudou.TOMERU = tomeru
-                                    print("  協働: 30B が考え、カーネルが動かして確かめます")
+                                    print(f"  協働: {moderu_name} が考え、カーネルが動かして確かめます")
                                     try:
                                         kotae = _kyoudou.kotaeru(text, rireki=rireki)
                                     finally:
@@ -1083,7 +1100,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 S.save(CTX["設定"])
                 _gakushuu_process(updated["入"])
                 if updated["入"]:
-                    _temoto_okosu("local:main")
+                    _gakushuu_moderu_okosu()
                 running = _GAKUSHUU_PROCESS is not None and _GAKUSHUU_PROCESS.poll() is None
                 return self._json(gakushuu.overview(CTX["設定"], running))
             except (ValueError, OSError) as e:
@@ -1518,7 +1535,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if k == "事前学習":
                 _gakushuu_process(v["入"])
                 if v["入"]:
-                    _temoto_okosu("local:main")
+                    _gakushuu_moderu_okosu()
             return self._json({"ok": True, "設定": CTX["設定"][k]})
 
         # ---- 気づいたこと（虫マーク）----
