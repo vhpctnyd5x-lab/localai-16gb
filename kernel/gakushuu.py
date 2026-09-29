@@ -17,6 +17,25 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path.home() / "Library" / "Application Support" / "kernel-ai"
+STATE_VERSION = 2
+# Wikipedia 日本語版にある、Mac の作業と基本知識に役立つ題。
+LEARN_SEEDS = [
+    "コンピュータ", "パーソナルコンピュータ", "オペレーティングシステム", "macOS", "Unix", "Linux",
+    "ファイルシステム", "ファイル (コンピュータ)", "ディレクトリ", "パス (コンピュータ)",
+    "コマンドラインインタプリタ", "シェル", "Bash", "Z shell", "ターミナルエミュレータ",
+    "プログラミング言語", "Python", "JavaScript", "プログラミング", "ソフトウェア", "アルゴリズム",
+    "データ構造", "バージョン管理", "Git", "正規表現", "テキストエディタ", "統合開発環境",
+    "HTML", "CSS", "World Wide Web", "ウェブブラウザ", "インターネット", "HTTP", "電子メール",
+    "ドメイン名", "Domain Name System", "コンピュータネットワーク", "暗号", "公開鍵暗号",
+    "ハッシュ関数", "データ圧縮", "ZIP (ファイルフォーマット)", "文字コード", "Unicode", "UTF-8",
+    "データベース", "SQL", "SQLite", "表計算ソフト", "コンピュータセキュリティ", "バックアップ",
+    "人工知能", "機械学習", "自然言語処理", "データ", "情報", "数学", "算数", "代数学",
+    "幾何学", "確率", "統計学", "論理学", "物理学", "力学", "電磁気学", "化学", "生物学",
+    "人体", "医学", "栄養学", "地理学", "地図", "気象学", "天文学", "地球科学", "環境",
+    "日本", "日本の歴史", "世界の歴史", "地理", "経済学", "会計", "法律", "日本国憲法",
+    "政治", "社会学", "心理学", "教育", "日本語", "英語", "言語", "文章", "読書", "著作権",
+    "単位", "時間", "お金", "交通", "電気", "エネルギー", "食文化", "農業", "医療", "科学"
+]
 DEFAULT = {"入": False, "上限MB": 2048, "充電中だけ": True,
            "出どころ": {"Wikipedia": True, "振り返り": True},
            "振り返りで外の先生に聞く": False, "会話の言葉から学ぶ題を選ぶ": False}
@@ -46,7 +65,16 @@ def _write(path, value):
 
 
 def _state():
-    return _read(folder() / "state.json", {})
+    return _version_state(_read(folder() / "state.json", {}))
+
+
+def _version_state(state):
+    state = dict(state) if isinstance(state, dict) else {}
+    if state.get("版") != STATE_VERSION:
+        state["次の題"] = []
+        state["見た記録"] = []   # 前の版は、記録を「見た」にするだけで何も学んでいなかった
+    state["版"] = STATE_VERSION
+    return state
 
 
 def _log(message):
@@ -157,12 +185,40 @@ def _records():
 
 
 def _topic(state, known, use_conversation=False):
-    import crawler
-    queue = list(state.get("次の題", [])) + (_recent_topics() if use_conversation else []) + crawler.SEEDS
-    for title in queue:
-        title = str(title).strip()[:80]
-        if title and title not in known and title not in state.get("見た題", []) and "/" not in title:
-            return title
+    entry = _topic_entry(state, known, use_conversation)
+    return entry[0] if entry else None
+
+
+# リンクの候補は題の言葉で探した記事なので、遊び・芸能の記事が混ざる（9/29「コンピュータ」→ゲーム・RPG・ファミコン）。
+_TRIVIA = ("ゲーム", "RPG", "ファミリーコンピュータ", "アニメ", "漫画", "映画", "ドラマ", "番組", "アルバム",
+           "シングル", "楽曲", "バンド", "アイドル", "キャラクター", "選手", "声優", "タレント")
+
+
+def _valid_title(title):
+    if not isinstance(title, str):
+        return False
+    title = title.strip()
+    return (len(title) >= 2 and not any(x in title for x in ("(", "（", "一覧", "曖昧さ回避") + _TRIVIA)
+            and not re.search(r"\d{3,4}年", title) and "/" not in title)
+
+
+def _topic_entry(state, known, use_conversation=False):
+    state = _version_state(state)
+    seen = set(state.get("見た題", []))
+    queue = []
+    for item in state.get("次の題", []):
+        if isinstance(item, dict):
+            queue.append((item.get("題"), 1))
+        else:
+            queue.append((item, 1))
+    queue += [(title, 1) for title in (_recent_topics() if use_conversation else [])]
+    queue += [(title, 0) for title in LEARN_SEEDS]
+    for title, depth in queue:
+        # 種は選んで置いた題なので「(」を含んでもよい（例 ファイル (コンピュータ)）。絞るのはリンクから来た題だけ。
+        if _valid_title(title) or (depth == 0 and isinstance(title, str) and len(title.strip()) >= 2):
+            title = title.strip()[:80]
+            if title not in known and title not in seen:
+                return title, depth
     return None
 
 
@@ -185,10 +241,11 @@ def learn_once(cfg, *, wiki_module=None):
         return False
     known = _names()
     state = _state()
-    title = _topic(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
-    if not title:
+    entry = _topic_entry(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
+    if not entry:
         _status("次の題を待っています")
         return False
+    title, depth = entry
     # wiki.py が User-Agent と2秒以上の間隔を管理する。
     article = wiki_module.ask(title, chars=5000)
     if not article or not article.get("本文"):
@@ -209,8 +266,20 @@ def learn_once(cfg, *, wiki_module=None):
             return False
         db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
                    (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
-    remaining = [x for x in state.get("次の題", []) if x != title]
-    remaining += [x for x in article.get("ほかの候補", []) if isinstance(x, str) and x not in known]
+    remaining = [x for x in state.get("次の題", [])
+                 if (x.get("題") if isinstance(x, dict) else x) != title]
+    if depth == 0:
+        additions = []
+        queued = {x.get("題") if isinstance(x, dict) else x for x in remaining}
+        for candidate in article.get("ほかの候補", []):
+            if (not _valid_title(candidate) or candidate in known or candidate in queued
+                    or candidate in state.get("見た題", [])):
+                continue
+            additions.append({"題": candidate.strip()[:80], "深さ": 1})
+            queued.add(candidate)
+            if len(additions) == 5:
+                break
+        remaining += additions
     _log(f"Wikipedia: {actual}")
     _status(f"記事を覚えた: {actual}", 最後の題=actual, 次の題=remaining[:100],
             見た題=(state.get("見た題", []) + [title])[-500:])
@@ -297,7 +366,11 @@ def change_skill(body):
     return {"ok": True, "スキル": skills()}
 
 
+_REST_LOGGED = False
+
+
 def reflect_once(cfg, *, ask=None, network=None):
+    global _REST_LOGGED
     opts = cfg.get("事前学習", DEFAULT)
     if not opts.get("出どころ", {}).get("振り返り"):
         return False
@@ -309,9 +382,11 @@ def reflect_once(cfg, *, ask=None, network=None):
     if not record:
         return False
     if not opts.get("振り返りで外の先生に聞く", False):
-        _write(folder() / "state.json", {**state, "見た記録": (list(seen) + [record["識別"]])[-100:]})
-        _log("手元で振り返り: " + record.get("成否", "記録あり"))
-        return True
+        # 「いま」を毎回上書きすると学んでいる様子が見えなくなるので、記録に1回だけ書く。
+        if not _REST_LOGGED:
+            _log("振り返り: 外の先生が切なので休み（入にすると、うまくいかなかった頼みから技を提案します）")
+            _REST_LOGGED = True
+        return False
     if not cfg.get("先生を使う"):
         return False
     external = [x for x in (cfg.get("先生") or [])

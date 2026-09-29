@@ -39,18 +39,53 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
 
     class FakeWiki:
         calls = 0
+        topics = []
 
         @classmethod
         def ask(cls, title, chars=5000):
             cls.calls += 1
+            cls.topics.append(title)
             return {"題": "試験記事", "本文": "試験記事の本文。調べたい言葉が入る。", "url": "https://example.invalid/wiki/test",
-                    "ほかの候補": ["次の題"]}
+                    "ほかの候補": ["候補題一", "候補題二", "候補題三", "候補題四", "候補題五", "候補題六",
+                                   "A(説明)", "一覧の項目", "曖昧さ回避", "1999年の出来事", "あ"]}
 
     check(gakushuu.learn_once(cfg, wiki_module=FakeWiki), "記事を追加")
+    check(FakeWiki.topics[0] in gakushuu.LEARN_SEEDS and FakeWiki.topics[0] != "あ", "最初の題は学習種から選ぶ")
+    queued = gakushuu._state()["次の題"]
+    check([x["題"] for x in queued] == ["候補題一", "候補題二", "候補題三", "候補題四", "候補題五"],
+          "リンク候補は条件で絞って5題まで")
+    check(all(x["深さ"] == 1 for x in queued), "リンク題に深さを記録")
     with sqlite3.connect(gakushuu.folder() / "chishiki.sqlite3") as db:
         check(db.execute("SELECT count(*) FROM chishiki WHERE chishiki MATCH '試験記事'").fetchone()[0] == 1, "FTS5 検索")
     check(not gakushuu.learn_once(cfg, wiki_module=FakeWiki), "同じ記事を入れない")
     check(gakushuu.overview(cfg)["数"]["記事"] == 1, "記事数")
+
+    class DepthWiki:
+        calls = 0
+        topics = []
+
+        @classmethod
+        def ask(cls, title, chars=5000):
+            cls.calls += 1
+            cls.topics.append(title)
+            links = ["二段目候補"] if cls.calls == 2 else ["候補題一", "候補題二", "候補題三", "候補題四", "候補題五"]
+            return {"題": f"深さ記事{cls.calls}", "本文": "深さ確認の記事本文。", "ほかの候補": links}
+
+    gakushuu._write(gakushuu.folder() / "state.json", {"版": gakushuu.STATE_VERSION, "次の題": []})
+    check(gakushuu.learn_once(cfg, wiki_module=DepthWiki), "種記事からリンクを追加")
+    check(gakushuu.learn_once(cfg, wiki_module=DepthWiki), "深さ1の記事を学習")
+    check("二段目候補" not in [x["題"] for x in gakushuu._state()["次の題"]], "深さ1からリンクを広げない")
+    old = {"版": gakushuu.STATE_VERSION - 1, "次の題": [{"題": "ゆめりあ", "深さ": 1}]}
+    check(gakushuu._topic(old, set(), False) == gakushuu.LEARN_SEEDS[0], "旧版の次の題を捨てる")
+    check(gakushuu._version_state({"版": 1, "見た記録": ["x.jsonl:1"]})["見た記録"] == [], "旧版の見た記録を捨てる")
+    plain = [x for x in gakushuu.LEARN_SEEDS if "(" not in x]
+    check(gakushuu._topic({"版": gakushuu.STATE_VERSION, "見た題": plain}, set(), False) == "ファイル (コンピュータ)",
+          "括弧つきの種も学ぶ")
+    check(gakushuu._valid_title("二字") and not gakushuu._valid_title("あ")
+          and not gakushuu._valid_title("題 (説明)") and not gakushuu._valid_title("一覧")
+          and not gakushuu._valid_title("曖昧さ回避") and not gakushuu._valid_title("2024年の出来事"), "題の除外条件")
+    check(not gakushuu._valid_title("コンピュータゲーム") and not gakushuu._valid_title("コンピュータRPG")
+          and gakushuu._valid_title("パーソナルコンピュータ"), "遊び・芸能の題を外す")
 
     low = {**cfg, "事前学習": {**cfg["事前学習"], "上限MB": 0}}
     before = FakeWiki.calls
@@ -100,7 +135,15 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     def teacher(question, config, timeout=60):
         sent.append(question)
         return {"答え": "手順を確認し、小さく試してから進める。", "error": None}
-    check(gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")), network=True), "手元の振り返り")
+    check(not gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")), network=True), "先生オフなら振り返りを休む")
+    state = gakushuu._state()
+    check("record-1" not in state.get("見た記録", []), "休止中は記録を消費しない")
+    check("外の先生が切なので休み" in (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8"), "休止を記録に書く")
+    log_text = (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8")
+    check("失敗" not in log_text, "休止時に失敗をログへ書かない")
+    gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")), network=True)
+    check((gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8").count("外の先生が切") == 1,
+          "休止は1回だけ記録する")
     gakushuu._write(gakushuu.folder() / "state.json", {})
     cfg["事前学習"]["振り返りで外の先生に聞く"] = True
     check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生の技提案")
@@ -177,7 +220,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         code, result = request("/skills", {"動き": "ゴミ箱", "name": "私の技"})
         check(code == 200 and (base / "trash" / "私の技.md").exists(), "ゴミ箱")
         code, result = request("/gakushuu")
-        check(code == 200 and result["数"]["記事"] == 1, "事前学習 GET")
+        check(code == 200 and result["数"]["記事"] == 3, "事前学習 GET")
         code, result = request("/gakushuu", {"入": False, "上限MB": 4})
         check(code == 200 and result["入"] is False and settings.load()["事前学習"]["上限MB"] == 4,
               "事前学習 POST と保存")
