@@ -18,7 +18,12 @@ parse_branch(){
   done
   for token in 8 9 10 11 12; do has "d${token}" && DAN="$token"; done
   has f1 && FUKASA=1; has f2 && FUKASA=2
-  has m2507 && ATAMA=2507
+  for token in m2507 m9q4 m9iq4 m9iq3; do
+    if has "$token"; then
+      [[ -z "$ATAMA" ]] || { echo "頭脳の札は1つだけ: -m2507 / -m9q4 / -m9iq4 / -m9iq3" >&2; return 2; }
+      ATAMA="$token"; [[ "$token" != m2507 ]] || ATAMA=2507
+    fi
+  done
   if [[ "$b" =~ (^|-)e([4-7])(-|$) ]]; then EXPERTS="${BASH_REMATCH[2]}"; fi
   if [[ "$b" =~ (^|-)q(iq1s|iq1m|iq2xxs|iq2m|q2kxl)(-|$) ]]; then QUANT="${BASH_REMATCH[2]}"; fi
   if [[ "$b" =~ (^|-)g([1-9][0-9]*)(-|$) ]]; then MEM_GB="${BASH_REMATCH[2]}"; fi
@@ -29,7 +34,10 @@ parse_branch(){
   if [[ "$b" =~ (^|-)bure([0-9]+)(-|$) ]]; then
     BURE="${BASH_REMATCH[2]}"; SAMPLE_TEMP="0.7"; SAMPLE_TOP_P="0.8"; SAMPLE_TOP_K="20"; SAMPLE_SEED="$BURE"
   fi
-  if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q and -m2507 cannot be combined' >&2; return 2; fi
+  if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q は -m2507 / -m9* と併用できない' >&2; return 2; fi
+  if [[ "$ATAMA" == m9* && -n "${EXPERTS}${JIKKEN}" ]]; then
+    echo 'MiMo 9B は MoE 専用の -e / -x 実験と併用できない' >&2; return 2
+  fi
   if [[ "${b:0:12}" == hakaru-henka && "$b" =~ (^|-)henka(-|$) ]]; then HENKA_FILE=dougu/actions_henka.txt; else HENKA_FILE=""; fi
   # 9/29: -hk名前 で比べる表を dougu/actions_henka_名前.txt にする（例 -hkkv5）
   if [[ -n "$HENKA_FILE" && "$b" =~ (^|-)hk([A-Za-z0-9_]+)(-|$) ]]; then HENKA_FILE="dougu/actions_henka_${BASH_REMATCH[2]}.txt"; fi
@@ -111,8 +119,17 @@ if [[ -n "${JIKKEN:-}" ]]; then
   fi
 fi
 W="${RUNNER_TEMP:-/tmp}/hakaru"; mkdir -p "$W"
-# 頭脳は HF の revision と sha256 で固定。ATAMA=2507 で Instruct-2507 版。
-if [ "${ATAMA:-}" = 2507 ]; then
+# 頭脳は HF の revision と sha256 で固定。MiMo 9B は GGUF 本体だけ落とす。
+if [[ "${ATAMA:-}" == m9* ]]; then
+  REPO=bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF
+  HF_REV=4371da10c84fb26da3592d4cf312d24aa82b7b65
+  case "$ATAMA" in
+    m9q4) MF=MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf; HF_SHA=4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81;;
+    m9iq4) MF=MiMo-V2.6-Distill-Qwen-9B-IQ4_XS.gguf; HF_SHA=eccfbc188e71dec8350fbdd5af898d2a50691ac67e077327c52baa9da1e91d90;;
+    m9iq3) MF=MiMo-V2.6-Distill-Qwen-9B-IQ3_M.gguf; HF_SHA=e2638eb0a3751b530c0b91c70292d961687d5ff993c1125a867461564d341724;;
+  esac
+  NAFUDA="${NAFUDA}_${ATAMA}"
+elif [ "${ATAMA:-}" = 2507 ]; then
   REPO=unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF; MF=Qwen3-30B-A3B-Instruct-2507-Q2_K.gguf; NAFUDA="${NAFUDA}_m2507"
   HF_REV=eea7b2be5805a5f151f8847ede8e5f9a9284bf77
   HF_SHA=50a46f567cf1f4d687f9d5b8d4641654e71a4cfb7b02baab479dedc0bd05d3d3
@@ -259,7 +276,7 @@ NEED_GB=15; [[ -z "${REBUILD_QTYPE:-}" ]] || NEED_GB=55
   "https://huggingface.co/$REPO/resolve/$HF_REV/${SOURCE_MF:-$MF}" ) &
 DL=$!
 BASE_M=""
-if [[ -n "${REBUILD_QTYPE:-}" ]]; then
+if [[ -n "${REBUILD_QTYPE:-}" || "${ATAMA:-}" == m9* ]]; then
   BASE_M="$W/base-Q2_K.gguf"
   ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$BASE_M.part" \
     "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q2_K.gguf" ) &
@@ -325,7 +342,7 @@ if [[ -n "$DL_BASE" ]]; then
 fi
 # 改造前の同じ頭脳を同じ runner で測る。KOUKAI_* は外して既定動作に戻す。
 COMPARE_BASELINE=0
-[[ -n "${JIKKEN:-}${QUANT:-}${EXPERTS:-}${MEM_GB:-}${UB:-}${KVQ:-}${KVK8V4:-}${FA1:-}${NOMMAP:-}${MLOCK:-}${SPD06:-}" ]] && COMPARE_BASELINE=1
+[[ -n "${JIKKEN:-}${QUANT:-}${EXPERTS:-}${MEM_GB:-}${UB:-}${KVQ:-}${KVK8V4:-}${FA1:-}${NOMMAP:-}${MLOCK:-}${SPD06:-}" || "${ATAMA:-}" == m9* ]] && COMPARE_BASELINE=1
 if (( COMPARE_BASELINE )); then
   [[ -n "$BASE_M" ]] || BASE_M="$M"
   BASE_ENV=(env); while IFS= read -r key; do BASE_ENV+=(-u "$key"); done < <(compgen -e | grep '^KOUKAI_' || true)
@@ -525,6 +542,22 @@ tateru(){ # $1=差し替える指定
   OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
     curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
   if [ -n "$OK" ]; then   # 探り: 同じ頼みで 128字書かせて 読み・書きの t/s を残す（専門家の数・メモリ上限の違いを比べる）
+    if [[ "${ATAMA:-}" == m9* ]]; then
+      # 7段も同じ /apply-template を使う。Qwen3.5 が enable_thinking=false を受け付けることを実機で確かめる。
+      python3 - <<'PY' || { echo 'MiMo 9B の思考なしテンプレートが確認できない' >> "$OUT"; exit 1; }
+import json, urllib.request
+url = "http://127.0.0.1:8080/apply-template"
+messages = [{"role": "user", "content": "1+1を計算してください。"}]
+def render(thinking):
+    data = json.dumps({"messages": messages, "chat_template_kwargs": {"enable_thinking": thinking}}).encode()
+    request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)["prompt"]
+if render(False) == render(True):
+    raise SystemExit("enable_thinking の切り替えが chat template に反映されない")
+PY
+      echo 'MiMo 9B: /apply-template の enable_thinking=false を確認' >> "$OUT"
+    fi
     grep -Ei 'compute buffer|KV (cache|buffer)' "$W/llama.log" >> "$OUT" || true
     curl -s -m 900 http://127.0.0.1:8080/completion -H 'Content-Type: application/json' \
       -d '{"prompt":"日本の四季について、それぞれの特徴を詳しく説明してください。","n_predict":128,"temperature":0}' \
