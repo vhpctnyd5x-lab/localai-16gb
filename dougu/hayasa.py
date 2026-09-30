@@ -24,6 +24,12 @@ PROMPTS = ["日本の四季の特徴を、それぞれ2文ずつで説明して�
            "会議の議事録を短くまとめるコツを5つ、箇条書きで教えてください。"]
 
 
+# 9/30: 短い頼み（50 トークンほど）では読む速さが測れない（輪は毎回 1,000 トークン以上読む）。長い文も読ませる。
+NAGAI = ("事前学習は、Wikipedia の記事を読んで知識を貯め、会話の記録を振り返って次に使える手順を技として提案する仕組みです。"
+         "記事は題から題へたどり、読んだ内容は短くまとめて手元の知識の箱に入れます。振り返りでは、道具の使い方で失敗した所を探し、"
+         "同じ頼みが来た時にどうすればよいかを短い手順にします。") * 12
+
+
 def post(path, body, timeout=600):
     request = urllib.request.Request("http://127.0.0.1:8080" + path, data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
@@ -53,10 +59,17 @@ def measure(model, extra, log_path, n_predict, llama):
                                            "cache_prompt": False})["timings"]
             if i:
                 rows.append(timings)
+        long_rows = []
+        for _ in range(2):   # 長い文を2回読ませ、2回目（温まった後）を使う
+            prompt = post("/apply-template", {"messages": [{"role": "user", "content": "次の文を一文で要約してください。\n" + NAGAI}],
+                                              "chat_template_kwargs": {"enable_thinking": False}})["prompt"]
+            long_rows.append(post("/completion", {"prompt": prompt, "n_predict": 16, "temperature": 0,
+                                                  "cache_prompt": False})["timings"])
         speed = [t["predicted_per_second"] for t in rows]
         drafted = sum(t.get("draft_n", 0) for t in rows)
         accepted = sum(t.get("draft_n_accepted", 0) for t in rows)
         return {"書く": round(statistics.median(speed), 2), "読む": round(statistics.median(t["prompt_per_second"] for t in rows), 2),
+                "長く読む": round(long_rows[-1]["prompt_per_second"], 2), "長さ": long_rows[-1]["prompt_n"],
                 "先読み": f"{accepted}/{drafted}" if drafted else "-"}
     finally:
         server.terminate()
