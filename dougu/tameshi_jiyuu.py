@@ -403,11 +403,17 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
                     "python3 --version; which python3", "pwd && which python3"):
         assert jiyuu._risk("sh", {"command": command}) == "見る", command
     for command in ("python3 --version; python3 -c 'open(\"x\",\"w\")'",
-                    "pwd && touch file", "pwd; echo $(whoami)", "sleep 30; pgrep TextEdit", "echo $(reboot)"):
+                    "pwd && touch file", "$(echo rm) -rf ~/x", "sleep 30; pgrep TextEdit", "echo $(reboot)"):
         assert jiyuu._risk("sh", {"command": command}) != "見る", command
     assert jiyuu._risk("sh", {"command": "echo $HOME"}) == "見る"
     assert jiyuu._risk("sh", {"command": 'open -a "TextEdit" /dev/null 2>&1; echo "exit=$?"'}) == "戻せる"
     assert jiyuu._risk("sh", {"command": "X=reboot; $X"}) == "戻せない"
+    assert jiyuu._risk("sh", {"command": "echo 中身は $(cat /Volumes/TestSSD/台帳.txt)"}) == "見る"
+    assert jiyuu._risk("sh", {"command": "echo $(cat ~/.ssh/id_rsa)"}) == "禁止"
+    assert jiyuu._risk("sh", {"command": "echo $(echo $(reboot))"}) == "戻せない"
+    assert jiyuu._risk("sh", {"command": "pwd; echo $(whoami)"}) == "見る"   # 中も外も読むだけ
+    assert jiyuu._risk("sh", {"command": "ls; `echo cat` x"}) == "戻せない"   # 命令の名前を作る形
+    assert jiyuu._risk("sh", {"command": "ls; `echo rm` x"}) in ("戻せない", "禁止")
     checks += 1
 
     # 試験用の砂箱入口で本物の短いプロセスを起動し、outputとstopを確認。

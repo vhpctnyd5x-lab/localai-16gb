@@ -638,7 +638,19 @@ def _risk(name, args):
         # 中で動く命令と、連結の中の変数は読めない（9/30 NVIDIA の審査: echo $(reboot) が「見る」だった）。
         # $? と $HOME などは無害（9/30 MiMo の J08: echo "exit=$?" で承認待ちになった）。
         plain = re.sub(r"\$(?:\?|\{?(?:HOME|PWD|USER)\}?(?!\w))", "", command)
-        if re.search(r"\$\(|`", command) or "$" in plain and re.search(r"[;&|]", command):
+        inner = _substitutions(command)
+        if inner is None:   # 入れ子・閉じ忘れなど、読めない形
+            return "戻せない"
+        inner_risks = [_risk("sh", {"command": part}) for part in inner]
+        if "禁止" in inner_risks:
+            return "禁止"
+        if any(risk != "見る" for risk in inner_risks):
+            return "戻せない"
+        if inner:   # 中が読むだけなら、外側で判定する（9/30 30B の J05: echo …$(cat 台帳.txt) が承認待ちになった）
+            command, plain = _SUBST.sub("__SUBST__", command), _SUBST.sub("__SUBST__", plain)
+            if re.search(r"(?:^|[;&|(]\s*)(?:\w+=\S*\s+)*__SUBST__", command):
+                return "戻せない"   # 命令の名前そのものを作る形（$(echo rm) -rf …）
+        if "$" in plain and re.search(r"[;&|]", command):
             return "戻せない"
         if _read_only_chain(command):
             return "見る"
@@ -1005,6 +1017,18 @@ def _label(name, args):
     if name == "mac":
         return _display("Macを見る: " + args["what"])
     return _display({"read": "読む", "write": "書く", "edit": "直す"}[name] + ": " + _show_path(args["path"]))
+
+_SUBST = re.compile(r"\$\(([^()`]*)\)|`([^`$()]*)`")
+
+
+def _substitutions(command):
+    """$( ) と ` ` の中の命令。入れ子・空・閉じ忘れなど読めない時は None。"""
+    parts = [(a or b).strip() for a, b in _SUBST.findall(command)]
+    rest = _SUBST.sub("", command)
+    if "$(" in rest or "`" in rest or any(not part for part in parts):
+        return None
+    return parts
+
 
 def _command_key(args):
     """命令の頭の2語（時間切れを覚える単位）。"""
