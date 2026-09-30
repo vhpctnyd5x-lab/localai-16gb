@@ -124,10 +124,10 @@ _MODELS = os.environ.get("KERNEL_MODELS_DIR") or os.path.join(os.path.expanduser
 #   二度と同じことで壊れないよう、**心当たりを順に見て、在るものを使う**。
 #   おまけに llama-server は自分の道連れ（.dylib）の場所を焼き込んで持っている
 #   ので、見つけた bin を DYLD_LIBRARY_PATH にも入れてやる必要がある。
-def _SPEC_OPTS():
+def _SPEC_OPTS(default="ngram-simple"):
     """投機デコードの指定。既定は ngram-simple + size-m 16（2026-09-22 実測: x64/ARM/Mac の3台で
-    正解率同じ・8〜12% 速い。m8・n8m16・ngram-mod・KV q8_0 は得なし）。"""
-    v = os.environ.get("KERNEL_SPEC", "ngram-simple").strip()
+    正解率同じ・8〜12% 速い。m8・n8m16・ngram-mod・KV q8_0 は得なし）。default は頭脳ごと（MODERU の "spec"）。"""
+    v = os.environ.get("KERNEL_SPEC", default).strip()
     if not v or v == "none":
         return []
     o = ["--spec-type", v]
@@ -240,6 +240,9 @@ MODERU["local:q36"] = {
     # 語彙を 99.99% に削る（dougu/hayasa.py: 書く 7.9→8.9・読む 13.6→21.0 t/s、11問 11/11）。専門家の top-p は得なし。
     "llama": _KOUKAI_LSRV,
     "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_q36_ids.txt")},
+    # 10/1 dougu/hayasa.py --wa: n-gram の先読みは Qwen3.6 では損（書く 7.7 → 切って 8.6 t/s、出力は同じ）。
+    #   外れると巻き戻しに前置きの読み直しが要るらしく、26問では 1回の返事が 240 秒を超えて止まった（J19・J22）。
+    "spec": "none",
 }
 # 9/30 手元のおすすめ（local:main）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。
 #   先生役・事前学習・温め役・協働の輪が同じ頭脳を使うので、頼みのたびの入れ替えが起きない（30B を名指しすると毎回入れ替わった）。
@@ -447,7 +450,7 @@ def _temoto_okosu(key="local:main"):
                 #   +9%**（30B-A3B素・温度0・壁時計で実測。5通り比べた結果 これが最良）。
                 #   下書きモデル方式は 17%遅かったので使わない。RAM は 0.35GB 増だけ。
                 #   合わない場合は 環境変数 KERNEL_SPEC=none で外せる。
-                [lsrv, "-m", v["file"]] + v["opts"] + _SPEC_OPTS()
+                [lsrv, "-m", v["file"]] + v["opts"] + _SPEC_OPTS(v.get("spec", "ngram-simple"))
                 + ["--host", "127.0.0.1",
                    "--port", TEMOTO_URL.rsplit(":", 1)[-1]],
                 stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
