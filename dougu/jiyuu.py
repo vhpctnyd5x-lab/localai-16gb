@@ -173,6 +173,12 @@ def _japanese_plan(text: str) -> bool:
     head = text.strip()[:80]
     return bool(re.search(r"という依頼|依頼ね|依頼だな|依頼です。|^俗に|^(?:まず|では|よし)、", head)) and len(text) > 30
 
+def _unfinished_plan(text: str) -> bool:
+    """9/30 Qwen3.6 の J14: 道具を使った後に「次に、…を数えます。」と予定だけ書いて止まり、それが答えになった。"""
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？!?])|\n+", text.strip()) if s.strip()]
+    return bool(sentences) and bool(re.search(r"次に|これから|続いて|引き続き", sentences[-1])
+                                    and re.search(r"ます[。.]?$", sentences[-1]))
+
 
 def _raw_tool_call(text: str) -> bool:
     return bool(re.search(r"<tool_call\b|</tool_call>|\{\s*['\"]name['\"]\s*:\s*['\"](?:" + "|".join(SPECS) + r")['\"]", text, re.I)) or _text_call(text) is not None
@@ -1111,7 +1117,7 @@ def _missing_hint(name, args, result, found=()):
     if name not in ("read", "edit", "move", "trash", "find"):
         return result
     body = str(result.get("結果", ""))
-    if "見つかりません" not in body and "存在しません" not in body:
+    if "見つかりません" not in body and "存在しません" not in body and "場所がありません" not in body:   # 最後は read（9/30 J16）
         return result
     raw = args.get("src", args.get("path", args.get("dir", "")))
     if name == "trash":
@@ -1121,7 +1127,7 @@ def _missing_hint(name, args, result, found=()):
     known = [p for p in found if Path(p).name == filename
              and os.path.realpath(p) != os.path.realpath(_home_resolve(raw))]
     if known and name != "find":
-        result["次"] = f"前のfindで見つかった場所は {known[-1]} です。この場所でもう一度{name}してください。"
+        result["次"] = f"前に見つかった場所は {known[-1]} です。この場所でもう一度{name}してください。"
     elif filename and name != "find":
         result["次"] = f"場所を決めつけず、findのdirを~、globを**/{filename}として探し、見つかった場所を確認してください。"
     elif name == "find":
@@ -1206,6 +1212,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     force = False
     sensei_used = False
     english_retry = False
+    plan_nudged = False
     denied_label = ""
     try:
         _record(session, 0, "依頼", {"文": text, "モード": mode}, route)
@@ -1221,6 +1228,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
             except urllib.error.URLError as error:
                 _record(session, step, "結果", {"ok": False, "結果": f"30B の返事を読めませんでした: {error}"}, route)
                 return "30B の返事を読めませんでした（サーバーの誤り）。もう一度頼んでください。"
+            except TimeoutError:   # 9/30 J22: 読み取り中の時間切れは URLError にならず、輪ごと落ちていた
+                _record(session, step, "結果", {"ok": False, "結果": "手元のモデルの返事が時間内に来ませんでした"}, route)
+                return "手元のモデルの返事が時間内に来ませんでした。頼みを小さく分けて、もう一度試してください。"
             calls = [] if force else (reply.get("tool_calls") or [])
             if not calls and not force:
                 written = _text_call(_clean(reply.get("content") or ""))
@@ -1242,6 +1252,11 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     messages.append({"role": "user", "content": "考えは書かずに、日本語で、道具を呼んで進めてください"})
                     continue
                 reply["content"] = "日本語で答えられませんでした。"
+            if not calls and not force and used and not plan_nudged and _unfinished_plan(reply["content"]):
+                plan_nudged = True   # 1回だけ。終わっていれば答えを書き直すだけで済む
+                messages.append({"role": "assistant", "content": reply["content"][:1200]})
+                messages.append({"role": "user", "content": "まだ途中なら、予定は書かずに道具を呼んで最後まで進めてください。終わっていれば、結果だけを短く答えてください。"})
+                continue
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 # 9/29: 道具が1つも成功していないのに「完了しました」とは言わない（返事が空・壊れた時）。
@@ -1362,6 +1377,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                                 found.extend(str(p) for p in result.get("場所", []))
                         elif name == "sh":
                             found.extend(_shell_find_paths(args, result))
+                        elif name == "read" and result.get("ok") and result.get("場所") and isinstance(result.get("名前"), list):
+                            # 9/30 J16: 一覧で見た場所も覚え、書き間違えた時に返す（~/Documents/作業票/あ.txt → ~/Documents/あ.txt）
+                            found.extend(str(Path(str(result["場所"])) / str(n).rstrip("/")) for n in result["名前"])
                         if name == "sh" and not result.get("ok") and "時間切れ" in str(result.get("結果", "")) and _command_key(args):
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"

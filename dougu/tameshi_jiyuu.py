@@ -938,6 +938,25 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     approval.assert_called_once()
     run.assert_not_called()
     checks += 1
+
+    # 9/30 Claude: 途中で予定だけ書いて止まったら1回だけ続けさせる（J14）。read の「場所がありません」にも見つけた場所を返す（J16）。
+    assert jiyuu._unfinished_plan("前の結果に基づき、3つ残っていると判断します。次に、コピー先のファイルを確認し、各ファイルの本文の件数を数えます。")
+    assert not jiyuu._unfinished_plan("3つのファイルをコピーし、一覧.csv を作りました。")
+    assert not jiyuu._unfinished_plan("完了しました。次に何かあれば言ってください。")
+    hint = jiyuu._missing_hint("read", {"path": "~/Documents/あ.txt"}, {"ok": False, "結果": "場所がありません: /x/あ.txt"},
+                               [str(home / "Documents" / "作業票" / "あ.txt")])
+    assert "作業票/あ.txt" in hint["次"]
+    sent = []
+    replies = iter([{"content": "", "tool_calls": [call("mac", what="時刻")]},
+                    {"content": "時刻を確かめました。次に、結果を記録します。"}, {"content": "正午でした。"}])
+    def remember_last(messages, *a, **k):
+        sent.append(messages[-1]["content"])
+        return next(replies)
+    with mock.patch.object(jiyuu, "_ask", side_effect=remember_last):
+        with mock.patch.object(jiyuu, "_run", return_value={"ok": True, "結果": "正午"}):
+            assert jiyuu.kotaeru("試験") == "正午でした。"
+    assert "予定は書かずに" in sent[-1]
+    checks += 1
     # 9/30 Claude: あいまい判定は文を書く時に止めない。紛らわしい候補と別の名前のファイルは書ける（J19 の 索引.csv）。
 assert jiyuu._request_guard("write", {"path": "/tmp/koukai-x/メモ.txt", "content": "x"}, "適当に名前をつけて保存して", [], "戻せる") == ""
 _two = ["/tmp/koukai-x/Documents/今回/報告.txt", "/tmp/koukai-x/Desktop/提出控え/報告.txt"]
