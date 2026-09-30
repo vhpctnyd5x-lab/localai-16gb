@@ -241,10 +241,15 @@ MODERU["local:q36"] = {
     "llama": _KOUKAI_LSRV,
     "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_q36_ids.txt")},
 }
+# 9/30 手元のおすすめ（local:main）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。
+#   先生役・事前学習・温め役・協働の輪が同じ頭脳を使うので、頼みのたびの入れ替えが起きない（30B を名指しすると毎回入れ替わった）。
+#   30B は local:30b（画面では kyoudou:30b）。
+_b30, _q36 = MODERU.pop("local:main"), MODERU.pop("local:q36")
+_b30["名"] = "手元 Qwen3-30B-A3B（10.5GB・書くのが速い）"
+MODERU = {"local:main": _q36, "local:30b": _b30, **MODERU}
 # 協働の輪の michi → 頭脳
-# 9/30 おすすめ（kyoudou）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。30B は kyoudou:30b。
-KYOUDOU_MODERU = {"kyoudou": "local:q36", "kyoudou:30b": "local:main", "kyoudou:mimo9": "local:mimo9",
-                  "kyoudou:q36": "local:q36"}
+KYOUDOU_MODERU = {"kyoudou": "local:main", "kyoudou:30b": "local:30b", "kyoudou:mimo9": "local:mimo9",
+                  "kyoudou:q36": "local:main"}
 
 # いま載っているもの。プロセスを立てたのが誰かも覚える
 _IMA = {"key": None, "pid": None}
