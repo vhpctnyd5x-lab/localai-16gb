@@ -42,6 +42,17 @@ KEKKA = KOUKAI / "dougu" / "kekka"
 DOUGU_TO_KERNEL = {"jiyuu.py", "kyoudou.py", "hako.py"}
 
 
+def split_env(text):
+    """「KOUKAI_VOCAB_KEEP=ファイル名 --引数 …」を、引数の並びと環境に分ける。語彙ファイルは dougu/jikken から探す。"""
+    words, env = shlex.split(text), dict(os.environ)
+    while words and re.fullmatch(r"[A-Z_]+=.*", words[0]):
+        key, _, value = words.pop(0).partition("=")
+        if key == "KOUKAI_VOCAB_KEEP" and "/" not in value:
+            value = str(KOUKAI / "dougu" / "jikken" / value)
+        env[key] = value
+    return words, env
+
+
 def _url_line(old=""):
     try:
         text = (SUP / "server.url").read_text()
@@ -182,11 +193,13 @@ def j(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     model = Path(args.model).expanduser() if args.model else MODEL_30B
     log = open(out_dir / f"{args.out}_llama.log", "wb")
-    extra = shlex.split(args.args)   # 例: --args "--spec-type draft-mtp"（先読みを変える時は既定の ngram を外す）
+    # 例: --args "KOUKAI_EXPERT_P=0.70 --spec-type none"（頭の KOUKAI_…=値 は環境。先読みを変える時は既定の ngram を外す）
+    extra, env = split_env(args.args)
     spec = [] if "--spec-type" in extra else ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-m", "16"]
-    server = subprocess.Popen([str(LLAMA), "-m", str(model), "--port", "8080", "-t", "6", "-ngl", "0", "-c", "8192",
-                               "-np", "1", "-cb", "-ub", "256", "--cache-reuse", "16", "-fa", "off",
-                               "--reasoning-format", "none", *spec, *extra], stdout=log, stderr=log)
+    server = subprocess.Popen([str(Path(args.llama).expanduser()), "-m", str(model), "--port", "8080", "-t", "6",
+                               "-ngl", "0", "-c", "8192", "-np", "1", "-cb", "-ub", "256", "--cache-reuse", "16",
+                               "-fa", "off", "--reasoning-format", "none", *spec, *extra],
+                              stdout=log, stderr=log, env=env)
     try:
         for _ in range(150):
             try:
@@ -220,6 +233,7 @@ def main():
     p = sub.add_parser("gakushuu"); p.add_argument("on", choices=["on", "off"]); p.set_defaults(fn=gakushuu)
     p = sub.add_parser("j"); p.add_argument("--id"); p.add_argument("--model"); p.add_argument("--opts")
     p.add_argument("--out", default="wa_honban"); p.add_argument("--args", default="", help="llama-server に足す引数")
+    p.add_argument("--llama", default=str(LLAMA), help="llama-server（圧縮入りは ~/LocalAI_mirror/llama-koukai/llama-server）")
     p.set_defaults(fn=j)
     args = parser.parse_args()
     args.fn(args)

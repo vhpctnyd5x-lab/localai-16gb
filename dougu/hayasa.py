@@ -30,10 +30,11 @@ def post(path, body, timeout=600):
     return json.load(urllib.request.urlopen(request, timeout=timeout))
 
 
-def measure(model, extra, log_path, n_predict):
-    base = [str(honban.LLAMA), "-m", str(model), "--port", "8080", "-t", "6", "-ngl", "0", "-c", "8192",
+def measure(model, extra, log_path, n_predict, llama):
+    words, env = honban.split_env(extra)   # 頭の KOUKAI_…=値 は環境へ
+    base = [str(llama), "-m", str(model), "--port", "8080", "-t", "6", "-ngl", "0", "-c", "8192",
             "-np", "1", "-cb", "-ub", "256", "-fa", "off", "--reasoning-format", "none"]
-    server = subprocess.Popen(base + shlex.split(extra), stdout=open(log_path, "wb"), stderr=subprocess.STDOUT)
+    server = subprocess.Popen(base + words, stdout=open(log_path, "wb"), stderr=subprocess.STDOUT, env=env)
     try:
         for _ in range(300):
             try:
@@ -66,6 +67,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--conf", nargs="+", required=True, help="名前:llama-server に足す引数")
     parser.add_argument("--n", type=int, default=200)
+    parser.add_argument("--llama", default=str(honban.LLAMA), help="llama-server（圧縮入りは ~/LocalAI_mirror/llama-koukai/llama-server）")
     args = parser.parse_args()
     line = honban.base()
     was_on = honban.call(line, "/gakushuu").get("入")
@@ -77,7 +79,7 @@ def main():
     try:
         for conf in args.conf:
             name, _, extra = conf.partition(":")
-            result = measure(model, extra, honban.KEKKA / f"hayasa_{name}.log", args.n)
+            result = measure(model, extra, honban.KEKKA / f"hayasa_{name}.log", args.n, Path(args.llama).expanduser())
             print(f"{model.name[:34]:34} {name:8} {json.dumps(result, ensure_ascii=False)}", flush=True)
     finally:
         if was_on:

@@ -895,7 +895,7 @@ const atesaki = document.getElementById("atesaki");
 const atesakiChuuiEl = document.getElementById("atesaki-chuui");
 function atesakiChuui(){
   const m = atesaki.value;
-  if (m === "" || m.startsWith("computer:") || ["kyoudou:", "kyoudou:mimo9"].includes(m)){   // カーネル ／ AIカーソル ／ 協働（承認してから動く）
+  if (m === "" || m.startsWith("computer:") || ["kyoudou:", "kyoudou:30b", "kyoudou:mimo9", "kyoudou:q36"].includes(m)){   // カーネル ／ AIカーソル ／ 協働（承認してから動く）
     atesakiChuuiEl.hidden = true; return;
   }
   atesakiChuuiEl.hidden = false;
@@ -2126,7 +2126,7 @@ async function send(text){
     const agent = m.startsWith("agent:");
     const agentModel = agent ? m.slice(6) : m;
     const jika = agentModel.startsWith("local:") || agentModel.startsWith("groq:");
-    const kyoudou = ["kyoudou:", "kyoudou:mimo9"].includes(m);   // 協働は /ask/stream に michi を付けて流す
+    const kyoudou = ["kyoudou:", "kyoudou:30b", "kyoudou:mimo9", "kyoudou:q36"].includes(m);   // 協働は /ask/stream に michi を付けて流す
     atesaki.classList.toggle("temoto", computer || agent || m.startsWith("local:"));
     atesaki.classList.toggle("soto", m !== "" && !kyoudou && !computer && !agent && !m.startsWith("local:"));
     const res = computer
@@ -2137,7 +2137,7 @@ async function send(text){
       ? await api("/sensei", {method:"POST", body: JSON.stringify({text, model:m})})
       : (m && !kyoudou)
       ? await api("/nvidia", {method:"POST", body: JSON.stringify({text, model:m})})
-      : await askNagashi(text, node, kyoudou ? (m === "kyoudou:mimo9" ? m : "kyoudou") : undefined);
+      : await askNagashi(text, node, kyoudou ? (m === "kyoudou:" ? "kyoudou" : m) : undefined);
     const r = res.error && m && !jika && !kyoudou && !computer && !agent
       ? {出力:`NVIDIA の ${MODEL_INFO[m]?.name || m} が答えませんでした（混雑か提供終了）。別のモデルを選んでください`, ミリ秒:0}
       : res.error ? {出力:"エラー： "+res.error, ミリ秒:0, モード:"—"} : res;
@@ -2362,7 +2362,8 @@ async function refresh(){
             localStorage.setItem("kernel-destination-migrated-v1","1");
           }
         }catch(e){if(!keep) keep = "kyoudou:";}
-        let h = '<optgroup label="手元"><option value="kyoudou:">カーネル＋Qwen3-30B-A3B（おすすめ）</option>'
+        let h = '<optgroup label="手元"><option value="kyoudou:">カーネル＋Qwen3.6（おすすめ）</option>'
+          + '<option value="kyoudou:30b">カーネル＋Qwen3-30B（書くのが速い）</option>'
           + '<option value="kyoudou:mimo9">カーネル＋MiMo 9B（軽い）</option>'
           + '<option value="">カーネル（前の仕組み）</option></optgroup>';
         if (te.length){
@@ -2583,7 +2584,9 @@ setteiSheet = setteiSheetNew;
 
 const MODEL_INFO={
   "":{name:"カーネル（前の仕組み）",desc:"すぐ答える近道・辞書・ページ作り。外の先生にも相談"},
-  "kyoudou:":{name:"カーネル＋Qwen3-30B-A3B（おすすめ）",desc:"パソコン操作・ファイル整理・調べ物。一手ずつ動いて確かめる"},
+  "kyoudou:":{name:"カーネル＋Qwen3.6（おすすめ）",desc:"パソコン操作・ファイル整理・調べ物。一手ずつ動いて確かめる。知識の試験 94%・道具の11問 全問正解"},
+  "kyoudou:30b":{name:"カーネル＋Qwen3-30B（書くのが速い）",desc:"前のおすすめ。書く速さは Qwen3.6 の1.7倍、知識の試験は 82〜85%"},
+  "kyoudou:q36":{name:"カーネル＋Qwen3.6（新しい・賢い）",desc:"2026年4月の新しい専門家型。道具の11問は全問正解。読む速さは 30B と同じくらい、書く速さは6割"},
   "kyoudou:mimo9":{name:"カーネル＋MiMo 9B（軽い）",desc:"MiMo-V2.6 の蒸留版。メモリは半分。道具の試験は 30B より弱い"},
   "groq:openai/gpt-oss-120b":{name:"Groq 120B",desc:"外のモデルと話す。ネットが必要"},
   "groq:openai/gpt-oss-20b":{name:"Groq 20B",desc:"外の軽いモデルと話す。ネットが必要"},
@@ -2616,7 +2619,7 @@ function openModelMenu(page="home"){
     ...FUKASA_MEI.map(f=>({名:f.名,説明:f.説,選択:f.n===(ST.設定?.["考える深さ"]??-1),
       する:async()=>{const r=await api("/settings",{method:"POST",body:JSON.stringify({鍵:"考える深さ",値:f.n})});if(r.error)shiraseru(r.error);else refresh();}}))];
   else items=[{見出し:"手元（外への相談は設定次第）"},
-    ...options.filter(o=>o.value===""||["kyoudou:", "kyoudou:mimo9"].includes(o.value)||o.value.startsWith("local:")||o.value.startsWith("agent:")||o.value.startsWith("computer:")).map(row),
+    ...options.filter(o=>o.value===""||["kyoudou:", "kyoudou:30b", "kyoudou:mimo9", "kyoudou:q36"].includes(o.value)||o.value.startsWith("local:")||o.value.startsWith("agent:")||o.value.startsWith("computer:")).map(row),
     {区切り:true},{名:"外のモデル",説明:"ネットが必要",次:true,する:()=>openModelMenu("external")},
     {名:`考える深さ: ${FUKASA_NA(ST.設定?.["考える深さ"]??-1)}`,次:true,する:()=>openModelMenu("depth")}];
   openDrop(anchor,items,{twoLine:true,model:true,left:true});

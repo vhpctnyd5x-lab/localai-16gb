@@ -215,15 +215,36 @@ MODERU = {
         #   深さ 2.3万で 読み 10.5・書き 1.8 t/s なので、協働の輪は 1.2万で要約する）
         "opts": ["-t", "6", "-ngl", "0", "-dev", "none", "-c", "32768", "-np", "1", "-cb", "-ub", "256",
                  "--cache-reuse", "16", "-fa", "off", "--reasoning-format", "none"],
+        # 先読みは _SPEC_OPTS（ngram-simple）。9/30 dougu/hayasa.py: MTP の先読みはこの Mac では逆に遅い（Qwen3.6 8.0→6.4 t/s）。
     },
     # ★ GLM-4.7-Flash は 2026-09-11 に落選: Mac で 6.8 t/s（30B素の6割）、6段 70% vs 100%
 }
+# 私たちの圧縮入りの llama-server（koukai の llama_patch を b31b71f に当てて組んだもの）と語彙ファイルの置き場
+_KOUKAI_LSRV = os.path.expanduser("~/LocalAI_mirror/llama-koukai/llama-server")
+_KOUKAI_JIKKEN = os.path.expanduser("~/LocalAI_mirror/koukai/dougu/jikken")
+# 30B も語彙を 99.99% に削る（dougu/hayasa.py: 書く 13.9→15.4・読む 19.0→22.6 t/s、11問 11/11）。
+MODERU["local:main"].update({"llama": _KOUKAI_LSRV,
+                             "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_ids.txt")}})
 MODERU["local:mimo9"] = {
     "名": "手元 MiMo-V2.6 蒸留 9B（5.4GB）",
     "file": os.path.join(_MODELS, "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"),
     "opts": MODERU["local:main"]["opts"].copy(),
     "輪の選び方": {"raw_template": True},
 }
+# 2026-09-30: 道具の11問 11/11（30B 10/11・MiMo 9/11・Ornith-1.5 8/11）。Qwen3.5 系なので呼び出しは XML（raw_template）。
+MODERU["local:q36"] = {
+    "名": "手元 Qwen3.6-35B-A3B（11.7GB）",
+    "file": os.path.join(_MODELS, "Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf"),
+    "opts": MODERU["local:main"]["opts"].copy(),
+    "輪の選び方": {"raw_template": True},
+    # 語彙を 99.99% に削る（dougu/hayasa.py: 書く 7.9→8.9・読む 13.6→21.0 t/s、11問 11/11）。専門家の top-p は得なし。
+    "llama": _KOUKAI_LSRV,
+    "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_q36_ids.txt")},
+}
+# 協働の輪の michi → 頭脳
+# 9/30 おすすめ（kyoudou）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。30B は kyoudou:30b。
+KYOUDOU_MODERU = {"kyoudou": "local:q36", "kyoudou:30b": "local:main", "kyoudou:mimo9": "local:mimo9",
+                  "kyoudou:q36": "local:q36"}
 
 # いま載っているもの。プロセスを立てたのが誰かも覚える
 _IMA = {"key": None, "pid": None}
@@ -410,19 +431,25 @@ def _temoto_okosu(key="local:main"):
         try:
             os.makedirs(_SUP, exist_ok=True)
             logf = open(os.path.join(_SUP, "llama.log"), "ab")
+            # 9/30: 圧縮入りの llama-server（~/LocalAI_mirror/llama-koukai）と語彙ファイルが揃っている時だけ使う。
+            #   揃っていなければ、いつもの llama-server で技なしに動く（読み込みで止まらないように）。
+            lsrv, koukai_env = _LSRV, {}
+            if v.get("llama") and os.path.exists(v["llama"]) and all(
+                    os.path.exists(p) for k, p in v.get("env", {}).items() if k == "KOUKAI_VOCAB_KEEP"):
+                lsrv, koukai_env = v["llama"], v.get("env", {})
             pr = subprocess.Popen(
                 # ★ 2026-09-10: 投機デコード（n-gram）を足す。**出力は1文字も変わらず
                 #   +9%**（30B-A3B素・温度0・壁時計で実測。5通り比べた結果 これが最良）。
                 #   下書きモデル方式は 17%遅かったので使わない。RAM は 0.35GB 増だけ。
                 #   合わない場合は 環境変数 KERNEL_SPEC=none で外せる。
-                [_LSRV, "-m", v["file"]] + v["opts"] + _SPEC_OPTS()
+                [lsrv, "-m", v["file"]] + v["opts"] + _SPEC_OPTS()
                 + ["--host", "127.0.0.1",
                    "--port", TEMOTO_URL.rsplit(":", 1)[-1]],
                 stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
                 start_new_session=True,
                 # ★ llama-server は道連れの .dylib の在り処を焼き込んで持っている。
                 #   フォルダが動くと そこが行き止まりになるので、いま居る場所を教える。
-                env=dict(os.environ, DYLD_LIBRARY_PATH=_LBIN))
+                env=dict(os.environ, DYLD_LIBRARY_PATH=_LBIN, **koukai_env))
             with open(os.path.join(_SUP, "llama.pid"), "w") as f:
                 f.write(str(pr.pid))
             _IMA["key"], _IMA["pid"] = key, pr.pid
@@ -467,7 +494,7 @@ def _gakushuu_moderu_okosu():
     with _MODERU_LOCK:
         if _notteru() or (_IMA["pid"] and _pid_ikiteru(_IMA["pid"])):
             return
-        _temoto_okosu("local:main")
+        _temoto_okosu(KYOUDOU_MODERU["kyoudou"])   # おすすめと同じ頭脳（入れ替えで待たないように）
 
 
 @contextlib.contextmanager
@@ -647,10 +674,10 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
         try:
             with contextlib.redirect_stdout(w):
                 try:
-                    if michi in ("kyoudou", "kyoudou:mimo9"):
+                    if michi in KYOUDOU_MODERU:
                         # ★ 2026-09-24 協働の輪（kyoudou.py）: 30B が 1手ずつ考え、カーネルが門番を通して動かして確かめる。
                         #   承認は上の TOIKAKE で 画面の札になる。止めるは tomeru（手の間で見る）。
-                        moderu_key = "local:mimo9" if michi == "kyoudou:mimo9" else "local:main"
+                        moderu_key = KYOUDOU_MODERU[michi]
                         moderu_name = MODERU[moderu_key]["名"]
                         import importlib
                         _jiyuu = None
