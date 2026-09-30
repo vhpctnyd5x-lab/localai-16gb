@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""固定 revision の Qwen3 tokenizer で実際の文書の token 頻度を数える。
+"""固定 revision の tokenizer で実際の文書の token 頻度を数える。
 
 実行には datasets, huggingface_hub, tokenizers が必要。--revision には
 Hugging Face の 40 桁 commit SHA を渡す（branch 名や最新状態は受け付けない）。
@@ -7,13 +7,19 @@ Hugging Face の 40 桁 commit SHA を渡す（branch 名や最新状態は受�
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import re
 
 
 ROOT = Path(__file__).resolve().parent.parent
-TOTAL_VOCAB = 151_936
+QWEN_REPO = "Qwen/Qwen3-30B-A3B"
+MIMO_REPO = "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B"
+MIMO_REVISION = "2367e865d009c13ac81713a2878291d33ab28177"
+Q36_REPO = "Qwen/Qwen3.6-35B-A3B"
+Q36_REVISION = "995ad96eacd98c81ed38be0c5b274b04031597b0"
+Q36_TOKENIZER_SHA256 = "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
 SPECIAL_NAMES = {"<think>", "</think>"}
 
 
@@ -81,7 +87,8 @@ def text_rows(code_dataset: str):
     print(f"monosashi 問題文: {count} 件", flush=True)
 
 
-def make_keeps(counts: Counter, vocab: dict[str, int], special: set[int], output: Path):
+def make_keeps(counts: Counter, vocab: dict[str, int], special: set[int], output: Path,
+               suffix: str = "", repo: str = MIMO_REPO, tokenizer_sha256: str = ""):
     required = byte_tokens(vocab) | special
     by_id = {i: token for token, i in vocab.items()}
     total = sum(counts.values())
@@ -97,26 +104,43 @@ def make_keeps(counts: Counter, vocab: dict[str, int], special: set[int], output
                 break
             covered += counts[token_id]
             keep.add(token_id)
-        target = output / f"vocab_keep_{digits}.txt"
+        target = output / f"vocab_keep_{digits}{suffix}.txt"
         with target.open("w", encoding="utf-8") as f:
             for token_id in sorted(keep):
                 f.write(f"{token_id}\t{json.dumps(by_id[token_id], ensure_ascii=False)}\n")
-        print(f"{target.name}: {len(keep)} 語 / {TOTAL_VOCAB} ({len(keep)/TOTAL_VOCAB:.3%})")
+        if suffix:
+            ids = output / f"vocab_keep_{digits}{suffix}_ids.txt"
+            with ids.open("w", encoding="utf-8") as f:
+                f.write(f"# vocab_size={len(vocab)}\n# repo={repo}\n")
+                if tokenizer_sha256:
+                    f.write(f"# tokenizer_sha256={tokenizer_sha256}\n")
+                for token_id in sorted(keep):
+                    f.write(f"{token_id}\n")
+        print(f"{target.name}: {len(keep)} 語 / {len(vocab)} ({len(keep)/len(vocab):.3%})")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", required=True, help="Qwen/Qwen3-30B-A3B の 40 桁 commit SHA")
+    parser.add_argument("--repo", choices=(QWEN_REPO, MIMO_REPO, Q36_REPO), default=QWEN_REPO)
+    parser.add_argument("--revision", help="Qwen3 の 40 桁 commit SHA。MiMo / Qwen3.6 は固定 revision")
     parser.add_argument("--output", type=Path, default=ROOT / "dougu/jikken")
     parser.add_argument("--code-dataset", default="codeparrot/github-code-clean",
                         help="Python/JavaScript/Shell の config がある代替データセット")
     args = parser.parse_args()
-    if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
+    fixed = {MIMO_REPO: MIMO_REVISION, Q36_REPO: Q36_REVISION}.get(args.repo)
+    if fixed:
+        if args.revision and args.revision != fixed:
+            parser.error(f"{args.repo} の revision は {fixed} に固定しています")
+        args.revision = fixed
+    elif not args.revision or not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("--revision には固定した 40 桁 commit SHA が必要です")
     from huggingface_hub import hf_hub_download
     from tokenizers import Tokenizer
 
-    path = hf_hub_download("Qwen/Qwen3-30B-A3B", "tokenizer.json", revision=args.revision)
+    path = hf_hub_download(args.repo, "tokenizer.json", revision=args.revision)
+    tokenizer_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    if args.repo == Q36_REPO and tokenizer_sha256 != Q36_TOKENIZER_SHA256:
+        raise ValueError("Qwen3.6 / Ornith 共通 tokenizer の sha256 が違います")
     tokenizer = Tokenizer.from_file(path)
     vocab = tokenizer.get_vocab(with_added_tokens=True)
     by_id = {i: token for token, i in vocab.items()}
@@ -125,17 +149,21 @@ def main():
     special = {token_id for name in SPECIAL_NAMES
                for token_id in tokenizer.encode(name, add_special_tokens=False).ids}
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    special.update(x["id"] for x in raw.get("added_tokens", []) if x.get("special"))
+    # 新tokenizerは special=false の道具・画像等の札も残す。
+    special.update(x["id"] for x in raw.get("added_tokens", [])
+                   if args.repo in (MIMO_REPO, Q36_REPO) or x.get("special"))
     special.update(i for t, i in vocab.items() if t.startswith("<|") and t.endswith("|>"))
     args.output.mkdir(parents=True, exist_ok=True)
     counts = Counter()
     for text in text_rows(args.code_dataset):
         counts.update(tokenizer.encode(text, add_special_tokens=False).ids)
-    with (args.output / "goi_count.tsv").open("w", encoding="utf-8") as f:
+    suffix = {MIMO_REPO: "_mimo9", Q36_REPO: "_q36"}.get(args.repo, "")
+    with (args.output / f"goi_count{suffix}.tsv").open("w", encoding="utf-8") as f:
         f.write("番号\t回数\t文字\n")
         for i in range(len(by_id)):
             f.write(f"{i}\t{counts[i]}\t{json.dumps(by_id[i], ensure_ascii=False)}\n")
-    make_keeps(counts, vocab, special, args.output)
+    make_keeps(counts, vocab, special, args.output, suffix, args.repo,
+               tokenizer_sha256 if args.repo == Q36_REPO else "")
     print("単一 byte token 256 個と UTF-8 往復: OK")
 
 

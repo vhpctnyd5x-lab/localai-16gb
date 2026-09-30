@@ -18,13 +18,19 @@ parse_branch(){
   done
   for token in 8 9 10 11 12; do has "d${token}" && DAN="$token"; done
   has f1 && FUKASA=1; has f2 && FUKASA=2
-  for token in m2507 m9q4 m9iq4 m9iq3; do
+  for token in m2507 m9q4 m9iq4 m9iq3 q36 orn; do
     if has "$token"; then
-      [[ -z "$ATAMA" ]] || { echo "頭脳の札は1つだけ: -m2507 / -m9q4 / -m9iq4 / -m9iq3" >&2; return 2; }
+      [[ -z "$ATAMA" ]] || { echo "頭脳の札は1つだけ: -m2507 / -m9q4 / -m9iq4 / -m9iq3 / -q36 / -orn" >&2; return 2; }
       ATAMA="$token"; [[ "$token" != m2507 ]] || ATAMA=2507
     fi
   done
-  if [[ "$b" =~ (^|-)e([4-7])(-|$) ]]; then EXPERTS="${BASH_REMATCH[2]}"; fi
+  for token in ${b//-/ }; do
+    if [[ "$token" =~ ^e([0-9]+)$ ]]; then
+      token="${BASH_REMATCH[1]}"
+      [[ -z "$EXPERTS" && "$token" =~ ^[1-9][0-9]*$ ]] || { echo '-e は正の整数を1つだけ指定' >&2; return 2; }
+      EXPERTS="$token"
+    fi
+  done
   if [[ "$b" =~ (^|-)q(iq1s|iq1m|iq2xxs|iq2m|q2kxl)(-|$) ]]; then QUANT="${BASH_REMATCH[2]}"; fi
   if [[ "$b" =~ (^|-)g([1-9][0-9]*)(-|$) ]]; then MEM_GB="${BASH_REMATCH[2]}"; fi
   if [[ "$b" =~ (^|-)ub([1-9][0-9]*)(-|$) ]]; then UB="${BASH_REMATCH[2]}"; fi
@@ -34,9 +40,9 @@ parse_branch(){
   if [[ "$b" =~ (^|-)bure([0-9]+)(-|$) ]]; then
     BURE="${BASH_REMATCH[2]}"; SAMPLE_TEMP="0.7"; SAMPLE_TOP_P="0.8"; SAMPLE_TOP_K="20"; SAMPLE_SEED="$BURE"
   fi
-  if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q は -m2507 / -m9* と併用できない' >&2; return 2; fi
-  if [[ "$ATAMA" == m9* && -n "${EXPERTS}${JIKKEN}" ]]; then
-    echo 'MiMo 9B は MoE 専用の -e / -x 実験と併用できない' >&2; return 2
+  if [[ -n "$QUANT" && -n "$ATAMA" ]]; then echo '-q は別の頭脳の札と併用できない' >&2; return 2; fi
+  if [[ "$ATAMA" == m9* && -n "$EXPERTS" ]]; then
+    echo 'MiMo 9B は MoE 専用の -e と併用できない' >&2; return 2
   fi
   if [[ "${b:0:12}" == hakaru-henka && "$b" =~ (^|-)henka(-|$) ]]; then HENKA_FILE=dougu/actions_henka.txt; else HENKA_FILE=""; fi
   # 9/29: -hk名前 で比べる表を dougu/actions_henka_名前.txt にする（例 -hkkv5）
@@ -78,6 +84,9 @@ if [[ -n "${JIKKEN:-}" ]]; then
     elif [[ "$line" =~ ^(KOUKAI_QTT)=([A-Za-z0-9,._:/-]+)$ ]]; then :
     else echo "不正な実験設定: $JIKKEN_ENV:$line_no" >&2; exit 2; fi
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    if [[ "${ATAMA:-}" == m9* && "$key" != KOUKAI_VOCAB_KEEP ]]; then
+      echo 'MiMo 9B の -x は語彙だけの設定を指定してください' >&2; exit 2
+    fi
     printf -v "$key" '%s' "$value"; export "$key"
   done < "$JIKKEN_ENV"
   if [[ -n "${KOUKAI_TRANSFORM:-}" ]]; then
@@ -112,15 +121,40 @@ if [[ -n "${JIKKEN:-}" ]]; then
   if [[ -n "${KOUKAI_QTYPE:-}" && ( -n "${QUANT:-}" || "${ATAMA:-}" == 2507 ) ]]; then
     echo "QTYPE は -q / -m2507 と併用できない" >&2; exit 2
   fi
-  if [[ -n "${KOUKAI_VOCAB_KEEP:-}" ]]; then
-    [[ "$KOUKAI_VOCAB_KEEP" =~ ^[A-Za-z0-9_.-]+$ && -f "$K/dougu/jikken/$KOUKAI_VOCAB_KEEP" ]] || { echo "語彙ファイルは dougu/jikken 内のファイル名を指定: $KOUKAI_VOCAB_KEEP" >&2; exit 2; }
-    VOCAB_KEEP_PATH="$K/dougu/jikken/$KOUKAI_VOCAB_KEEP"
-    export KOUKAI_VOCAB_KEEP="$VOCAB_KEEP_PATH"
-  fi
+fi
+if [[ "${ATAMA:-}" == q36 || "${ATAMA:-}" == orn ]]; then
+  # qwen35moe で実装・確認した技だけを許す。環境からの混入も黙って無視しない。
+  for key in ${!KOUKAI_@}; do
+    [[ -z "${!key}" ]] && continue
+    case "$key" in
+      KOUKAI_VOCAB_KEEP|KOUKAI_EXPERT_P|KOUKAI_EXPERT_MIN|KOUKAI_SAMPLE_TEMP|KOUKAI_SAMPLE_TOP_P|KOUKAI_SAMPLE_TOP_K|KOUKAI_SAMPLE_SEED) ;;
+      *) echo "qwen35moe で未対応の技: $key" >&2; exit 2;;
+    esac
+  done
+  [[ -z "${KOUKAI_EXPERT_MIN:-}" || -n "${KOUKAI_EXPERT_P:-}" ]] || { echo 'EXPERT_MIN には EXPERT_P が必要' >&2; exit 2; }
+  [[ -z "${SPD06:-}${KERNEL_LORA:-}${HENKA_FILE:-}" ]] || { echo 'qwen35moe では -spd06 / -l / -henka は未対応' >&2; exit 2; }
+fi
+if [[ -n "${KOUKAI_VOCAB_KEEP:-}" ]]; then
+  [[ "$KOUKAI_VOCAB_KEEP" =~ ^[A-Za-z0-9_.-]+$ && -f "$K/dougu/jikken/$KOUKAI_VOCAB_KEEP" ]] || { echo "語彙ファイルは dougu/jikken 内のファイル名を指定: $KOUKAI_VOCAB_KEEP" >&2; exit 2; }
+  VOCAB_KEEP_PATH="$K/dougu/jikken/$KOUKAI_VOCAB_KEEP"
+  python3 "$K/dougu/gguf_vocab.py" "$VOCAB_KEEP_PATH" "${ATAMA:-qwen3}"
+  export KOUKAI_VOCAB_KEEP="$VOCAB_KEEP_PATH"
 fi
 W="${RUNNER_TEMP:-/tmp}/hakaru"; mkdir -p "$W"
-# 頭脳は HF の revision と sha256 で固定。MiMo 9B は GGUF 本体だけ落とす。
-if [[ "${ATAMA:-}" == m9* ]]; then
+# 頭脳は HF の revision と sha256 で固定。新しい頭脳も GGUF 本体だけ落とす。
+if [[ "${ATAMA:-}" == q36 ]]; then
+  REPO=unsloth/Qwen3.6-35B-A3B-MTP-GGUF
+  HF_REV=5bc3e238d916f48a861bac2f8a1990a0e9b7e98d
+  MF=Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf
+  HF_SHA=ed7cda7e38985b4fcff76475865135039641d2bfbac3c169df15ca770f37fb0c
+  NAFUDA="${NAFUDA}_${ATAMA}"
+elif [[ "${ATAMA:-}" == orn ]]; then
+  REPO=bartowski/Ornith-1.5-35B-A3B-GGUF
+  HF_REV=64b0493d34a5ca4c1b4ad67bb99b41d74b4f07d6
+  MF=Ornith-1.5-35B-A3B-IQ2_M.gguf
+  HF_SHA=be92ed1eb2da35876e91a5551c527ddcce450d49ec53aba92f03e26adba7b996
+  NAFUDA="${NAFUDA}_${ATAMA}"
+elif [[ "${ATAMA:-}" == m9* ]]; then
   REPO=bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF
   HF_REV=4371da10c84fb26da3592d4cf312d24aa82b7b65
   case "$ATAMA" in
@@ -194,6 +228,7 @@ QF="$K/monosashi/mondai_${DAN}dan.jsonl"; [ -f "$QF" ] || QF="$K/monosashi/monda
 [ -n "${BUBUN:-}" ] && NAFUDA="${NAFUDA}_b${BUBUN/\//of}"
 NAFUDA="${NAFUDA}_f${FUKASA}"; OUT="$K/kekka_actions/${NAFUDA}.md"; mkdir -p "$K/kekka_actions"
 T0=$(date +%s); log(){ echo "[$(( $(date +%s) - T0 ))s] $*"; }
+MEASURE_DEADLINE=$((T0 + 300 * 60))  # 走らせる 340 分より 40 分早く結果を確定する
 PATCH_SHA=""
 [[ ! -f "$K/llama_patch/koukai.patch" ]] || PATCH_SHA=$(sha256sum "$K/llama_patch/koukai.patch" | cut -c1-64)
 NP=$(nproc); P=""; DL=""; DL_IMATRIX=""; DL_BASE=""
@@ -269,6 +304,9 @@ trap on_error ERR
 # 1. 盤の空きを確かめる
 FREE=$(df -B1 --output=avail / | tail -1)
 NEED_GB=15; [[ -z "${REBUILD_QTYPE:-}" ]] || NEED_GB=55
+if [[ "${ATAMA:-}" == q36 || "${ATAMA:-}" == orn ]]; then
+  NEED_GB=29  # 本体最大11.71 + 比較用Qwen3 10.48 + build等の余裕6 GiB
+fi
 [ "$FREE" -gt $((NEED_GB*1024*1024*1024)) ] || { echo "盤が足りない（${NEED_GB}GiB 必要）: $FREE" >> "$OUT"; exit 1; }
 
 # 2. 頭脳を落とす（作りながら並行。途中から再開できる .part → sha256 が合ったら名前を変える）
@@ -276,7 +314,7 @@ NEED_GB=15; [[ -z "${REBUILD_QTYPE:-}" ]] || NEED_GB=55
   "https://huggingface.co/$REPO/resolve/$HF_REV/${SOURCE_MF:-$MF}" ) &
 DL=$!
 BASE_M=""
-if [[ -n "${REBUILD_QTYPE:-}" || "${ATAMA:-}" == m9* ]]; then
+if [[ -n "${REBUILD_QTYPE:-}" || "${ATAMA:-}" == m9* || "${ATAMA:-}" == q36 || "${ATAMA:-}" == orn ]]; then
   BASE_M="$W/base-Q2_K.gguf"
   ( curl -fsSL -C - --retry 5 --retry-delay 10 --retry-all-errors -o "$BASE_M.part" \
     "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/d5b1d57bd0b504ac62ae6c725904e96ef228dc74/Qwen3-30B-A3B-Q2_K.gguf" ) &
@@ -295,6 +333,14 @@ git -C "$W/llama.cpp" checkout -q "$COMMIT"
 if [[ -f "$K/llama_patch/koukai.patch" ]]; then
   git -C "$W/llama.cpp" apply "$K/llama_patch/koukai.patch"
 fi
+wait "$DL"; DL=""
+echo "$HF_SHA  $M.part" | sha256sum -c --quiet || { echo "頭脳の sha256 が違う" >> "$OUT"; exit 1; }
+mv "$M.part" "$M"; log "頭脳 $(du -h "$M" | cut -f1) 落とした（lfs.oid sha256 一致）"
+if [[ -n "$VOCAB_KEEP_PATH" ]]; then
+  python3 "$K/dougu/gguf_vocab.py" "$VOCAB_KEEP_PATH" "${ATAMA:-qwen3}" "$M" >> "$OUT" 2>&1
+fi
+# 指定の範囲とモデルの取り違えを、build・基準測定より前に検査。
+python3 "$K/dougu/gguf_vocab.py" --model-info "$M" "${ATAMA:-qwen3}" "${EXPERTS:-}" > "$W/model.env"
 cmake -S "$W/llama.cpp" -B "$W/build" -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF >/dev/null
 TARGETS=(llama-server llama-bench llama-perplexity); [[ -z "${REBUILD_QTYPE:-}" ]] || TARGETS+=(llama-quantize)
 [[ -z "${KOUKAI_IMATRIX_CALIB:-}" ]] || TARGETS+=(llama-imatrix)
@@ -332,9 +378,6 @@ if [[ -n "${SPD06:-}" ]]; then
   fi
   echo "草稿 $DRAFT_REV / sha256 ${DRAFT_SHA:0:12} / 指定 ${SPEC_ARGS[*]}" >> "$OUT"
 else SPEC_ARGS=(--spec-type ngram-simple --spec-ngram-simple-size-m 16); fi
-wait $DL; DL=""
-echo "$HF_SHA  $M.part" | sha256sum -c --quiet || { echo "頭脳の sha256 が違う" >> "$OUT"; exit 1; }
-mv "$M.part" "$M"; log "頭脳 $(du -h "$M" | cut -f1) 落とした（lfs.oid sha256 一致）"
 if [[ -n "$DL_BASE" ]]; then
   wait "$DL_BASE"; DL_BASE=""
   echo "db3ce897ccc9e7d9dbf17fe083cae7880a2092aa473b45eba8b77715aa9ca170  $BASE_M.part" | sha256sum -c --quiet || { echo "基準頭脳 Q2_K の sha256 が違う" >> "$OUT"; exit 1; }
@@ -342,13 +385,13 @@ if [[ -n "$DL_BASE" ]]; then
 fi
 # 改造前の同じ頭脳を同じ runner で測る。KOUKAI_* は外して既定動作に戻す。
 COMPARE_BASELINE=0
-[[ -n "${JIKKEN:-}${QUANT:-}${EXPERTS:-}${MEM_GB:-}${UB:-}${KVQ:-}${KVK8V4:-}${FA1:-}${NOMMAP:-}${MLOCK:-}${SPD06:-}" || "${ATAMA:-}" == m9* ]] && COMPARE_BASELINE=1
+[[ -n "${JIKKEN:-}${QUANT:-}${EXPERTS:-}${MEM_GB:-}${UB:-}${KVQ:-}${KVK8V4:-}${FA1:-}${NOMMAP:-}${MLOCK:-}${SPD06:-}" || "${ATAMA:-}" == m9* || "${ATAMA:-}" == q36 || "${ATAMA:-}" == orn ]] && COMPARE_BASELINE=1
 if (( COMPARE_BASELINE )); then
   [[ -n "$BASE_M" ]] || BASE_M="$M"
   BASE_ENV=(env); while IFS= read -r key; do BASE_ENV+=(-u "$key"); done < <(compgen -e | grep '^KOUKAI_' || true)
   echo; echo '## 基準（同じ機械）pp512 / tg128' >> "$OUT"
-  if ! "${BASE_ENV[@]}" "$B/llama-bench" -m "$BASE_M" -t "$NP" -p 512 -n 128 -r 3 -o md > "$W/baseline-bench.md" 2>&1; then
-    cat "$W/baseline-bench.md" >> "$OUT"; echo '基準 llama-bench 失敗' >> "$OUT"; exit 1
+  if ! "${BASE_ENV[@]}" timeout -k 30s 15m "$B/llama-bench" -m "$BASE_M" -t "$NP" -p 512 -n 128 -r 3 -o md > "$W/baseline-bench.md" 2>&1; then
+    echo '基準 llama-bench は15分で打ち切り、または失敗' >> "$OUT"
   fi
   cat "$W/baseline-bench.md" >> "$OUT"
   BASE_PP=$(sed -nE 's/.*pp512[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$W/baseline-bench.md" | head -1)
@@ -419,6 +462,11 @@ if [[ -n "$TRANSFORM" ]]; then
   rm -f "$M"; M="$NEW_M"; log "変換済み頭脳を使う: $TRANSFORM"
 fi
 
+# 最終GGUFを読む。arch、専門家数、共有専門家はモデルの値で、札から決め打ちしない。
+python3 "$K/dougu/gguf_vocab.py" --model-info "$M" "${ATAMA:-qwen3}" "${EXPERTS:-}" > "$W/model.env"
+source "$W/model.env"
+cat "$W/model.env" >> "$OUT"
+
 # 3.5 disk の速さ（メモリ上限の時だけ）。上限の中では重みを disk から読み直すので、runner と Mac の差を見積もる（9/29）。
 if [[ -n "${MEM_GB:-}" ]]; then
   { echo; echo "## disk（page cache を捨ててから読む）"; } >> "$OUT"
@@ -441,7 +489,7 @@ PY
 fi
 
 # 4. 速さ（読み込み pp512・書き出し tg128、3回）
-OVERRIDE_ARGS=(); [[ -n "${EXPERTS:-}" ]] && OVERRIDE_ARGS+=(--override-kv "qwen3moe.expert_used_count=int:$EXPERTS")
+OVERRIDE_ARGS=(); [[ -n "${EXPERTS:-}" ]] && OVERRIDE_ARGS+=(--override-kv "$MODEL_ARCH.expert_used_count=int:$EXPERTS")
 BENCH_ARGS=(); [[ -z "${NOMMAP:-}" ]] || BENCH_ARGS+=(-mmp 0)
 [[ -n "${UB:-}" ]] && BENCH_ARGS+=(-ub "$UB")
 if [[ -n "${KVQ:-}" ]]; then BENCH_ARGS+=(-ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa on); fi
@@ -464,10 +512,10 @@ bench_with_trace(){
 }
 if [[ -n "${MEM_GB:-}" ]]; then
   BENCH_CG=$(new_cgroup bench)
-  if ! bench_with_trace run_in_cgroup "$BENCH_CG" "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}"; then echo "$MEM_GB GB で落ちた（llama-bench）" >> "$OUT"; fi
+  if ! bench_with_trace run_in_cgroup "$BENCH_CG" timeout -k 30s 15m "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}"; then echo "llama-bench を15分で打ち切り、または $MEM_GB GB で失敗" >> "$OUT"; fi
   cgroup_report "$BENCH_CG" llama-bench
 else
-  bench_with_trace "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}" || true
+  bench_with_trace timeout -k 30s 15m "$B/llama-bench" -m "$M" -t "$NP" -p 512 -n 128 -r 3 -o md "${BENCH_ARGS[@]}" || echo 'llama-bench を15分で打ち切り、または失敗' >> "$OUT"
 fi
 if (( COMPARE_BASELINE )); then
   EXP_PP=$(sed -nE 's/.*pp512[^|]*\|[[:space:]]*([0-9.]+).*/\1/p' "$BENCH_OUT" | head -1)
@@ -481,7 +529,7 @@ for label,b,e in [('pp512',base_pp,exp_pp),('tg128',base_tg,exp_tg)]:
 PY
 fi
 # llama-bench は --override-kv を受け付けない（9/24）。専門家の数を変えた速さは 頭脳を立てた後の「探り」で測る
-[[ -n "${EXPERTS:-}" ]] && echo "（上の llama-bench は 専門家 8人のまま。$EXPERTS 人の速さは 下の「探り」）" >> "$OUT"
+[[ -n "${EXPERTS:-}" ]] && echo "（上の llama-bench は GGUF の専門家 ${MODEL_EXPERTS_USED} 人のまま。$EXPERTS 人の速さは 下の「探り」）" >> "$OUT"
 log "速さ測った"
 
 # 4.5 問題文の PPL（初回に一度作った文面は以後固定）
@@ -506,13 +554,14 @@ PPL_LOG="$W/perplexity.log"
 PPL_ARGS=( -ctk f16 -ctv f16 ); [[ -n "${KVQ:-}" ]] && PPL_ARGS=( -ctk "q${KVQ}_0" -ctv "q${KVQ}_0" -fa on )
 [[ -z "${KVK8V4:-}" ]] || PPL_ARGS=( -ctk q8_0 -ctv q4_0 -fa on )
 [[ -z "${FA1:-}" ]] || PPL_ARGS+=( -fa on )
+PPL_ARGS+=("${OVERRIDE_ARGS[@]}")
 if [[ -n "${MEM_GB:-}" ]]; then
   PPL_CG=$(new_cgroup perplexity)
-  if run_in_cgroup "$PPL_CG" "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1; then :
-  else echo "$MEM_GB GB で落ちた（llama-perplexity）" >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; fi
+  if run_in_cgroup "$PPL_CG" timeout -k 30s 15m "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1; then :
+  else echo "llama-perplexity を15分で打ち切り、または $MEM_GB GB で失敗" >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; fi
   cgroup_report "$PPL_CG" llama-perplexity
 else
-  "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1 || { echo 'llama-perplexity failed' >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; }
+  timeout -k 30s 15m "$B/llama-perplexity" -m "$M" -f "$PPL_FILE" -c 512 --chunks 16 "${PPL_ARGS[@]}" "${MMAP_ARGS[@]}" > "$PPL_LOG" 2>&1 || { echo 'llama-perplexity を15分で打ち切り、または失敗' >> "$OUT"; tail -20 "$PPL_LOG" >> "$OUT"; }
 fi
 grep -E 'PPL' "$PPL_LOG" | tail -1 >> "$OUT" || echo 'PPL: 取れなかった' >> "$OUT"
 
@@ -542,9 +591,9 @@ tateru(){ # $1=差し替える指定
   OK=""; for i in $(seq 1 200); do sleep 3; kill -0 $P 2>/dev/null || break
     curl -sf -m 3 http://127.0.0.1:8080/health 2>/dev/null | grep -q ok && { OK=1; break; }; done
   if [ -n "$OK" ]; then   # 探り: 同じ頼みで 128字書かせて 読み・書きの t/s を残す（専門家の数・メモリ上限の違いを比べる）
-    if [[ "${ATAMA:-}" == m9* ]]; then
+    if [[ "${ATAMA:-}" == m9* || "${ATAMA:-}" == q36 || "${ATAMA:-}" == orn ]]; then
       # 7段も同じ /apply-template を使う。Qwen3.5 が enable_thinking=false を受け付けることを実機で確かめる。
-      python3 - <<'PY' || { echo 'MiMo 9B の思考なしテンプレートが確認できない' >> "$OUT"; exit 1; }
+      python3 - <<'PY' || { echo "${ATAMA} の思考なしテンプレートが確認できない" >> "$OUT"; exit 1; }
 import json, urllib.request
 url = "http://127.0.0.1:8080/apply-template"
 messages = [{"role": "user", "content": "1+1を計算してください。"}]
@@ -570,6 +619,7 @@ PY
 }
 hakaru(){ # $1=名札の付け足し
   python3 -u "$K/monosashi/hakaru.py" --mondai "$QF" ${BUBUN:+--bubun $BUBUN} --fukasa "$FUKASA" --kagiri "$KAGIRI" --narabi 1 \
+    --deadline "$MEASURE_DEADLINE" \
     --nafuda "actions-$NAFUDA$1" --out "$K/kekka_actions/7dan_${NAFUDA}$1.json" > "$W/7dan$1.log" 2>&1 \
     || { tail -20 "$W/7dan$1.log" | tee -a "$OUT"; [[ -z "${MEM_GB:-}" ]] || echo "$MEM_GB GB で落ちた（物差し中）" >> "$OUT"; echo '```' >> "$OUT"; exit 1; }
 }
@@ -593,6 +643,12 @@ else
   tateru "${SPEC_ARGS[*]}"
   { echo; echo "## 7段 深さ${FUKASA} ${KAGIRI}問（0=全部）"; echo '```'; } >> "$OUT"
   hakaru ""; { tail -12 "$W/7dan.log"; echo '```'; } >> "$OUT"
+  python3 - "$K/kekka_actions/7dan_${NAFUDA}.json" >> "$OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))["まとめ"]
+if d.get("打ち切り"):
+    print(f'打ち切り: {d["打ち切り"]} / 正解率 {d["正解率"]}% / 平均秒 {d["平均秒"]}')
+PY
   kill "$SERVER_PID" 2>/dev/null || true; wait $P 2>/dev/null || true; P=""; SERVER_PID=""
   if [[ -n "$SERVER_CG" ]]; then cgroup_report "$SERVER_CG" llama-server; SERVER_CG=""; fi
 fi

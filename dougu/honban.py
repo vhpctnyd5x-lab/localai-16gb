@@ -21,6 +21,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -181,10 +182,11 @@ def j(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     model = Path(args.model).expanduser() if args.model else MODEL_30B
     log = open(out_dir / f"{args.out}_llama.log", "wb")
+    extra = shlex.split(args.args)   # 例: --args "--spec-type draft-mtp"（先読みを変える時は既定の ngram を外す）
+    spec = [] if "--spec-type" in extra else ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-m", "16"]
     server = subprocess.Popen([str(LLAMA), "-m", str(model), "--port", "8080", "-t", "6", "-ngl", "0", "-c", "8192",
                                "-np", "1", "-cb", "-ub", "256", "--cache-reuse", "16", "-fa", "off",
-                               "--reasoning-format", "none", "--spec-type", "ngram-simple",
-                               "--spec-ngram-simple-size-m", "16"], stdout=log, stderr=log)
+                               "--reasoning-format", "none", *spec, *extra], stdout=log, stderr=log)
     try:
         for _ in range(150):
             try:
@@ -217,7 +219,8 @@ def main():
     p = sub.add_parser("kiku"); p.add_argument("michi"); p.add_argument("text"); p.set_defaults(fn=kiku)
     p = sub.add_parser("gakushuu"); p.add_argument("on", choices=["on", "off"]); p.set_defaults(fn=gakushuu)
     p = sub.add_parser("j"); p.add_argument("--id"); p.add_argument("--model"); p.add_argument("--opts")
-    p.add_argument("--out", default="wa_honban"); p.set_defaults(fn=j)
+    p.add_argument("--out", default="wa_honban"); p.add_argument("--args", default="", help="llama-server に足す引数")
+    p.set_defaults(fn=j)
     args = parser.parse_args()
     args.fn(args)
 

@@ -231,6 +231,8 @@ def main():
     ap.add_argument("--nafuda", default="")            # 記録に残す名札（LoRAあり等）
     ap.add_argument("--kagiri", type=int, default=0)   # 試すときに件数を絞る
     ap.add_argument("--bubun", default="")             # "i/n": n 等分の i 番目だけ（Actions で並べて測る）
+    ap.add_argument("--deadline", type=float, default=0,
+                    help="Unix 秒。3問から全件の所要を見積もり、期限を越えそうなら結果を確定する")
     a = ap.parse_args()
 
     mondai = [json.loads(l) for l in open(a.mondai, encoding="utf-8") if l.strip()]
@@ -277,8 +279,24 @@ def main():
                       flush=True)
         return r
 
-    with ThreadPoolExecutor(max_workers=a.narabi) as ex:
-        atarashii = {r["id"]: r for r in ex.map(work, nokori)}
+    uchikiri = ""
+    if a.deadline and a.narabi == 1:
+        atarashii = {}
+        for d in nokori:
+            if time.time() >= a.deadline - a.timeout:
+                uchikiri = "期限までに次の1問を終えられない"
+                break
+            r = work(d)
+            atarashii[r["id"]] = r
+            if sumi[0] >= 3 and sumi[0] < len(nokori):
+                avg = (time.time() - t0) / sumi[0]
+                remaining = len(nokori) - sumi[0]
+                if time.time() + avg * remaining * 1.2 > a.deadline:
+                    uchikiri = f"{sumi[0]}問の平均 {avg:.1f} 秒から全件が期限超過と見積もった"
+                    break
+    else:
+        with ThreadPoolExecutor(max_workers=a.narabi) as ex:
+            atarashii = {r["id"]: r for r in ex.map(work, nokori)}
     tf.close()
     sumi_map.update(atarashii)
     kekka = [sumi_map[m["id"]] for m in mondai if m["id"] in sumi_map]
@@ -294,9 +312,11 @@ def main():
                 "件": len(g),
                 "正解率": round(100.0 * sum(k["○"] for k in g) / len(g), 1),
                 "平均秒": round(sum(k["秒"] for k in g) / len(g), 1)}
-    matome["正解率"] = round(100.0 * sum(k["○"] for k in kekka) / len(kekka), 1)
-    matome["平均秒"] = round(sum(k["秒"] for k in kekka) / len(kekka), 1)
-    matome["平均考えた字数"] = round(sum(k["考えた字数"] for k in kekka) / len(kekka))
+    matome["正解率"] = round(100.0 * sum(k["○"] for k in kekka) / len(kekka), 1) if kekka else 0
+    matome["平均秒"] = round(sum(k["秒"] for k in kekka) / len(kekka), 1) if kekka else 0
+    matome["平均考えた字数"] = round(sum(k["考えた字数"] for k in kekka) / len(kekka)) if kekka else 0
+    if uchikiri:
+        matome["打ち切り"] = f"{len(kekka)}/{len(mondai)}問: {uchikiri}"
     matome["しくじり件数"] = sum(1 for k in kekka if k["しくじり"])
     # ★ ゆるい採点に落ちた数＝「答え: X」を書かなかった数。**必ず表に出す。**
     #   ここが多いと、正解率は「途中の数で偶然当たった分」を含む。

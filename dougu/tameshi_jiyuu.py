@@ -348,6 +348,68 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert "形を直して" in seen[1][-1]["content"]
     checks += 1
 
+    # J02: 配列を JSON 文字列にした呼び出しを戻す。削除対象は1件に限り、危険な形は止める。
+    victim = home / "Downloads" / "old.tmp"
+    victim.parent.mkdir(exist_ok=True)
+    victim.write_text("old")
+    encoded = call("trash", paths=json.dumps([str(victim)]))
+    assert jiyuu._valid(encoded) == ("trash", {"paths": [str(victim)]})
+    jiyuu._outbound().request = "old.tmp をゴミ箱へ移して"
+    rm = f'rm -f {victim} && echo "削除完了" && ls -la {victim}'
+    name, args, note = jiyuu._rewrite_sh("sh", {"command": rm})
+    assert name == "trash" and args == {"paths": [str(victim)]} and note
+    assert jiyuu._risk(name, args) == "戻せる"
+    moved = jiyuu._run(name, args, "戻せる", "test")
+    assert moved["ok"] and not victim.exists() and (home / ".Trash" / "old.tmp").exists()
+    for unsafe in (f"rm -rf {victim}", f"rm -f {victim} && rm -f {home / 'other'}",
+                   f"rm -f {victim} && curl https://example.org"):
+        assert jiyuu._rewrite_sh("sh", {"command": unsafe})[0] == "sh"
+        assert jiyuu._risk("sh", {"command": unsafe}) == "禁止"
+    victim.write_text("again")
+    assert jiyuu._rewrite_sh("sh", {"command": f"rm {victim}"})[:2] == ("trash", {"paths": [str(victim)]})
+    assert jiyuu._rewrite_sh("sh", {"command": f"rm -f {victim.parent}"})[0] == "sh"   # フォルダは言い換えない
+    jiyuu._outbound().request = "中身を見せて"
+    assert jiyuu._rewrite_sh("sh", {"command": f"rm -f {victim}"})[0] == "sh"
+    jiyuu._outbound().request = "old.tmp はゴミ箱へ移さないで"
+    assert jiyuu._rewrite_sh("sh", {"command": f"rm -f {victim}"})[0] == "sh"
+    checks += 1
+
+    # J04: mv を move に変え、移動先の親フォルダを作る。上書きはしない。
+    src = home / "Documents" / "meeting.txt"
+    src.parent.mkdir(exist_ok=True)
+    src.write_text("meeting")
+    dst = home / "Desktop" / "整理_追加試験" / "meeting.txt"
+    name, args, note = jiyuu._rewrite_sh("sh", {"command": f'mv "{src}" "{dst}"'})
+    assert name == "move" and args == {"src": str(src), "dst": str(dst)} and not note
+    assert jiyuu._risk(name, args) == "戻せる"
+    result = jiyuu._run(name, args, "戻せる", "test")
+    assert result["ok"] and dst.read_text() == "meeting" and not src.exists()
+    src.write_text("second")
+    assert not jiyuu._run(name, args, "戻せる", "test")["ok"] and src.read_text() == "second"
+    assert jiyuu._rewrite_sh("sh", {"command": f"mv {src} {dst} && echo done"})[0] == "sh"
+    assert jiyuu._rewrite_sh("sh", {"command": f"mv {src} {home}/../elsewhere.txt"})[0] == "sh"
+    missing_dst = home / "Desktop" / "別" / "meeting.txt"
+    hint = jiyuu._missing_hint("sh", {"command": f"mv {src} {missing_dst}"},
+                               {"ok": False, "結果": "mv: No such file or directory"})
+    assert "mkdir -p" in hint["次"] and str(missing_dst.parent) in hint["次"]
+    seen_path = str(home / "Downloads" / "old.tmp")
+    hint = jiyuu._missing_hint("trash", {"paths": [str(home / "old.tmp")]}, {"ok": False, "結果": "見つかりません: x"}, [seen_path])
+    assert seen_path in hint["次"]
+    assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
+    checks += 1
+
+    # J08/J11: 確認だけの複合命令を許し、危険な連結・展開は従来通り承認へ回す。
+    for command in ('sleep 3; pgrep -a "TextEdit" || echo "TextEdit が見つかりません"',
+                    "python3 --version; which python3", "pwd && which python3"):
+        assert jiyuu._risk("sh", {"command": command}) == "見る", command
+    for command in ("python3 --version; python3 -c 'open(\"x\",\"w\")'",
+                    "pwd && touch file", "pwd; echo $(whoami)", "sleep 30; pgrep TextEdit", "echo $(reboot)"):
+        assert jiyuu._risk("sh", {"command": command}) != "見る", command
+    assert jiyuu._risk("sh", {"command": "echo $HOME"}) == "見る"
+    assert jiyuu._risk("sh", {"command": 'open -a "TextEdit" /dev/null 2>&1; echo "exit=$?"'}) == "戻せる"
+    assert jiyuu._risk("sh", {"command": "X=reboot; $X"}) == "戻せない"
+    checks += 1
+
     # 試験用の砂箱入口で本物の短いプロセスを起動し、outputとstopを確認。
     fake = Path(temporary) / "sandbox-exec"
     fake.write_text("#!/bin/sh\nshift 2\nexec \"$@\"\n")

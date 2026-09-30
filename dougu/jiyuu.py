@@ -482,6 +482,14 @@ def _valid(call):
                     args.pop("action", None)
                 elif "job" in args and "action" not in args:
                     args["action"] = "output"
+            if name == "trash" and isinstance(args.get("paths"), str):
+                # 小さいモデルが配列を JSON 文字列にした時だけ、型を戻す。
+                try:
+                    paths = json.loads(args["paths"])
+                except ValueError:
+                    paths = None
+                if isinstance(paths, list) and all(isinstance(path, str) for path in paths):
+                    args["paths"] = paths
         if not isinstance(args, dict) or set(args) - set(spec["properties"]) or set(spec["required"]) - set(args):
             raise ValueError("引数の名前または必須項目が違います")
         for key, value in args.items():
@@ -506,6 +514,85 @@ def _valid(call):
 def _network_command(command):
     return bool(gate._command_has_outbound(command) or
                 re.search(r"(?i)(?:^|[;&|]\s*|\s)(?:curl|wget|fetch|httpie|ssh|scp|sftp|nc|ncat|telnet|ping|dig|nslookup)\b|\bgit\s+(?:clone|fetch|pull|push)\b", command))
+
+def _shell_parts(command):
+    """単純な複合命令だけを読む。展開・リダイレクトは言い換えない。"""
+    if re.search(r"[$`\\\n<>#]", command):
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    parts, part, operators = [], [], []
+    for token in tokens:
+        if token in (";", "&&", "||"):
+            if not part:
+                return None
+            parts.append(part)
+            part = []
+            operators.append(token)
+        elif token in ("&", "|", "(", ")") or re.fullmatch(r"[;&|()]+", token):
+            return None
+        else:
+            part.append(token)
+    if not part:
+        return None
+    parts.append(part)
+    return parts, operators
+
+
+def _plain_path(value):
+    return (isinstance(value, str) and value.startswith(("/", "~/"))
+            and not re.search(r"[*?\[\]{}$`\n]", value) and value not in ("/", "~")
+            and ".." not in Path(value).parts)
+
+
+def _rewrite_sh(name, args):
+    """明示された1件の移動・ゴミ箱行きを、既存の道具へ渡す。"""
+    if name != "sh" or "command" not in args or args.get("background"):
+        return name, args, ""
+    parsed = _shell_parts(args["command"])
+    if parsed is None:
+        return name, args, ""
+    parts, operators = parsed
+    first = parts[0]
+    if (len(parts) == 1 and len(first) == 3 and first[0] == "mv"
+            and all(_plain_path(path) for path in first[1:])):
+        return "move", {"src": first[1], "dst": first[2]}, ""
+    request = _outbound().request
+    requested = (bool(re.search(r"ゴミ箱[へに]|削除して|削除しといて|消して|消しといて|捨てて", request))
+                 and not re.search(r"(?:ゴミ箱|削除|消し|捨て).{0,12}(?:ない|ずに|禁止)", request))
+    target = first[-1]
+    if (requested and first[:1] == ["rm"] and (len(first) == 2 or len(first) == 3 and first[1] in ("-f", "--"))
+            and _plain_path(target) and not os.path.isdir(_home_resolve(target))   # -r の無い rm はフォルダを消さない
+            and all(op == "&&" for op in operators)
+            and all(p and p[0] in ("echo", "ls") and
+                    gate.kensa({"命令": {"cmd": shlex.join(p)}}) == "見る" for p in parts[1:])):
+        note = "後続の確認命令は実行していません。findで元の場所を確認してください。" if operators else ""
+        return "trash", {"paths": [target]}, note
+    return name, args, ""
+
+
+def _read_only_chain(command):
+    parsed = _shell_parts(command)
+    if parsed is None:
+        return False
+    parts, operators = parsed
+    if not operators:
+        return False
+    for part in parts:
+        if part == ["python3", "--version"]:
+            continue
+        if part[0] == "sleep" and len(part) == 2 and part[1].isdigit() and int(part[1]) <= 5:
+            continue
+        if part[0] not in ("which", "pwd", "pgrep", "ps", "ls", "stat", "echo", "true", "false"):
+            return False
+        if gate.kensa({"命令": {"cmd": shlex.join(part)}}) != "見る":
+            return False
+    return True
+
 
 def _risk(name, args):
     if name == "sh" and "command" in args and _forbidden_command(args["command"]):
@@ -548,6 +635,13 @@ def _risk(name, args):
             return "禁止"
         if _network_command(command):
             return "戻せない"
+        # 中で動く命令と、連結の中の変数は読めない（9/30 NVIDIA の審査: echo $(reboot) が「見る」だった）。
+        # $? と $HOME などは無害（9/30 MiMo の J08: echo "exit=$?" で承認待ちになった）。
+        plain = re.sub(r"\$(?:\?|\{?(?:HOME|PWD|USER)\}?(?!\w))", "", command)
+        if re.search(r"\$\(|`", command) or "$" in plain and re.search(r"[;&|]", command):
+            return "戻せない"
+        if _read_only_chain(command):
+            return "見る"
         risk = gate.kensa({"命令": {"cmd": command}})
         if risk == "戻せない":
             try:
@@ -912,9 +1006,23 @@ def _label(name, args):
         return _display("Macを見る: " + args["what"])
     return _display({"read": "読む", "write": "書く", "edit": "直す"}[name] + ": " + _show_path(args["path"]))
 
-def _missing_hint(name, args, result):
-    """場所が無い時だけ、次に探す手を道具の返事へ添える。"""
-    if result.get("ok") or name not in ("read", "edit", "move", "trash", "find"):
+def _command_key(args):
+    """命令の頭の2語（時間切れを覚える単位）。"""
+    return " ".join(str(args.get("command") or "").split()[:2])
+
+
+def _missing_hint(name, args, result, found=()):
+    """場所が無い時だけ、次に探す手を道具の返事へ添える。found はこの頼みで find が見つけた場所。"""
+    if result.get("ok"):
+        return result
+    if name == "sh" and "No such file or directory" in str(result.get("結果", "")):
+        parsed = _shell_parts(args.get("command", ""))
+        if parsed and parsed[0][0][:1] == ["mv"] and len(parsed[0][0]) == 3:
+            src, dst = parsed[0][0][1:]
+            if _plain_path(src) and _plain_path(dst) and os.path.lexists(_home_resolve(src)) and not _home_resolve(dst).parent.is_dir():
+                result["次"] = f"移動先のフォルダがありません。先に mkdir -p {shlex.quote(str(_home_resolve(dst).parent))} を実行してください。"
+        return result
+    if name not in ("read", "edit", "move", "trash", "find"):
         return result
     body = str(result.get("結果", ""))
     if "見つかりません" not in body and "存在しません" not in body:
@@ -923,7 +1031,12 @@ def _missing_hint(name, args, result):
     if name == "trash":
         raw = args["paths"][0] if args["paths"] else ""
     filename = Path(str(raw).rstrip("/")).name
-    if filename and name != "find":
+    # 9/30 30B の J02: find で見つけた場所を写し間違えた（Downloads/ が抜けた）。見つけた場所をそのまま返す。
+    known = [p for p in found if Path(p).name == filename
+             and os.path.realpath(p) != os.path.realpath(_home_resolve(raw))]
+    if known and name != "find":
+        result["次"] = f"前のfindで見つかった場所は {known[-1]} です。この場所でもう一度{name}してください。"
+    elif filename and name != "find":
         result["次"] = f"場所を決めつけず、findのdirを~、globを**/{filename}として探し、見つかった場所を確認してください。"
     elif name == "find":
         result["次"] = "起点の場所を確認し、必要ならホーム以下から探してください。"
@@ -1001,6 +1114,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     shape_error_key = None
     used = 0
     seen: set[str] = set()
+    found: list[str] = []          # この頼みで find が見つけた場所（写し間違いの時に返す）
+    timed_out: set[str] = set()    # 時間切れになった命令の頭の2語
     force = False
     sensei_used = False
     english_retry = False
@@ -1063,7 +1178,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     return "20手の上限に達しました。"
                 used += 1
                 ident = call.get("id") if isinstance(call, dict) else "call_" + uuid.uuid4().hex[:8]
-                name, args, as_read = None, None, False
+                name, args, as_read, rewrite_note = None, None, False, ""
                 try:
                     name, args = _valid(call)
                 except ValueError as error:
@@ -1097,6 +1212,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 shape_errors = 0
                 shape_error_key = None
                 try:
+                    name, args, rewrite_note = _rewrite_sh(name, args)
                     args = _normalize(args)
                     # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
                     as_read = name == "chrome" and args.get("action") == "open" and not _chrome_open_requested()
@@ -1120,6 +1236,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                         result = {"ok": False, "結果": "まだ使えません（自分で試してから）。道具の失敗が2回必要です。"}
                     elif name == "sensei" and (not (settei or {}).get("先生を使う") or not _external_teachers(settei) or not _network_available()):
                         result = {"ok": False, "結果": "外の先生は使えません"}
+                    elif name == "sh" and _command_key(args) in timed_out:
+                        # 9/30 MiMo の J10: defaults read を形だけ変えて3回呼び、毎回60秒待った。
+                        result = {"ok": False, "結果": f"前に「{_command_key(args)}」が時間切れでした。同じ命令は使わず、別のやり方にしてください。"}
                     elif name == "sh" and re.fullmatch(r"\s*python3?(?:\s+-i)?\s*", args.get("command", "")):
                         # 9/30: 対話の python は砂箱では動かない（30B が J11 で3回これを呼び、承認で止まった）。
                         result = {"ok": False, "結果": "対話の python は使えません。ファイルを作るなら write、動かすなら sh で python3 ファイル名。"}
@@ -1143,7 +1262,14 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             context.web_urls.update(re.findall(r'https?://[^\s<>"\']+', json.dumps(result, ensure_ascii=False)))
                         if name == "find":
                             result = _retry_find(args, result, text)
-                        result = _missing_hint(name, args, result)
+                            if result.get("ok"):
+                                found.extend(str(p) for p in result.get("場所", []))
+                        if name == "sh" and not result.get("ok") and "時間切れ" in str(result.get("結果", "")) and _command_key(args):
+                            timed_out.add(_command_key(args))
+                            result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
+                        result = _missing_hint(name, args, result, found)
+                        if rewrite_note and result.get("ok"):
+                            result["次"] = rewrite_note
                     if result.get("ok"):
                         succeeded += 1
                     elif risk != "同じ手":   # 同じ手の注意は 30B への指示なので、本人には見せない
