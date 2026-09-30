@@ -751,6 +751,19 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert [p for p, _ in posted] == ["/apply-template", "/completion"] and posted[0][1]["tools"] == jiyuu.TOOLS
     assert posted[1][1]["stop"] == ["</tool_call>"] and json.loads(got["tool_calls"][0]["function"]["arguments"]) == {"path": "~/a.txt"}
     assert jiyuu._LAST_USAGE["prompt_tokens"] == 321
+    # 9/30: 答えだけの時も道具の説明を前置きに残す（前の続きを使う）。道具を呼ぼうとした時だけ、外して書き直させる。
+    for answers, posts in (([{"content": "まとめです", "stopping_word": ""}], 2),
+                           ([{"content": "", "stopping_word": "<tool_call>"}, {"content": "まとめです"}], 4)):
+        posted.clear()
+        answers = iter(answers)
+        def fake_final(path, payload):
+            posted.append((path, payload))
+            return {"prompt": "p"} if path == "/apply-template" else next(answers)
+        with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"raw_template": true}'}), \
+             mock.patch.object(jiyuu, "_post_to", side_effect=fake_final):
+            assert jiyuu._ask([{"role": "user", "content": "x"}], final=True)["content"] == "まとめです"
+        assert len(posted) == posts and posted[0][1]["tools"] == jiyuu.TOOLS and "<tool_call>" in posted[1][1]["stop"]
+        assert posts == 2 or posted[2][1]["tools"] == [] and posted[3][1]["stop"] == ["</tool_call>"]
     # 頼みごとの選び方は環境変数より優先し、終われば元に戻る。
     posted.clear()
     with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"raw_template": false}'}), \

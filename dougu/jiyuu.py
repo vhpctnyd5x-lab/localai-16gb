@@ -382,13 +382,19 @@ def _post_to(path, payload):
 def _ask_raw(payload):
     """9/29: 会話を文に直すのはサーバー（/apply-template）、書かせた生の文はこちらで読む（MiMo 9B）。
     llama.cpp b31b71f は Qwen3.5 系の XML の呼び出しを、閉じの札が無いと値の終わりを越えて読み、JSON を壊す。"""
-    tools = [] if payload.get("tool_choice") == "none" else payload["tools"]
-    prompt = _post_to("/apply-template", {"messages": payload["messages"], "tools": tools,
-                                          "chat_template_kwargs": payload.get("chat_template_kwargs", {})})["prompt"]
-    body = {"prompt": prompt, "n_predict": payload["max_tokens"], "cache_prompt": True, "stop": ["</tool_call>"],
-            **{key: payload[key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty")
-               if key in payload}}
-    result = _post_to("/completion", body)
+    def complete(tools, stop):
+        prompt = _post_to("/apply-template", {"messages": payload["messages"], "tools": tools,
+                                              "chat_template_kwargs": payload.get("chat_template_kwargs", {})})["prompt"]
+        body = {"prompt": prompt, "n_predict": payload["max_tokens"], "cache_prompt": True, "stop": stop,
+                **{key: payload[key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty")
+                   if key in payload}}
+        return _post_to("/completion", body)
+    # 9/30: 答えだけの時も道具の説明は前置きに残す。外すと前の続きが使えず、全部（約1,500 トークン）を読み直していた（J19 で 49 秒）。
+    # 道具を呼ぼうとした時（<tool_call> で止まった時）だけ、今までどおり道具を外して書き直させる。
+    final = payload.get("tool_choice") == "none"
+    result = complete(payload["tools"], ["</tool_call>", "<tool_call>"] if final else ["</tool_call>"])
+    if final and result.get("stopping_word") == "<tool_call>":
+        result = complete([], ["</tool_call>"])
     _LAST_USAGE.clear()
     _LAST_USAGE["prompt_tokens"] = result.get("tokens_evaluated") or 0
     return _parse_raw(result.get("content") or "")
