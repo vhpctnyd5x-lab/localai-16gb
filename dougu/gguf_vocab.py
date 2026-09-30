@@ -152,7 +152,8 @@ def check_ids(path: Path, family: str, model_size: int | None = None) -> int:
         raise ValueError("語彙 ID が未整列・重複・範囲外です")
     # qwen35 系のGGUFは末尾に未使用tokenを詰めることがある。
     # IDの由来は共通tokenizerのhashで検査し、追加のpaddingだけを許す。
-    mismatch = size > model_size if model_size is not None and family in ("q36", "orn") else size != model_size
+    padded = family in ("q36", "orn") or family.startswith("m9")   # MiMo 9B も qwen35 系（248077 語 → GGUF 248320）
+    mismatch = size > model_size if model_size is not None and padded else size != model_size
     if model_size is not None and mismatch:
         raise ValueError(f"語彙数が違います: ファイル {size} / GGUF {model_size}")
     return size
