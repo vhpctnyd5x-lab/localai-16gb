@@ -1,5 +1,5 @@
 # 仕事場（カーネル）— 共通規則は `~/.codex/AGENTS.md`
-合言葉「早い・安い・賢い」。ローカルLLM＝頭（Qwen3-30B）、kernel＝手下（直感役・道具・server.py）。Claude は横の `CLAUDE.md` から `@AGENTS.md` を読む。
+合言葉「早い・安い・賢い」。ローカルLLM＝頭（Qwen3.6-35B-A3B。30B も選べる）、kernel＝手下（直感役・道具・server.py）。Claude は横の `CLAUDE.md` から `@AGENTS.md` を読む。
 
 ## 場所
 正本は内蔵 `~/LocalAI_mirror/{kernel,koukai,llama-latest,models}`。SSD は写し（`dougu/utsusu.sh`）。`kernel/` は git 外の本体で、変更は `koukai/dougu/` に写す。物差し `monosashi/hakaru.py`、比較 `dougu/hashiru_tejun.sh`、結果 `dougu/kekka/`（git 外）。不採用35BはSSD `LocalAI/models_hokan/`。
@@ -11,7 +11,8 @@
 - llama-server は1本、8080。裏処理は `dougu/ura.sh`、外部処理の待ち役は `dougu/matsu.sh actions|gcp|pid`（`run_in_background`、完了時に結果返却）。置換時は旧処理を即停止。GCP VM は自動消滅で作る。
 
 ## 頭脳
-Qwen3-30B-A3B Q2_K（Unsloth 11.3GB）、`-t 6 -ngl 0 -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple --spec-ngram-simple-size-m 16`、深さ0。2507版は+2〜3点だが30%遅いため差替えない。
+アプリの local:main は Qwen3.6-35B-A3B（unsloth UD-Q2_K_XL 11.7GB、9/30〜）。圧縮入りの llama-server（`~/LocalAI_mirror/llama-koukai`、語彙 99.99%）で、先読みなし（10/1: n-gram は 11% 遅く、外れると1回の返事が止まる）。最新 llama.cpp・専門家7人・MTP・専門家 top-p は この Mac では得なし（`dougu/jikken/KEKKA.md` 9/30）。
+30B（local:30b）: Qwen3-30B-A3B Q2_K（Unsloth 11.3GB）、`-t 6 -ngl 0 -c 8192 -np 1 -cb -ub 256 --cache-reuse 16 -fa off --reasoning-format none --spec-type ngram-simple --spec-ngram-simple-size-m 16`、深さ0。2507版は+2〜3点だが30%遅いため差替えない。
 
 ## 物差し（本人には「自作テストA〜D」）
 |名/問題|ローカル|Luna max|
