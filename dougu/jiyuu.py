@@ -1035,6 +1035,68 @@ def _command_key(args):
     return " ".join(str(args.get("command") or "").split()[:2])
 
 
+def _request_guard(name, args, request, found, risk):
+    """依頼の未確定部分はモデルの選択・承認モードで補わせない。読むだけは通す。"""
+    mutation = (name in ("move", "trash", "write", "edit")
+                or name == "sh" and bool(args.get("command")) and risk != "見る")
+    if not mutation:
+        return ""
+    # 完全削除の頼みでは、どの変更も止める（write・edit で中身を空にする抜け道も塞ぐ）。
+    # 9/30 Claude: あいまいな頼みの方は、ファイルを選んで動かす・消す時だけ（「適当に名前をつけて保存して」は止めない）。
+    selecting = name in ("move", "trash") or name == "sh"
+    if re.search(r"ゴミ箱(?:ではなく|じゃなく|でなく|を使わず)|復元(?:できない|不能|不可能)"
+                               r"|完全(?:に)?(?:削除|消[すしして])|永久(?:に)?(?:削除|消[すしして])", request):
+        return "完全削除はできません（復元できない消し方は止めています）。ゴミ箱へ移すのでよければ、そう言ってください。"
+    if selecting and re.search(r"いい感じに|適当に|よしなに|古いやつ|古いもの|いらないもの|要らないもの|不要なもの", request):
+        return "対象の基準（例: いつより古いか）と移動先があいまいです。どれを・どこへ移すか教えてください。"
+    # 「全部」の否定を、複数対象への許可に取り違えない。
+    if re.search(r"全部|両方|すべて|全て", request) and not re.search(
+            r"(?:全部|両方|すべて|全て).{0,8}(?:ではなく|じゃなく|でなく|でない|は不可|はやめ)", request):
+        return ""
+    groups = {}
+    for raw in found:
+        path = _home_resolve(raw)
+        groups.setdefault(path.name, {})[str(path)] = path
+    # findで得た候補はこの依頼だけの資料。同じ場所の再検索は重複に数えない。
+    arguments = json.dumps(args, ensure_ascii=False)
+    for filename, candidates in groups.items():
+        if len(candidates) < 2 or filename not in request and filename not in arguments:
+            continue
+        # 元パスを明示していても、モデルが別の候補を選んだ場合は通さない。
+        sources = ([args["src"]] if name == "move" else args["paths"] if name == "trash"
+                   else [args["path"]] if name in ("write", "edit") and args.get("path") else [])
+        if name in ("write", "edit") and not any(Path(str(src)).name == filename for src in sources):
+            continue   # 別の名前のファイルを書く（J19 の 索引.csv）なら、紛らわしい候補とは関係ない
+        if name == "sh":
+            parsed = _shell_parts(args["command"])
+            if parsed and len(parsed[0]) == 1:
+                words = parsed[0][0]
+                if len(words) == 3 and Path(words[0]).name in ("cp", "mv"):
+                    sources = [words[1]]
+        selected = [path for path in candidates.values()
+                    if str(path) in request or _show_path(path) in request]
+        if sources and all(_home_resolve(src) in selected for src in sources):
+            continue
+        return ("候補が複数あります: " + "、".join(_show_path(path) for path in sorted(candidates.values()))
+                + "。どれを使うか教えてください。")
+    return ""
+
+
+def _shell_find_paths(args, result):
+    """J21の sh find も候補資料にする。絶対パスの結果行だけを採る。"""
+    if not result.get("ok") or not re.match(r"^\s*(?:/usr/bin/)?find\s", args.get("command", "")):
+        return []
+    paths = []
+    for line in str(result.get("結果", "")).splitlines():
+        if line.startswith(("/", "~/")):
+            path = _home_resolve(line)
+            if path.exists() and not _secret_path(path) and not gate._is_protected_path(str(path)):
+                paths.append(str(path))
+                if len(paths) >= 100:
+                    break
+    return paths
+
+
 def _missing_hint(name, args, result, found=()):
     """場所が無い時だけ、次に探す手を道具の返事へ添える。found はこの頼みで find が見つけた場所。"""
     if result.get("ok"):
@@ -1138,6 +1200,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     shape_error_key = None
     used = 0
     seen: set[str] = set()
+    read_seen: set[str] = set()    # 変更が成功したら再確認を許す。変更操作の重複は禁止のまま。
     found: list[str] = []          # この頼みで find が見つけた場所（写し間違いの時に返す）
     timed_out: set[str] = set()    # 時間切れになった命令の頭の2語
     force = False
@@ -1203,6 +1266,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 used += 1
                 ident = call.get("id") if isinstance(call, dict) else "call_" + uuid.uuid4().hex[:8]
                 name, args, as_read, rewrite_note = None, None, False, ""
+                request_problem = ""
                 try:
                     name, args = _valid(call)
                 except ValueError as error:
@@ -1236,6 +1300,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 shape_errors = 0
                 shape_error_key = None
                 try:
+                    # rm→trash の言い換えや通常の承認より先に、元の提案を止める。
+                    args = _normalize(args)
+                    request_problem = _request_guard(name, args, text, found, _risk(name, args))
                     name, args, rewrite_note = _rewrite_sh(name, args)
                     args = _normalize(args)
                     # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
@@ -1243,12 +1310,17 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     if as_read:
                         args = {**args, "action": "read"}
                     signature = name + json.dumps(args, ensure_ascii=False, sort_keys=True)
-                    risk = "同じ手" if signature in seen else _risk(name, args)
+                    base_risk = _risk(name, args)
+                    risk = "要確認" if request_problem else "同じ手" if signature in seen else base_risk
                     seen.add(signature)
+                    if base_risk == "見る":
+                        read_seen.add(signature)
                     _record(session, step, "提案", {"道具": name, "入力": args, "門番": risk}, route)
                     _emit(on_event, {"type": "tool_start", "id": ident, "name": name,
                                      "label": _label(name, args), "risk": risk})
-                    if risk == "同じ手":
+                    if request_problem:
+                        result = {"ok": False, "結果": request_problem}
+                    elif risk == "同じ手":
                         result = {"ok": False, "結果": "同じ手をもう一度呼んでいます。前の結果を使って、道具を使わずに答えてください。"}
                         force = True
                         _emit(on_event, {"type": "note", "text": "同じ操作の繰り返しを止めました。"})
@@ -1288,6 +1360,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             result = _retry_find(args, result, text)
                             if result.get("ok"):
                                 found.extend(str(p) for p in result.get("場所", []))
+                        elif name == "sh":
+                            found.extend(_shell_find_paths(args, result))
                         if name == "sh" and not result.get("ok") and "時間切れ" in str(result.get("結果", "")) and _command_key(args):
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
@@ -1296,6 +1370,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             result["次"] = rewrite_note
                     if result.get("ok"):
                         succeeded += 1
+                        if name in ("write", "edit", "move", "trash") or name == "sh" and args.get("command") and base_risk != "見る":
+                            seen.difference_update(read_seen)
+                            read_seen.clear()
                     elif risk != "同じ手":   # 同じ手の注意は 30B への指示なので、本人には見せない
                         last_problem = str(result.get("結果", ""))[:120]
                     if name != "sensei" and not result.get("ok"):
@@ -1312,6 +1389,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 tool_content = _short(result, session, step, limit=3300 if name == "chrome" and args.get("action") == "read" else 1200)
                 _record(session, step, "結果", result, route)
                 messages.append({"role": "tool", "tool_call_id": ident, "content": tool_content})
+                if request_problem:
+                    # モデルの再解釈・同じ返答の後続呼び出しで迂回させない。
+                    _record(session, step, "結果", {"答え": request_problem}, route)
+                    return request_problem
             if used >= 16:
                 force = True   # 手数の予算。ここからは答えさせる
                 _emit(on_event, {"type": "note", "text": "操作の上限が近いため、ここで答えをまとめます。"})
