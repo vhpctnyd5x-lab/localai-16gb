@@ -32,6 +32,7 @@ def post(path, body, timeout=600):
 
 def measure(model, extra, log_path, n_predict, llama):
     words, env = honban.split_env(extra)   # 頭の KOUKAI_…=値 は環境へ
+    llama = Path(env.pop("LLAMA_BIN")).expanduser() if "LLAMA_BIN" in env else llama   # 設定ごとに llama-server を変える
     base = [str(llama), "-m", str(model), "--port", "8080", "-t", "6", "-ngl", "0", "-c", "8192",
             "-np", "1", "-cb", "-ub", "256", "-fa", "off", "--reasoning-format", "none"]
     server = subprocess.Popen(base + words, stdout=open(log_path, "wb"), stderr=subprocess.STDOUT, env=env)
