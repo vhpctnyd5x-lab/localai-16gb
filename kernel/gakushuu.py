@@ -41,7 +41,7 @@ LEARN_SEEDS = [
 ]
 DEFAULT = {"入": False, "上限MB": 2048, "充電中だけ": False,
            "出どころ": {"Wikipedia": True, "振り返り": True},
-           "振り返りで外の先生に聞く": False, "会話の言葉から学ぶ題を選ぶ": False}
+           "振り返りで外の先生に聞く": True, "会話の言葉から学ぶ題を選ぶ": False}
 
 
 def folder():
@@ -321,24 +321,44 @@ def _recent_topics():
 
 
 def _records():
-    base = Path(os.environ.get("KERNEL_KIROKU_DIR", HERE / "kiroku"))
+    base = Path(os.environ.get("KERNEL_KIROKU_DIR", ROOT / "kiroku"))
     if not base.is_dir():
         return []
     found = []
-    for p in sorted(base.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)[:80]:
+    for p in sorted(base.rglob("*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)[:80]:
         try:
-            lines = p.read_text(encoding="utf-8").splitlines() if p.suffix == ".jsonl" else [p.read_text(encoding="utf-8")]
+            lines = p.read_text(encoding="utf-8").splitlines()
             request = ""
-            if p.suffix == ".jsonl":
-                for first in lines[:5]:
-                    event = json.loads(first)
-                    # 9/29: 新しい輪の記録は「依頼」の行に「文」で残る（前の輪は「開始」の「依頼」）。
-                    if event.get("段階") in ("開始", "依頼"):
-                        content = event.get("内容") if isinstance(event.get("内容"), dict) else {}
-                        request = str(content.get("依頼") or content.get("文") or "")
-                        break
             for line in reversed(lines[-30:]):
                 obj = json.loads(line)
+                if "目当て" in obj:  # 現行の操作記録形式
+                    stumble = str(obj.get("つまずき") or "").strip()
+                    slow = isinstance(obj.get("秒"), (int, float)) and obj["秒"] >= 30
+                    if not (stumble or slow):
+                        continue
+                    topic = str(obj.get("目当て") or "")[:200]
+                    actions = obj.get("履歴") if isinstance(obj.get("履歴"), list) else []
+                    tools = [str(x.get("手") or x.get("道具") or "") for x in actions if isinstance(x, dict)]
+                    action = obj.get("手")
+                    if isinstance(action, dict):
+                        tools.append(str(action.get("手") or action.get("名前") or ""))
+                    detail = {k: obj.get(k) for k in ("目当て", "履歴", "手", "つまずき", "正しい手", "秒") if k in obj}
+                    ident = hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+                    found.append({"題": topic, "文": json.dumps(detail, ensure_ascii=False)[:2500],
+                                  "道具": [x for x in tools if x], "成否": "失敗" if stumble else "遅い",
+                                  "日時": obj.get("時", ""),
+                                  "識別": p.relative_to(base).as_posix() + ":" + ident})
+                    break
+                if not request:
+                    for first in lines[:5]:
+                        try:
+                            event = json.loads(first)
+                        except ValueError:
+                            continue
+                        if event.get("段階") in ("開始", "依頼"):
+                            content = event.get("内容") if isinstance(event.get("内容"), dict) else {}
+                            request = str(content.get("依頼") or content.get("文") or "")
+                            break
                 content = json.dumps(obj, ensure_ascii=False)
                 detail = obj.get("内容") if isinstance(obj.get("内容"), dict) else {}
                 slow = (any(k in content for k in ("timeout", "時間切れ", "遅い", "遅かった"))
@@ -352,7 +372,8 @@ def _records():
                 tools = [str(x.get("内容", {}).get("道具", "")) for x in map(json.loads, lines)
                          if isinstance(x.get("内容"), dict) and x.get("段階") == "提案"]
                 found.append({"題": topic, "文": content[:2500], "道具": [x for x in tools if x],
-                              "成否": "失敗" if bad else "遅い", "識別": p.name + ":" + ident})
+                              "成否": "失敗" if bad else "遅い",
+                              "識別": p.relative_to(base).as_posix() + ":" + ident})
                 break   # 1つの頼みにつき1つ（同じ失敗の行が13あっても、振り返りは1回）
         except (OSError, ValueError, TypeError):
             continue
@@ -416,6 +437,28 @@ def learn_once(cfg, *, wiki_module=None):
         return False
     known = _names()
     state = _state()
+    if state.get("次は本文取り直し"):
+        read_titles = set(state.get("本文を読んだ題", []))
+        with _db() as db:
+            old_titles = [r[0] for r in db.execute("SELECT title FROM chishiki WHERE source='Wikipedia' ORDER BY rowid")]
+        title = next((t for t in old_titles if t not in read_titles), None)
+        if title:
+            full = _wiki(wiki_module.article, title, chars=8000) if hasattr(wiki_module, "article") else None
+            body = str((full or {}).get("本文", "")).strip()[:8000]
+            if body:
+                with _db() as db:
+                    row = db.execute("SELECT rowid FROM chishiki WHERE title=?", (title,)).fetchone()
+                    db.execute("UPDATE chishiki SET text=? WHERE title=?", (body, title))
+                    db.execute("DELETE FROM chishiki_trigram WHERE rowid=?", (row[0],))
+                    _add_trigram(db, row[0], title, body, "Wikipedia")
+                    db.execute("DELETE FROM tsunagari WHERE shurui='本文' AND (moto=? OR saki=?)", (title, title))
+                    _add_article_edges(db, title, body)
+                state["本文を読んだ題"] = (list(read_titles) + [title])[-5000:]
+                state["次は本文取り直し"] = False
+                _write(folder() / "state.json", state)
+                _status(f"本文を取り直した: {title}")
+                _log(f"本文を取り直し: {title}（{len(body)}字）")
+                return True
     entry = _topic_entry(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
     if not entry:
         # 題が尽きたら、覚えた記事を引き直してリンクを広げる（wiki.py の手元のしまい場所を使うので軽い）。
@@ -424,7 +467,7 @@ def learn_once(cfg, *, wiki_module=None):
             _status("次の題を待っています")
             return False
         item = grow[0]
-        article = wiki_module.ask(item["題"], chars=5000) or {}
+        article = _wiki(wiki_module.ask, item["題"], chars=5000) or {}
         queued = {x.get("題") if isinstance(x, dict) else x for x in state.get("次の題", [])}
         additions = []
         for candidate in article.get("ほかの候補", []):
@@ -439,14 +482,15 @@ def learn_once(cfg, *, wiki_module=None):
         return False
     title, depth = entry
     # wiki.py が User-Agent と2秒以上の間隔を管理する。
-    article = wiki_module.ask(title, chars=5000)
+    article = _wiki(wiki_module.ask, title, chars=5000)
     if not article or not article.get("本文"):
         _status("記事が見つかりません", 最後の題=title,
                 見た題=(state.get("見た題", []) + [title])[-500:])
         _log(f"記事なし: {title}")
         return False
     actual = article.get("題", title)
-    body = article["本文"]
+    full = _wiki(wiki_module.article, actual, chars=8000) if hasattr(wiki_module, "article") else None
+    body = str((full or {}).get("本文") or article["本文"]).strip()[:8000]
     if actual in known:
         _status("既に覚えた記事", 見た題=(state.get("見た題", []) + [title])[-500:])
         return False
@@ -474,8 +518,11 @@ def learn_once(cfg, *, wiki_module=None):
             if len(additions) == 5:
                 break
         remaining += additions
-    _log(f"Wikipedia: {actual}")
+    state["次は本文取り直し"] = True
+    state["本文を読んだ題"] = list(state.get("本文を読んだ題", []))
+    _log(f"Wikipedia: {actual}（{len(body)}字）")
     _status(f"記事を覚えた: {actual}", 最後の題=actual, 次の題=remaining[:100],
+            次は本文取り直し=True, 本文を読んだ題=state.get("本文を読んだ題", []),
             見た題=(state.get("見た題", []) + [title])[-500:])
     return True
 
@@ -568,7 +615,7 @@ def _stem(title):
 
 
 def _local_reflect(record):
-    """起きている30Bだけに聞く。会話が始まれば途中の答えを捨てる。"""
+    """8080で動作中の手元Qwen3.6だけに、思考なしで聞く。"""
     busy = folder() / "busy"
     if busy.exists():
         return None, True
@@ -590,7 +637,7 @@ def _local_reflect(record):
                                      data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         parts = []
-        # この Mac では最初の1語まで10秒を超える（記録を読むため）。busy は語が届くたびに見る。
+        # busy は語が届くたびに見る。会話を優先して途中の答えを捨てる。
         with urllib.request.urlopen(req, timeout=90) as stream:
             while True:
                 if busy.exists():
@@ -628,6 +675,8 @@ def reflect_once(cfg, *, ask=None, network=None):
     state = _state()
     if time.time() - state.get("最後の提案時刻", 0) < 600:
         return False
+    if time.time() - state.get("最後の振り返り試行時刻", 0) < 600:
+        return False
     seen = set(state.get("見た記録", []))
     # 9/30: 道具を使わなかった雑談（「ほんとに？」など）は技にならない。同じ頼みは1回だけ（-2・-3 が並んだ）。
     proposed = {re.sub(r"-\d+$", "", s["name"]) for s in skills() if s.get("made_by") == "カーネル"}
@@ -635,11 +684,15 @@ def reflect_once(cfg, *, ask=None, network=None):
                    and _stem(r.get("題", "")) not in proposed), None)
     if not record:
         return False
+    state["最後の振り返り試行時刻"] = time.time()
+    _write(folder() / "state.json", state)
+    _status(f"振り返り中: {record.get('題', '記録')}")
+    _log(f"振り返り: 手元Qwen3.6で確認中: {record.get('題', '記録')}")
     local_answer, interrupted = _local_reflect(record)
     if interrupted:
         return False
     answer = local_answer
-    source = "30B"
+    source = "Qwen3.6"
     external = [x for x in (cfg.get("先生") or [])
                 if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
     if opts.get("振り返りで外の先生に聞く", False) and cfg.get("先生を使う") and external:
@@ -657,25 +710,28 @@ def reflect_once(cfg, *, ask=None, network=None):
                         + "依頼: " + _safe_for_teacher(record.get("題", ""))
                         + "\n道具: " + _safe_for_teacher(", ".join(record.get("道具", [])))
                         + "\n成否: " + _safe_for_teacher(record.get("成否", "不明"))
-                        + "\n30Bの提案: " + _safe_for_teacher(local_answer or "（なし）"))
+                        + "\nQwen3.6の提案: " + _safe_for_teacher(local_answer or "（なし）"))
             try:
-                response = ask(question, {**cfg, "先生": external}, timeout=60)
+                _log(f"先生に聞いた: {external[0]}（考える深さ high）")
+                response = ask(question, {**cfg, "先生": external, "先生の深さ": "high"}, timeout=60)   # 10/1: 裏の振り返りは深く
                 teacher_answer = str(response.get("答え", "")).strip()
                 if teacher_answer and not response.get("error"):
                     answer = teacher_answer
-                    source = "30B＋先生" if local_answer else "先生"
+                    source = "Qwen3.6＋先生" if local_answer else "先生"
             except (OSError, ValueError, TypeError):
                 pass
     if not answer:
         if not _WAIT_LOGGED:
-            _log("振り返り: 30B を待っています")
+            _log("振り返り: 手元Qwen3.6を待っています")
             _WAIT_LOGGED = True
         return False
     _WAIT_LOGGED = False
-    add_memories(_local_memories(record), record.get("識別", "") + " " + str(record.get("日時", "")))
+    remembered = add_memories(_local_memories(record), record.get("識別", "") + " " + str(record.get("日時", "")))
+    if remembered:
+        _log(f"覚え書き: {remembered}件")
     # 同じ本文の提案はファイル名が違っても重ねない。
     existing_skills = skills()
-    if any(re.sub(r"\n出どころ: (?:30B|30B＋先生|先生)\s*$", "", s["body"].strip()) == answer
+    if any(re.sub(r"\n出どころ: (?:Qwen3\.6|Qwen3\.6＋先生|先生|30B|30B＋先生)\s*$", "", s["body"].strip()) == answer
            for s in existing_skills):
         state["見た記録"] = (list(seen) + [record["識別"]])[-100:]
         _write(folder() / "state.json", state)
@@ -714,11 +770,27 @@ def overview(cfg, running=False):
         count = 0
         branches, branch_count = [], 0
     try:
-        lines = _tail_lines(folder() / "log.jsonl", 20)
-        logs = [_read_line(line) for line in lines]
-    except OSError:
-        logs = []
+        lines = _tail_lines(folder() / "log.jsonl", 1000)
+        events = [json.loads(line) for line in lines]
+        today = time.strftime("%Y-%m-%d")
+        recent = [{"時刻": e.get("時刻", ""), "種類": _activity_kind(e.get("文", "")),
+                   "中身": e.get("文", "")} for e in events[-20:]]
+        today_events = [e.get("文", "") for e in events if str(e.get("時刻", "")).startswith(today)]
+        counts = {
+            "読んだ記事": sum(x.startswith("Wikipedia:") for x in today_events),
+            "本文を取り直した記事": sum(x.startswith("本文を取り直し:") for x in today_events),
+            "振り返り": sum(x.startswith("振り返り:") for x in today_events),
+            "先生に聞いた": sum(x.startswith("先生に聞いた:") for x in today_events),
+            "技の提案": sum("技を提案:" in x for x in today_events),
+            "覚え書き": sum(x.startswith("覚え書き:") for x in today_events),
+        }
+    except (OSError, ValueError, TypeError):
+        recent, counts = [], {}
     memory = memories()
+    external = [x for x in (cfg.get("先生") or []) if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
+    ai = {"記事を読む": {"モデル": "なし（Wikipedia API）", "思考": "なし"},
+          "振り返り": {"モデル": "手元 Qwen3.6", "思考": "なし", "上限トークン": 300},
+          "外の先生": {"モデル": external, "思考の深さ": "high（深く。gpt-oss のとき）"}}
     return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
             "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count, "覚え書き": memory["数"]},
             "覚え書き": memory["一覧"],
@@ -726,7 +798,25 @@ def overview(cfg, running=False):
             "使った容量MB": round(used_bytes() / 1024 / 1024, 2), "上限MB": opts["上限MB"],
             "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
             "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
-            "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"], "記録": logs}
+            "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"],
+            "AI": ai, "今日の数": counts, "活動": recent, "記録": recent}
+
+
+
+def _wiki(fn, *args, **kwargs):
+    """10/1: 事前学習は控え（wiki_cache.json、7MB を1件ごとに丸ごと書き直していた）を使わない。試験の偽物は cache を知らなくてよい。"""
+    try:
+        return fn(*args, cache=False, **kwargs)
+    except TypeError:
+        return fn(*args, **kwargs)
+
+def _activity_kind(message):
+    if message.startswith("Wikipedia:"): return "記事"
+    if message.startswith("本文を取り直し:"): return "本文を取り直し"
+    if message.startswith("先生に聞いた:"): return "先生"
+    if message.startswith("振り返り:"): return "振り返り"
+    if message.startswith("覚え書き:"): return "覚え書き"
+    return "状態"
 
 
 def _tail_lines(path, count):

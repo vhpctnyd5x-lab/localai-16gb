@@ -17,6 +17,7 @@ import http.server
 import socketserver
 import subprocess
 import urllib.parse
+from pathlib import Path
 import gakushuu
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -557,6 +558,22 @@ def _gakushuu_moderu_okosu():
         _temoto_okosu(KYOUDOU_MODERU["kyoudou"])   # おすすめと同じ頭脳（入れ替えで待たないように）
 
 
+def _gakushuu_teacher_default(cfg):
+    """保存済みの明示値は尊重し、未設定なら外部先生がある場合だけ既定で有効にする。"""
+    try:
+        saved = json.loads(Path(S.PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        saved = {}
+    saved_learning = saved.get("事前学習", {}) if isinstance(saved, dict) else {}
+    if isinstance(saved_learning, dict) and "振り返りで外の先生に聞く" in saved_learning:
+        return cfg
+    teachers = [x for x in (cfg.get("先生") or [])
+                if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
+    learning = cfg.setdefault("事前学習", {})
+    learning["振り返りで外の先生に聞く"] = bool(cfg.get("先生を使う") and teachers)
+    return cfg
+
+
 @contextlib.contextmanager
 def _temoto_tsukau():
     """頼みの間、手元のモデルを畳ませない。先生が手元なら、畳んだ後の起こし直しもここで。"""
@@ -634,7 +651,7 @@ def _atatameru():
 
 
 def boot():
-    cfg = S.load()
+    cfg = _gakushuu_teacher_default(S.load())
     (gakushuu.folder() / "busy").unlink(missing_ok=True)
     CTX["設定"] = cfg
     S._apply(cfg, CTX)

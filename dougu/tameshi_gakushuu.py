@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""事前学習とスキル API の、ネット・30B を使わない自己試験。"""
+"""事前学習とスキル API の、ネット・本番モデルを使わない自己試験。"""
 import json
 import io
 import fcntl
@@ -42,6 +42,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
 
     class FakeWiki:
         calls = 0
+        article_calls = []
         topics = []
 
         @classmethod
@@ -51,6 +52,11 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
             return {"題": "試験記事", "本文": "試験記事の本文。調べたい言葉が入る。", "url": "https://example.invalid/wiki/test",
                     "ほかの候補": ["候補題一", "候補題二", "候補題三", "候補題四", "候補題五", "候補題六",
                                    "A(説明)", "一覧の項目", "曖昧さ回避", "1999年の出来事", "あ"]}
+
+        @classmethod
+        def article(cls, title, chars=20000):
+            cls.article_calls.append((title, chars))
+            return {"題": title, "本文": "試験記事の本文全文。" + "本文の続き。" * 100}
 
     check(gakushuu.learn_once(cfg, wiki_module=FakeWiki), "記事を追加")
     check(FakeWiki.topics[0] in gakushuu.LEARN_SEEDS and FakeWiki.topics[0] != "あ", "最初の題は学習種から選ぶ")
@@ -62,7 +68,12 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(db.execute("SELECT count(*) FROM chishiki WHERE chishiki MATCH '試験記事'").fetchone()[0] == 1, "FTS5 検索")
         check(db.execute("SELECT 1 FROM tsunagari WHERE moto='試験記事' AND saki='候補題一' AND shurui='リンク'").fetchone(),
               "記事保存時にリンク枝")
-    check(not gakushuu.learn_once(cfg, wiki_module=FakeWiki), "同じ記事を入れない")
+    check(FakeWiki.article_calls[0][1] == 8000, "本文は8,000字上限で取りに行く")
+    check(gakushuu.learn_once(cfg, wiki_module=FakeWiki), "新記事と交互に既存記事を取り直す")
+    check(not gakushuu.learn_once(cfg, wiki_module=FakeWiki), "同じ記事を重ねて追加しない")
+    with sqlite3.connect(gakushuu.folder() / "chishiki.sqlite3") as db:
+        full = db.execute("SELECT text FROM chishiki WHERE title='試験記事'").fetchone()[0]
+        check("本文の続き" in full and len(full) > 500, "要約でなく本文を保存")
     check(gakushuu.overview(cfg)["数"]["記事"] == 1, "記事数")
     branch_dir = base / "branch-test"
     with mock.patch.dict(os.environ, {"KERNEL_GAKUSHUU_DIR": str(branch_dir)}):
@@ -142,8 +153,15 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         + json.dumps({"段階": "結果", "内容": {"ok": True, "ミリ秒": 45000}}, ensure_ascii=False) + "\n",
         encoding="utf-8")
     check(any(r["題"] == "遅い頼み" for r in gakushuu._records()), "遅い記録を読む")
+    nested = logdir / "atama"
+    nested.mkdir()
+    (nested / "operation.jsonl").write_text(json.dumps({"時": "2026-10-01 12:00:00", "目当て": "現行形式の失敗",
+        "履歴": [{"手": "read_file"}], "手": {"手": "打つ", "文字": "試験"}, "秒": 8,
+        "つまずき": "失敗", "正しい手": "確認"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    current_record = next(r for r in gakushuu._records() if r["題"] == "現行形式の失敗")
+    check(current_record["成否"] == "失敗" and "read_file" in current_record["道具"], "入れ子の現行会話記録を振り返る")
 
-    check(not gakushuu.DEFAULT["振り返りで外の先生に聞く"] and not gakushuu.DEFAULT["会話の言葉から学ぶ題を選ぶ"], "外部送信は既定で切")
+    check(gakushuu.DEFAULT["振り返りで外の先生に聞く"] and not gakushuu.DEFAULT["会話の言葉から学ぶ題を選ぶ"], "外の先生への振り返りは既定で入")
     check(gakushuu._topic({"次の題": []}, set(), False) != "会話だけの題", "会話題を既定で使わない")
     check(gakushuu.validate(cfg["事前学習"], {"振り返りで外の先生に聞く": True})["振り返りで外の先生に聞く"], "送信設定")
     (base / "skills" / "容量.md").parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +173,13 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     gakushuu._log("回した後")
     check(log.stat().st_size < 1024 and log.with_suffix(".jsonl.1").exists(), "log は5MBで回す")
     log.write_text("".join(json.dumps({"文": str(i)}) + "\n" for i in range(30)), encoding="utf-8")
-    check(gakushuu.overview(cfg)["記録"] == [str(i) for i in range(10, 30)], "記録は尻の20行")
+    check([x["中身"] for x in gakushuu.overview(cfg)["活動"]] == [str(i) for i in range(10, 30)], "活動は尻の20件")
+    now = gakushuu.time.strftime("%Y-%m-%d %H:%M:%S")
+    kinds = ["Wikipedia: 記事A", "本文を取り直し: 記事B（8000字）", "振り返り: 例を確認",
+             "先生に聞いた: mock", "振り返り: 例 → 技を提案: 例", "覚え書き: 1件"]
+    log.write_text("".join(json.dumps({"時刻": now, "文": item}, ensure_ascii=False) + "\n" for item in kinds), encoding="utf-8")
+    daily = gakushuu.overview(cfg)["今日の数"]
+    check(list(daily.values()) == [1, 1, 2, 1, 1, 1], "今日の活動6種を集計")
     lock_path = gakushuu.folder() / "worker.lock"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -192,9 +216,9 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     prompts = []
     def fake_urlopen(req, timeout=None):
         if isinstance(req, str):
-            check(req.endswith("/health"), "30B health")
+            check(req.endswith("/health"), "Qwen3.6 health")
             return FakeHTTP(b'{"status":"ok"}')
-        check(req.full_url.endswith("/v1/chat/completions"), "30B chat API")
+        check(req.full_url.endswith("/v1/chat/completions"), "Qwen3.6 chat API")
         payload = json.loads(req.data)
         check(payload["stream"] and payload["max_tokens"] == 300
               and payload["chat_template_kwargs"]["enable_thinking"] is False, "短い streaming・思考なし")
@@ -210,11 +234,11 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
              {"文": "本人のAPI keyはabc123456789秘密", "種類": "事実"},
              {"文": "本人は説明を短く日本語で受け取りたい", "種類": "好み"}]):
         check(gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")),
-                                    network=True), "先生オフでも30Bだけで提案")
-    check("失敗した操作" in prompts[0] and streams[0].closed, "30Bには元の記録を見せて接続を閉じる")
+                                    network=True), "先生オフでもQwen3.6だけで提案")
+    check("失敗した操作" in prompts[0] and streams[0].closed, "Qwen3.6には元の記録を見せて接続を閉じる")
     proposed = [s for s in gakushuu.skills() if s["made_by"] == "カーネル"]
     check(len(proposed) == 1 and proposed[0]["on"] is False
-          and proposed[0]["body"].endswith("出どころ: 30B"), "30B単独の提案はオフ")
+          and proposed[0]["body"].endswith("出どころ: Qwen3.6"), "Qwen3.6単独の提案はオフ")
     check("振り返り: ファイルを直す → 技を提案:" in (gakushuu.folder() / "log.jsonl").read_text(),
           "提案の記録")
     saved_memories = gakushuu.memories()
@@ -245,6 +269,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(gakushuu._local_memories({"文": "音声入力で話しています"})[0]["文"] == "本人は音声入力でアプリを使う", "思考の札・囲みつきの返事から覚え書きを取り出す")
     state = gakushuu._state()
     state["最後の提案時刻"] -= 601
+    state["最後の振り返り試行時刻"] = 0
     gakushuu._write(gakushuu.folder() / "state.json", state)
     record["識別"] = "record-2"
     record["題"] = "[ファイル] を読み直す"   # 9/30: 同じ頼みは1回だけ振り返るので、頼みも変える
@@ -255,18 +280,19 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     cfg["事前学習"]["振り返りで外の先生に聞く"] = True
     cfg["先生"] = ["local:main", "groq:openai/gpt-oss-120b"]
     with mock.patch.object(gakushuu, "_local_reflect", return_value=("秘密 /tmp/private.txt を読む", False)):
-        check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生が30Bの提案を直す")
+        check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生がQwen3.6の提案を直す")
     check("[ファイル]" in sent[0][0] and "/tmp/private.txt" not in sent[0][0]
-          and "30Bの提案:" in sent[0][0] and "read_file" in sent[0][0]
-          and sent[0][1] == ["groq:openai/gpt-oss-120b"], "先生に伏せた文と30B提案を渡す")
+          and "Qwen3.6の提案:" in sent[0][0] and "read_file" in sent[0][0]
+          and sent[0][1] == ["groq:openai/gpt-oss-120b"], "先生に伏せた文とQwen3.6提案を渡す")
     proposed = [s for s in gakushuu.skills() if s["made_by"] == "カーネル"]
-    check(len(proposed) == 2 and any(s["body"].endswith("出どころ: 30B＋先生") for s in proposed),
+    check(len(proposed) == 2 and any(s["body"].endswith("出どころ: Qwen3.6＋先生") for s in proposed),
           "先生の答えを採用")
 
     record["識別"] = "record-3"
     record["題"] = "[ファイル] を並べる"   # 9/30: 同じ頼みは1回だけ振り返るので、頼みも変える
     state = gakushuu._state()
     state["最後の提案時刻"] -= 601
+    state["最後の振り返り試行時刻"] = 0
     gakushuu._write(gakushuu.folder() / "state.json", state)
     cfg["事前学習"]["振り返りで外の先生に聞く"] = True
     interrupted = []
@@ -279,17 +305,23 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         return stream
     with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=busy_urlopen):
         check(not gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("busy中に先生へ送った")), network=True), "busyで30Bを中断")
+            AssertionError("busy中に先生へ送った")), network=True), "busyでQwen3.6を中断")
     check(interrupted[0].closed and "record-3" not in gakushuu._state().get("見た記録", []),
           "busyで接続を閉じ、記録を使わない")
     (gakushuu.folder() / "busy").unlink()
 
     cfg["事前学習"]["振り返りで外の先生に聞く"] = False
+    state = gakushuu._state()
+    state["最後の振り返り試行時刻"] = 0
+    gakushuu._write(gakushuu.folder() / "state.json", state)
     with mock.patch.object(gakushuu, "_local_reflect", return_value=(None, False)):
-        check(not gakushuu.reflect_once(cfg) and not gakushuu.reflect_once(cfg), "30Bが寝ている")
+        check(not gakushuu.reflect_once(cfg) and not gakushuu.reflect_once(cfg), "手元の頭脳が未応答なら間隔を置く")
     log_text = (gakushuu.folder() / "log.jsonl").read_text(encoding="utf-8")
-    check(log_text.count("振り返り: 30B を待っています") == 1
+    check(log_text.count("振り返り: 手元Qwen3.6を待っています") == 1
           and "record-3" not in gakushuu._state().get("見た記録", []), "待機は1回だけ・記録を使わない")
+    state = gakushuu._state()
+    state["最後の振り返り試行時刻"] -= 601
+    gakushuu._write(gakushuu.folder() / "state.json", state)
     with mock.patch.object(gakushuu, "_local_reflect", return_value=("順に直す", False)):
         check(not gakushuu.reflect_once(cfg), "同じ本文は重ねない")
     check("record-3" in gakushuu._state().get("見た記録", [])
@@ -299,12 +331,30 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     spec = importlib.util.spec_from_file_location("kernel_server_test", ROOT / "kernel" / "server.py")
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
+    settings_path = Path(settings.PATH)
+    saved_settings = settings_path.read_bytes() if settings_path.exists() else None
+    teacher_cfg = {**cfg, "先生": ["local:main", "groq:openai/gpt-oss-120b"], "先生を使う": True,
+                   "事前学習": {**cfg["事前学習"], "振り返りで外の先生に聞く": False}}
+    try:
+        settings_path.write_text(json.dumps({"先生": teacher_cfg["先生"], "先生を使う": True,
+                                             "事前学習": {}}, ensure_ascii=False), encoding="utf-8")
+        check(server._gakushuu_teacher_default(teacher_cfg)["事前学習"]["振り返りで外の先生に聞く"],
+              "保存設定にない場合は外部先生ありで既定オン")
+        settings_path.write_text(json.dumps({"事前学習": {"振り返りで外の先生に聞く": False}}), encoding="utf-8")
+        teacher_cfg["事前学習"]["振り返りで外の先生に聞く"] = False
+        check(not server._gakushuu_teacher_default(teacher_cfg)["事前学習"]["振り返りで外の先生に聞く"],
+              "保存済みの明示オフは保持")
+    finally:
+        if saved_settings is None:
+            settings_path.unlink(missing_ok=True)
+        else:
+            settings_path.write_bytes(saved_settings)
     server.CTX["設定"] = cfg
     server._IMA["pid"] = 12345
     server._TSUKATTA[0] = 0
     with mock.patch.object(server, "_temoto_shimau") as shut:
         server._temoto_tatamu_nara()
-        check(not shut.called, "事前学習中は30Bを畳まない")
+        check(not shut.called, "事前学習中は手元モデルを畳まない")
         cfg["事前学習"]["入"] = False
         server._temoto_tatamu_nara()
         check(shut.call_count == 1, "切にした後は従来どおり畳む")
@@ -375,13 +425,13 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(code == 200 and (base / "trash" / "私の技.md").exists(), "ゴミ箱")
         code, result = request("/gakushuu")
         check(code == 200 and result["数"]["記事"] == 3, "事前学習 GET")
-        # 9/30: 本物の 30B が 8080 で動いていても左右されないよう、「何も載っていない」ことにする。
+        # 9/30: 実機のモデル状態に左右されないよう、「何も載っていない」ことにする。
         with mock.patch.object(server, "_temoto_okosu", return_value="すでに動いています") as wake, \
              mock.patch.object(server, "_gakushuu_process"), \
              mock.patch.object(server, "_notteru", return_value=False), \
              mock.patch.dict(server._IMA, {"key": None, "pid": None}):
             code, result = request("/gakushuu", {"入": True})
-            check(code == 200 and wake.call_count == 1, "事前学習オンで30Bを起こす")
+            check(code == 200 and wake.call_count == 1, "事前学習オンで頭脳を起こす")
         code, result = request("/gakushuu", {"入": False, "上限MB": 4})
         check(code == 200 and result["入"] is False and settings.load()["事前学習"]["上限MB"] == 4,
               "事前学習 POST と保存")
@@ -390,4 +440,4 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         httpd.server_close()
         worker.join(timeout=3)
 
-print("OK: FTS5・重複・容量・充電・会話休止・30B/先生の技提案・busy・10分・モデル保持・API")
+print("OK: 本文取得・本文取り直し・活動数・FTS5・振り返り・外の先生・busy・10分・API")

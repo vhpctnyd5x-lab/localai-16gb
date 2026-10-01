@@ -68,10 +68,10 @@ def _get(params, timeout=12, tries=4):
     raise Exception(f"Wikipedia につながりませんでした（{last}）")
 
 
-def search(word, n=5):
+def search(word, n=5, cache=True):
     """語で探して、見出しの候補を返す"""
     key = f"search:{word}:{n}"
-    c = _cache()
+    c = _cache() if cache else {}
     if key in c:
         return c[key]
     d = _get({"action": "query", "list": "search",
@@ -79,8 +79,9 @@ def search(word, n=5):
     out = [{"題": x["title"],
             "さわり": _strip(x.get("snippet", ""))}
            for x in d.get("query", {}).get("search", [])]
-    c[key] = out
-    _save(c)
+    if cache:
+        c[key] = out
+        _save(c)
     return out
 
 
@@ -89,10 +90,10 @@ def _strip(html):
     return _re.sub(r"<[^>]+>", "", html).replace("&quot;", '"').strip()
 
 
-def summary(title, chars=700):
-    """その見出しの、はじめの説明を取る"""
+def summary(title, chars=700, cache=True):
+    """その見出しの、はじめの説明を取る。cache=False は控え（JSON）を読み書きしない（10/1: 事前学習は知識の箱に残すので要らない）"""
     key = f"sum:{title}:{chars}"
-    c = _cache()
+    c = _cache() if cache else {}
     if key in c:
         return c[key]
     d = _get({"action": "query", "prop": "extracts",
@@ -105,41 +106,42 @@ def summary(title, chars=700):
             out = {"題": p.get("title", title), "本文": p["extract"].strip(),
                    "url": "https://ja.wikipedia.org/wiki/"
                           + urllib.parse.quote(p.get("title", title))}
-            c[key] = out
-            _save(c)
+            if cache:
+                c[key] = out
+                _save(c)
             return out
     return None
 
 
-def ask(word, chars=700):
+def ask(word, chars=700, cache=True):
     """語をひとつ渡すと、探して、いちばん近いものの説明を返す
 
     まずその語をそのまま見出しとして引く。
     「徳川家康」で探すと検索は「徳川氏」を先に返してくるが、
     本人が言ったのは「徳川家康」なので、そちらを優先する
     """
-    direct = summary(word, chars)
+    direct = summary(word, chars, cache)
     if direct:
         try:
-            hits = search(word, 5)
+            hits = search(word, 5, cache)
             direct["ほかの候補"] = [h["題"] for h in hits
                                     if h["題"] != direct["題"]][:4]
         except Exception:
             direct["ほかの候補"] = []
         return direct
 
-    hits = search(word, 5)
+    hits = search(word, 5, cache)
     if not hits:
         return None
     # 見出しがそのまま一致するものを優先する
     best = next((h["題"] for h in hits if h["題"] == word), hits[0]["題"])
-    s = summary(best, chars)
+    s = summary(best, chars, cache)
     if s:
         s["ほかの候補"] = [h["題"] for h in hits if h["題"] != best][:4]
     return s
 
 
-def article(title, chars=20000):
+def article(title, chars=20000, cache=True):
     """見出しの本文まるごと（前書きだけでなく、記事全体）を取る。
 
     語の意味を「まわりの語」から掴むには、前書き数行では足りない。
@@ -149,7 +151,7 @@ def article(title, chars=20000):
     「パソコンの話の記事」を丸ごと集め、そこに出てくる語を見る。
     """
     key = f"art:{title}:{chars}"
-    c = _cache()
+    c = _cache() if cache else {}
     if key in c:
         return c[key]
     d = _get({"action": "query", "prop": "extracts", "explaintext": 1,
@@ -157,11 +159,13 @@ def article(title, chars=20000):
     for _pid, pg in d.get("query", {}).get("pages", {}).items():
         if pg.get("extract", "").strip():
             out = {"題": pg.get("title", title), "本文": pg["extract"].strip()}
-            c[key] = out
-            _save(c)
+            if cache:
+                c[key] = out
+                _save(c)
             return out
-    c[key] = None
-    _save(c)
+    if cache:
+        c[key] = None
+        _save(c)
     return None
 
 
