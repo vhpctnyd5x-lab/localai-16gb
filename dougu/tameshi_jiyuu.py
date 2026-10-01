@@ -2,6 +2,7 @@
 """30Bを起動せずに輪の境界を試す。"""
 import json
 import io
+import importlib.util
 import os
 import platform
 import shutil
@@ -22,6 +23,9 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     os.environ["KERNEL_HIKAE_DIR"] = str(Path(temporary) / "hikae")
     os.environ["KERNEL_JIYUU_ROUTE"] = "試験"
     import jiyuu
+    gakushuu_spec = importlib.util.spec_from_file_location("test_kernel_gakushuu", Path(__file__).resolve().parents[1] / "kernel" / "gakushuu.py")
+    gakushuu = importlib.util.module_from_spec(gakushuu_spec)
+    gakushuu_spec.loader.exec_module(gakushuu)
 
     checks = 0
     # 判定と SBPL の許可範囲。実行可能な Mac では profile の構文も確認する。
@@ -501,6 +505,16 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
                 db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) SELECT rowid,title,text,source FROM chishiki")
             except sqlite3.OperationalError:  # trigram 非対応 SQLite では LIKE 経路を試す。
                 pass
+        assert gakushuu.add_memories([
+            {"文": "本人は東京の歴史を学ぶ仕事を続けている", "種類": "仕事"},
+            {"文": "本人は珈琲が好き", "種類": "好み"}], "chat-1") == 2
+        memory_hint = jiyuu._memory_hint("東京の歴史を調べて")
+        assert "覚え書き（前の会話から）" in memory_hint and "東京の歴史" in memory_hint
+        assert jiyuu._memory_hint("火星の衛星について教えて") == ""
+        assert jiyuu._memory_hint("東京で降るかな") == ""   # 2字の語が1つ重なるだけでは添えない（毎回の前置きを太らせない）
+        assert all(row[0] for row in sqlite3.connect(learning / "oboe.sqlite3").execute(
+            "SELECT 最終使用日時 FROM oboe WHERE 文 LIKE '%東京の歴史%'"))
+        checks += 1
         got = jiyuu._run("shiru", {"query": "星空"}, "見る", "test")["結果"]
         assert len(got) == 3 and all(len(row["本文"]) <= 300 for row in got)
         japanese = jiyuu._knowledge("東京の歴史を知りたい") ["結果"]

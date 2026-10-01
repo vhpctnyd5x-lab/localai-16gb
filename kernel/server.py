@@ -1182,6 +1182,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json({"error": "項目が違います"}, 400)
         path = self.path.split("?")[0]
 
+        if path == "/gakushuu/oboe":
+            try:
+                ok = gakushuu.delete_memory(body.get("id"))
+                return self._json({"ok": ok, **gakushuu.memories()})
+            except (ValueError, TypeError, OSError) as e:
+                return self._json({"error": str(e)}, 400)
         if path == "/skills":
             try:
                 return self._json(gakushuu.change_skill(body))

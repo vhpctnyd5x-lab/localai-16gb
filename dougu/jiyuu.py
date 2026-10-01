@@ -853,6 +853,36 @@ def _knowledge_hint(request):
     return ("\n学んだ記事（事前学習。参考で、頼みに合わなければ使わない）: " + json.dumps(picked, ensure_ascii=False)) if picked else ""
 
 
+def _memory_hint(request):
+    try:
+        path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "oboe.sqlite3"
+        terms = list(dict.fromkeys(_knowledge_terms(request)))[:30]
+        if not path.is_file() or not terms:
+            return ""
+        with sqlite3.connect(path, timeout=2) as db:
+            rows = db.execute("SELECT id,文 FROM oboe WHERE 消した=0").fetchall()
+            total = len(rows) or 1
+            ranked = []
+            for ident, sentence in rows:
+                hits = [term for term in terms if term in sentence]
+                if hits:
+                    df = {term: sum(term in text for _, text in rows) for term in hits}
+                    # 強く合う時だけ（語が2つ以上重なる、または3字以上の語がこの覚え書きにしか無い）。毎回の前置きを太らせない。
+                    if len(hits) < 2 and not any(len(term) >= 3 and df[term] == 1 for term in hits):
+                        continue
+                    score = sum(1 + total / (df[term] + 1) for term in hits)
+                    ranked.append((score, ident, sentence))
+            ranked.sort(reverse=True)
+            chosen = ranked[:3]
+            if chosen:
+                db.executemany("UPDATE oboe SET 最終使用日時=? WHERE id=?",
+                               [(time.strftime("%Y-%m-%dT%H:%M:%S%z"), ident) for _, ident, _ in chosen])
+            found = [sentence for _, _, sentence in chosen]
+    except (OSError, sqlite3.Error, ValueError):
+        return ""
+    return "\n覚え書き（前の会話から）: " + " / ".join(found) if found else ""
+
+
 def _network_available() -> bool:
     try:
         with socket.create_connection(("ja.wikipedia.org", 443), timeout=3):
@@ -1354,7 +1384,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     for row in (rireki or [])[-6:]:
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
-    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text)})
+    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text) + _memory_hint(text)})
     gate._reset_session()
     context = _outbound()
     context.request = text

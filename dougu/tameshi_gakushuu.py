@@ -204,7 +204,11 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         streams.append(stream)
         return stream
 
-    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=fake_urlopen):
+    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=fake_urlopen), \
+         mock.patch.object(gakushuu, "_local_memories", return_value=[
+             {"文": "本人は説明を短く日本語で受け取りたい", "種類": "好み"},
+             {"文": "本人のAPI keyはabc123456789秘密", "種類": "事実"},
+             {"文": "本人は説明を短く日本語で受け取りたい", "種類": "好み"}]):
         check(gakushuu.reflect_once(cfg, ask=lambda *a, **k: (_ for _ in ()).throw(AssertionError("外へ送った")),
                                     network=True), "先生オフでも30Bだけで提案")
     check("失敗した操作" in prompts[0] and streams[0].closed, "30Bには元の記録を見せて接続を閉じる")
@@ -213,7 +217,32 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
           and proposed[0]["body"].endswith("出どころ: 30B"), "30B単独の提案はオフ")
     check("振り返り: ファイルを直す → 技を提案:" in (gakushuu.folder() / "log.jsonl").read_text(),
           "提案の記録")
+    saved_memories = gakushuu.memories()
+    check(saved_memories["数"] == 1 and saved_memories["一覧"][0]["文"] == "本人は説明を短く日本語で受け取りたい",
+          "覚え書き抽出・秘密除外・重複抑止")
+    check(gakushuu.add_memories([{"文": "本人は説明を短く日本語で受け取りたい", "種類": "好み"}], "again") == 0,
+          "同じ文を追加しない")
+    memory_id = saved_memories["一覧"][0]["id"]
+    check(gakushuu.delete_memory(memory_id) and gakushuu.memories()["数"] == 0, "本人が覚え書きを削除")
+    check(gakushuu.add_memories([{"文": "本人は説明を短く日本語で受け取りたい", "種類": "好み"}], "again") == 0,
+          "削除済み覚え書きは再作成しない")
     check(not gakushuu.reflect_once(cfg), "10分の間隔")
+    extraction_payload = {"choices": [{"message": {"content": json.dumps({"覚え書き": [
+        {"文": "本人は道具の説明を短く受け取りたい", "種類": "好み"}]}, ensure_ascii=False)}}]}
+    extraction_requests = []
+    def extraction_response(req, timeout=None):
+        extraction_requests.append(json.loads(req.data))
+        return io.BytesIO(json.dumps(extraction_payload, ensure_ascii=False).encode())
+    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=extraction_response):
+        extracted = gakushuu._local_memories({"文": "私は短い説明が好きです"})
+    check(extracted[0]["種類"] == "好み" and extraction_requests[0]["stream"] is False
+          and extraction_requests[0]["chat_template_kwargs"]["enable_thinking"] is False
+          and "JSONだけ" in extraction_requests[0]["messages"][0]["content"], "頭脳JSON抽出は思考なし")
+    # 10/1: --reasoning-format none の本物の返事は空の <think></think> が付き、```json で囲むこともある
+    wrapped = "<think>\n\n</think>\n\n```json\n" + json.dumps({"覚え書き": [{"文": "本人は音声入力でアプリを使う", "種類": "事実"}]}, ensure_ascii=False) + "\n```"
+    with mock.patch.object(gakushuu.urllib.request, "urlopen",
+                           side_effect=lambda req, timeout=None: io.BytesIO(json.dumps({"choices": [{"message": {"content": wrapped}}]}, ensure_ascii=False).encode())):
+        check(gakushuu._local_memories({"文": "音声入力で話しています"})[0]["文"] == "本人は音声入力でアプリを使う", "思考の札・囲みつきの返事から覚え書きを取り出す")
     state = gakushuu._state()
     state["最後の提案時刻"] -= 601
     gakushuu._write(gakushuu.folder() / "state.json", state)

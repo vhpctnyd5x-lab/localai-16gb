@@ -52,6 +52,116 @@ def skills_folder():
     return Path(os.environ.get("KERNEL_SKILLS_DIR", ROOT / "skills"))
 
 
+_MEMORY_SECRET = re.compile(r"(?:password|passphrase|api[_ -]?key|secret|token|パスワード|暗証番号|秘密鍵|クレジット|カード番号|住所|電話番号|メールアドレス|郵便番号|\b\d{13,19}\b|\b[^\s@]+@[^\s@]+\.[^\s@]+|(?:/Users/|~/|/private/|/tmp/))", re.I)
+
+
+def _memory_db():
+    path = folder() / "oboe.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=5)
+    db.execute("CREATE TABLE IF NOT EXISTS oboe (id INTEGER PRIMARY KEY, 文 TEXT NOT NULL, 種類 TEXT NOT NULL, 出どころ TEXT NOT NULL, 作成日時 TEXT NOT NULL, 最終使用日時 TEXT, 消した INTEGER NOT NULL DEFAULT 0)")
+    db.execute("CREATE TABLE IF NOT EXISTS oboe_deleted (hash TEXT PRIMARY KEY)")
+    return db
+
+
+def _memory_safe(sentence):
+    sentence = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    return 8 <= len(sentence) <= 160 and not _MEMORY_SECRET.search(sentence)
+
+
+def add_memories(items, source):
+    if not isinstance(items, list):
+        return 0
+    made = 0
+    with _memory_db() as db:
+        for item in items[:3]:
+            if not isinstance(item, dict):
+                continue
+            sentence = re.sub(r"\s+", " ", str(item.get("文", ""))).strip()
+            kind = item.get("種類", "その他")
+            if not _memory_safe(sentence) or kind not in ("好み", "事実", "仕事", "その他"):
+                continue
+            digest = hashlib.sha256(sentence.casefold().encode()).hexdigest()
+            if db.execute("SELECT 1 FROM oboe_deleted WHERE hash=?", (digest,)).fetchone():
+                continue
+            existing = [row[0] for row in db.execute("SELECT 文 FROM oboe WHERE 消した=0")]
+            if any(sentence.casefold() == old.casefold() or sentence.casefold() in old.casefold()
+                   or old.casefold() in sentence.casefold() for old in existing):
+                continue
+            db.execute("INSERT INTO oboe(文,種類,出どころ,作成日時) VALUES(?,?,?,?)",
+                       (sentence, kind, str(source)[:200], time.strftime("%Y-%m-%dT%H:%M:%S%z")))
+            made += 1
+    return made
+
+
+def delete_memory(ident):
+    with _memory_db() as db:
+        row = db.execute("SELECT 文 FROM oboe WHERE id=? AND 消した=0", (int(ident),)).fetchone()
+        if not row:
+            return False
+        digest = hashlib.sha256(row[0].casefold().encode()).hexdigest()
+        db.execute("INSERT OR IGNORE INTO oboe_deleted(hash) VALUES(?)", (digest,))
+        db.execute("UPDATE oboe SET 消した=1 WHERE id=?", (int(ident),))
+        return True
+
+
+def memories(limit=10):
+    with _memory_db() as db:
+        total = db.execute("SELECT count(*) FROM oboe WHERE 消した=0").fetchone()[0]
+        rows = db.execute("SELECT id,文,種類,出どころ,作成日時,最終使用日時 FROM oboe WHERE 消した=0 ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    keys = ("id", "文", "種類", "出どころ", "作成日時", "最終使用日時")
+    return {"数": total, "一覧": [dict(zip(keys, row)) for row in rows]}
+
+
+def find_memories(request, limit=3):
+    sep = re.compile(r"[\s、。，．・:：;；!?！？()（）\[\]【】「」『』\"']+|について|として|とは|では|には|へは|から|まで|より|って|など|された|される|する|した|して|いる|ある|なる|れた|の|は|が|を|に|へ|で|と|も|や|か")
+    terms = [x for x in sep.split(str(request or "").strip()) if len(x) >= 2]
+    if not terms:
+        return []
+    if not (folder() / "oboe.sqlite3").is_file():
+        return []
+    with _memory_db() as db:
+        rows = db.execute("SELECT id,文 FROM oboe WHERE 消した=0").fetchall()
+        df = {t: sum(t in text for _, text in rows) for t in set(terms)}
+        ranked = []
+        for ident, sentence in rows:
+            hits = [t for t in set(terms) if t in sentence]
+            if hits:
+                score = sum(1 + len(rows) / (df[t] + 1) for t in hits) / (1 + len(set(terms)))
+                ranked.append((score, ident, sentence))
+        ranked.sort(reverse=True)
+        selected = ranked[:limit]
+        if selected:
+            db.executemany("UPDATE oboe SET 最終使用日時=? WHERE id=?",
+                           [(time.strftime("%Y-%m-%dT%H:%M:%S%z"), ident) for _, ident, _ in selected])
+    return [text for _, _, text in selected]
+
+
+def _local_memories(record):
+    if (folder() / "busy").exists():
+        return []
+    prompt = ("会話記録から次の会話でも役立つ本人の短い事実・好み・続いている仕事を最大3件抽出。"
+              "一時的情報、秘密、鍵、パスワード、カード番号、住所、連絡先、ファイル場所は除く。推測しない。"
+              '思考なし。JSONだけで {"覚え書き":[{"文":"一文","種類":"好み|事実|仕事|その他"}]} を返す。\n'
+              f"会話: {record.get('文', '')[:1600]}")
+    payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 220, "stream": False, "temperature": 0,
+               "chat_template_kwargs": {"enable_thinking": False}}
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+                                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        # 頭脳は読む 25〜38・書く 7〜8 トークン/秒。1,600字の会話なら1分前後かかる（45秒では間に合わなかった）。
+        with urllib.request.urlopen(req, timeout=150) as response:
+            obj = json.load(response)["choices"][0]["message"]["content"]
+        # --reasoning-format none なので空の <think></think> が付き、```json で囲むこともある（10/1 題名で同じことが起きた）。
+        obj = re.sub(r"<think>.*?</think>", "", str(obj), flags=re.S)
+        found = re.search(r"\{.*\}", obj, re.S)
+        return json.loads(found.group(0)).get("覚え書き", []) if found else []
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return []
+
+
 def _read(path, default):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -562,6 +672,7 @@ def reflect_once(cfg, *, ask=None, network=None):
             _WAIT_LOGGED = True
         return False
     _WAIT_LOGGED = False
+    add_memories(_local_memories(record), record.get("識別", "") + " " + str(record.get("日時", "")))
     # 同じ本文の提案はファイル名が違っても重ねない。
     existing_skills = skills()
     if any(re.sub(r"\n出どころ: (?:30B|30B＋先生|先生)\s*$", "", s["body"].strip()) == answer
@@ -607,8 +718,10 @@ def overview(cfg, running=False):
         logs = [_read_line(line) for line in lines]
     except OSError:
         logs = []
+    memory = memories()
     return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
-            "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count},
+            "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count, "覚え書き": memory["数"]},
+            "覚え書き": memory["一覧"],
             "つながり": branches,
             "使った容量MB": round(used_bytes() / 1024 / 1024, 2), "上限MB": opts["上限MB"],
             "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
