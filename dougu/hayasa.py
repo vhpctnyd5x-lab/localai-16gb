@@ -99,8 +99,9 @@ def measure(model, extra, log_path, n_predict, llama, convs=None):
                 if server.poll() is not None:
                     return {"失敗": "サーバーが落ちた（ログを見る）"}
                 time.sleep(1)
+        rss = lambda: int(subprocess.run(["ps", "-o", "rss=", "-p", str(server.pid)], capture_output=True, text=True).stdout.strip() or 0) // 1024
         if convs:
-            return measure_wa(convs, n_predict)
+            return {**measure_wa(convs, n_predict), "メモリMB": rss()}
         rows = []
         for i, text in enumerate([PROMPTS[0]] + PROMPTS):   # 1回目は温め（数えない）
             prompt = post("/apply-template", {"messages": [{"role": "user", "content": text}],
@@ -120,7 +121,7 @@ def measure(model, extra, log_path, n_predict, llama, convs=None):
         accepted = sum(t.get("draft_n_accepted", 0) for t in rows)
         return {"書く": round(statistics.median(speed), 2), "読む": round(statistics.median(t["prompt_per_second"] for t in rows), 2),
                 "長く読む": round(long_rows[-1]["prompt_per_second"], 2), "長さ": long_rows[-1]["prompt_n"],
-                "先読み": f"{accepted}/{drafted}" if drafted else "-"}
+                "先読み": f"{accepted}/{drafted}" if drafted else "-", "メモリMB": rss()}
     finally:
         server.terminate()
         server.wait()
