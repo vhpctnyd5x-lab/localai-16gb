@@ -1044,8 +1044,10 @@ def _knowledge_hint(request):
     found = _knowledge("", request, detail=True)["結果"]
     if not isinstance(found, list):
         return ""
+    # 10/2: 抜き書きを窓で選ぶようにしたので線を 24 → 16 に。添えるのは 17 → 21・13 → 17問（全部正しい記事）、
+    # 道具の41問・会話の14件・記録の4件・ふだんの頼み10件には今までどおり 0 件（珍しい語1つまで下げると天気の頼みにも添える）。
     picked = [{"題": item["題"], "本文": item["本文"]} for item in found[:2]
-              if item.get("点", 0) >= 24 and item.get("珍しい語", 0) >= 2]
+              if item.get("点", 0) >= 16 and item.get("珍しい語", 0) >= 2]
     # 10/2 dougu/chishiki_wa.py: 「学んだ記事: …」だと頭脳はファイルの指定と受け取り、25問中7問で
     # /tmp/learned_articles.json などを読みに行った（1問は find でホームを探し続けて 660 秒で時間切れ）。
     return ("\n覚えている知識（事前学習の記事から写した抜き書き。ファイルではないので探さない。頼みに合わなければ使わない）: "
