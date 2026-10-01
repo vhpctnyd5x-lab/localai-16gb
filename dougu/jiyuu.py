@@ -1400,12 +1400,21 @@ def _move_contents(src, dst):
     clashes = [str(dst / child.name) for child in children if os.path.lexists(dst / child.name)]
     if clashes:
         return {"ok": False, "結果": "移動先に同じ名前があります（上書きしません）: " + "、".join(clashes[:5])}
+    moved = []
     try:
         dst.mkdir(parents=True, exist_ok=True)
         for child in children:
             shutil.move(str(child), str(dst / child.name))
-    except OSError as error:
-        return {"ok": False, "結果": str(error)}
+            moved.append(child.name)
+    except OSError as error:   # 途中で止まったら、移した分を元へ戻す（10/2 Luna の審査）
+        left = []
+        for name in reversed(moved):
+            try:
+                shutil.move(str(dst / name), str(src / name))
+            except OSError:
+                left.append(name)
+        return {"ok": False, "結果": f"途中で止まりました（{error}）。"
+                + ("移した分は元へ戻しました。" if not left else "元へ戻せなかったもの: " + "、".join(left[:5]))}
     return {"ok": True, "結果": f"中身 {len(children)} 件を移しました（元の空のフォルダは残っています）", "元": str(src), "先": str(dst)}
 
 def _copy_contents(src, dst):

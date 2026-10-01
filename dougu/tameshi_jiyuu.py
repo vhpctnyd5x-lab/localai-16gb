@@ -440,6 +440,18 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert result["ok"] and (nest / "進行.txt").read_text() == "開始" and (nest / "配布" / "手順.txt").exists(), result
     assert (nest / "初日").is_dir() and not any((nest / "初日").iterdir())
     assert not jiyuu._run("move", {"src": str(nest) + "/.", "dst": str(nest / "配布")}, "戻せる", "test")["ok"]
+    half = home / "Desktop" / "途中" / "元"
+    half.mkdir(parents=True)
+    (half / "a.txt").write_text("a")
+    (half / "b.txt").write_text("b")
+    real_move = shutil.move
+    def flaky(src_, dst_, *a, **k):
+        if str(src_).endswith("b.txt") and "途中/元" in str(src_):
+            raise OSError("試しの失敗")
+        return real_move(src_, dst_, *a, **k)
+    with mock.patch.object(jiyuu.shutil, "move", side_effect=flaky):
+        got = jiyuu._run("move", {"src": str(half) + "/.", "dst": str(home / "Desktop" / "途中" / "先")}, "戻せる", "test")
+    assert not got["ok"] and "元へ戻しました" in got["結果"] and (half / "a.txt").exists() and (half / "b.txt").exists(), got
     # 10/2 J12: grep の一致なし・test の偽・diff の違いは、終了コード1でも誤りにしない（パイプは最後の命令で決まる）。
     assert "一致する所はありません" in jiyuu._exit_one_meaning('grep -rl "港湾" ~/ 2>/dev/null')
     assert jiyuu._exit_one_meaning("/usr/bin/grep -c x a.txt") and jiyuu._exit_one_meaning("[ -f a ]")
