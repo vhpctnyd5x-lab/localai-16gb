@@ -963,6 +963,28 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         assert east.read_text() == "東" and west.read_text() == "西" and not destination.exists()
         checks += 1
 
+    # 10/2 J14・J25・J32: 書いた CSV を頼みの列の指定と読んだ値に照らし、違えば書いた後に知らせる（止めはしない）。
+    weekly_dir = home / "Documents" / "週報照合"
+    weekly_dir.mkdir(parents=True)
+    for day, count in (("月曜", 4), ("火曜", 7)):
+        (weekly_dir / f"{day}.txt").write_text(f"件数: {count}\n")
+    sheet = home / "Desktop" / "照合" / "一覧.csv"
+    told = []
+    replies = iter([{"content": "", "tool_calls": [call("read", path=str(weekly_dir)),
+                                                   call("write", path=str(sheet), content="ファイル名,件数\n月曜.txt,1\n火曜.txt,1")]},
+                    {"content": "書きました。"}])
+    def remember(messages, *a, **k):
+        told.append(json.dumps(messages[-1], ensure_ascii=False))
+        return next(replies)
+    with mock.patch.object(jiyuu, "_ask", side_effect=remember), mock.patch.object(jiyuu, "_kiku", return_value=True):
+        jiyuu.kotaeru(f"{weekly_dir} の各ファイルの件数を {sheet} に ファイル名,件数 の列で書いて", mode="バイパス")
+    assert sheet.exists() and "違う所" in told[-1] and "ファイルでは 4" in told[-1], told[-1][:300]
+    assert jiyuu._csv_problems("日付,担当者\n2026-10-04,佐藤", "日付,担当者 の順で", ["日付: 2026-10-04\n担当者: 佐藤"], []) == []
+    assert jiyuu._csv_problems("2026-10-04,佐藤", "日付,担当者 の順で", [], []) == ["1行目が列名（日付,担当者）になっていません"]
+    assert jiyuu._csv_problems("案件,金額\nHARBOR-527,18400", "列は 案件,金額", ["案件: HARBOR-527\n金額: 18400円"], []) == []
+    assert jiyuu._csv_problems("品名,必要数\n赤,10", "品名,必要数 の列で", ["品名: 赤ペン\n必要数: 12"], [])
+    checks += 1
+
     # 10/2 J29: 失敗した手は、別の変更が成功した後ならやり直せる。成功した手の繰り返しは今までどおり止める。
     retry_src, retry_dst = home / "Documents" / "やり直し.txt", home / "Desktop" / "やり直し先" / "やり直し.txt"
     retry_move = call("move", src=str(retry_src), dst=str(retry_dst))

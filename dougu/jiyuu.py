@@ -1417,6 +1417,66 @@ def _move_contents(src, dst):
                 + ("移した分は元へ戻しました。" if not left else "元へ戻せなかったもの: " + "、".join(left[:5]))}
     return {"ok": True, "結果": f"中身 {len(children)} 件を移しました（元の空のフォルダは残っています）", "元": str(src), "先": str(dst)}
 
+_FIELD = re.compile(r"\s*([^:]+?)\s*:\s*(.*?)\s*$")
+
+
+def _fields(text):
+    """「項目: 値」の行を辞書に（全角の ：・数字も直す）。"""
+    out = {}
+    for line in str(text).splitlines():
+        found = _FIELD.match(unicodedata.normalize("NFKC", line))
+        if found:
+            out.setdefault(found.group(1), found.group(2))
+    return out
+
+
+def _same_value(cell, value):
+    """同じ値か。「金額は数字だけ」のような書き換えは、数字が同じなら同じとみなす。"""
+    a, b = (unicodedata.normalize("NFKC", str(x)).strip() for x in (cell, value))
+    return a == b or bool(re.search(r"\d", a)) and re.sub(r"\D", "", a) == re.sub(r"\D", "", b) != ""
+
+
+def _csv_problems(content, request, read_contents, found):
+    """10/2: 書いた CSV を、頼みの列の指定と読んだファイルの「項目: 値」に照らす（Sol の設計「照合は Python へ」）。
+    J32 は列名の行を落とし、J14 は件数 4 を 1、J25 は 赤ペン・12 を 赤・10 と写した（hyou は選ばれなかった）。"""
+    try:
+        rows = [[unicodedata.normalize("NFKC", cell).strip() for cell in row] for row in csv.reader(io.StringIO(str(content))) if row]
+    except csv.Error:
+        return []
+    if not rows:
+        return []
+    problems = []
+    named = re.search(r"列は\s*([^\s、。]+(?:,[^\s、。]+)+)|([^\s、。「」]+(?:,[^\s、。「」]+)+)\s*の(?:順|列)", unicodedata.normalize("NFKC", request))
+    wanted = (named.group(1) or named.group(2)).split(",") if named else []
+    if wanted and rows[0] != wanted:
+        problems.append("1行目が列名（" + ",".join(wanted) + "）になっていません")
+    header = rows[0] if not wanted or rows[0] == wanted else wanted
+    seen = {}
+    for text in read_contents:
+        for key, value in _fields(text).items():
+            seen.setdefault(key, set()).add(value)
+    files = {}
+    for raw in found:
+        files.setdefault(Path(str(raw)).name, []).append(str(raw))
+    for row in rows[1:] if rows[0] == header else rows:
+        own = {}
+        for cell in row:
+            paths = files.get(cell, [])
+            if len(paths) == 1 and not _secret_path(paths[0]):
+                try:
+                    path = _home_resolve(paths[0])
+                    if path.is_file() and path.stat().st_size <= 65536:
+                        own = _fields(path.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+        for column, cell in zip(header, row):
+            if column in own and not _same_value(cell, own[column]):
+                problems.append(f"{row[0]} の {column}「{cell}」（ファイルでは {own[column]}）")
+            elif column not in own and column in seen and not any(_same_value(cell, value) for value in seen[column]):
+                problems.append(f"{column}「{cell}」（読んだ値: {'・'.join(sorted(seen[column])[:4])}）")
+    return problems
+
+
 def _copy_contents(src, dst):
     """フォルダの中身だけを先のフォルダへ写す。先に同じ名前が1つでもあれば何も写さない（上書きしない）。"""
     if os.path.lexists(dst) and (dst.is_symlink() or not dst.is_dir()):
@@ -1981,6 +2041,11 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
                         result = _missing_hint(name, args, result, found, text, knowledge=bool(knowledge))
+                        if name == "write" and result.get("ok") and str(args.get("path", "")).lower().endswith(".csv"):
+                            problems = _csv_problems(args.get("content", ""), text, context.read_contents, found)
+                            if problems:
+                                result["次"] = ("書きましたが、確かめると違う所があります: " + "／".join(problems[:4])
+                                               + "。直すなら write で書き直してください（hyou で作ると値をそのまま写せます）。")
                         if rewrite_note and result.get("ok"):
                             result["次"] = rewrite_note
                     if result.get("ok"):
