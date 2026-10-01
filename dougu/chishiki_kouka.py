@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--model", default="~/LocalAI_mirror/models/Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf")
     parser.add_argument("--llama", default="~/LocalAI_mirror/llama-koukai/llama-server")
     parser.add_argument("--out", default=str(honban.KEKKA / "chishiki_kouka.jsonl"))
+    parser.add_argument("--joken", default="ABCD", help="測る通り（例 B だけ）")
     args = parser.parse_args()
     toi = [json.loads(line) for line in open(args.toi, encoding="utf-8") if line.strip().startswith("{")]
     rows = articles()
@@ -112,7 +113,7 @@ def main():
         for row in toi:
             q = row["問"]
             query = ask(KENSAKU, q, n=24).splitlines()[0] if q else ""
-            now = jiyuu._knowledge(query)["結果"]
+            now = jiyuu._knowledge(query, q)["結果"]   # 輪の shiru と同じ（頭脳の検索語＋本人の問い）
             now = now if isinstance(now, list) else []
             fixed = naoshita(query, rows)
             text = by_title.get(row["題"], "")
@@ -121,6 +122,9 @@ def main():
             r = {"id": row["id"], "検索語": query,
                  "B_記事": [c["題"] for c in now], "C_記事": [c["題"] for c in fixed]}
             for key, ctx in (("A", None), ("B", now), ("C", fixed), ("D", oracle)):
+                if key not in args.joken:
+                    r[key], r[key + "_正"] = "", False
+                    continue
                 user = q if ctx is None else ("学んだ記事:\n" + json.dumps(ctx, ensure_ascii=False) + "\n\n質問: " + q)
                 answer = ask(KOTAE, user)
                 r[key], r[key + "_正"] = answer[:80], atari(answer, row)
