@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert captured[0]["cache_prompt"] is True
     assert captured[0]["tools"] == jiyuu.TOOLS
     assert captured[0]["chat_template_kwargs"]["enable_thinking"] is True
-    assert len(captured[0]["tools"]) == 14 and captured[0]["max_tokens"] == 128
+    assert len(captured[0]["tools"]) == 15 and captured[0]["max_tokens"] == 128
     checks += 1
     preview = jiyuu._short({"ok": True, "結果": "A" * 6000}, "long", 1)
     archive = Path(preview.split("全文: ", 1)[1].split(" …", 1)[0])
@@ -436,6 +436,19 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     guard = jiyuu._request_guard("copy", {"src": str(weekly[0]), "dst": str(weekly[1])},
                                  "~/Downloads/週報.txt を ~/Desktop/提出用 にコピーして", [str(p) for p in weekly], "戻せる")
     assert guard.startswith("~/Downloads/週報.txt は見つかりません。候補が複数あります:"), guard
+    # 10/2: hyou はファイル群の「項目: 値」を CSV の文にする（全角の ：・数字も直す。列にファイル名も可。読むだけ）。
+    shelf = home / "Documents" / "棚札"
+    shelf.mkdir(parents=True)
+    (shelf / "赤.txt").write_text("品名: 赤ペン\n残数: 0\n必要数: 12\n")
+    (shelf / "青.txt").write_text("見出し: 次週\n品名：青ペン\n残数：０\n必要数：５\n")
+    name, args = jiyuu._valid(call("hyou", paths=json.dumps([str(shelf / "赤.txt"), str(shelf / "青.txt")]), columns=["品名", "必要数"]))
+    assert name == "hyou" and isinstance(args["paths"], list) and jiyuu._risk(name, args) == "見る"
+    got = jiyuu._run(name, args, "見る", "test")
+    assert got["ok"] and got["結果"] == "品名,必要数\n赤ペン,12\n青ペン,5\n" and "足りない" not in got, got
+    got = jiyuu._run("hyou", {"paths": [str(shelf)], "columns": ["ファイル名", "残数", "色"]}, "見る", "test")
+    assert got["結果"].splitlines() == ["ファイル名,残数,色", "赤.txt,0,", "青.txt,0,"] and len(got["足りない"]) == 2, got
+    assert jiyuu._risk("hyou", {"paths": ["~/.ssh/id_rsa"], "columns": ["a"]}) == "禁止"
+    assert not jiyuu._run("hyou", {"paths": [str(shelf / "無い.txt")], "columns": ["品名"]}, "見る", "test")["ok"]
     assert jiyuu._rewrite_sh("sh", {"command": f'cp -R "{folder}" "{home}/Desktop/tree-copy"'})[0] == "copy"
     for command in (f"cp -n {src} {copied}", f"cp {src} {copied} && echo done",
                     f"cp {src} {home}/../elsewhere.txt", f"cp -r {folder} {home}/Desktop/tree-copy; ls"):
