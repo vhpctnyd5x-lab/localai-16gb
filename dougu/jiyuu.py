@@ -903,6 +903,25 @@ def _risk(name, args):
     kind = {"read": "読む", "write": "書く", "edit": "直す"}[name]
     return gate.kensa({kind: {"path": args["path"], **({"text": args.get("content", "")} if name == "write" else {})}})
 
+def _exit_one_meaning(command):
+    """終了コード1が誤りではない命令（grep は一致なし、test は偽、diff・cmp は違いあり）。パイプは最後の命令で決まる。
+    10/2 J12: grep の「一致なし」を「誤り: 命令が失敗しました」と返し、頭脳は ; echo exit:$? を足して回り道をした（581 秒）。"""
+    if re.search(r";|&&|\|\||`|\$\(", command):
+        return ""
+    try:
+        words = shlex.split(command.split("|")[-1])
+    except ValueError:
+        return ""
+    head = Path(words[0]).name if words else ""
+    if head in ("grep", "egrep", "fgrep", "rg"):
+        return "一致する所はありません（grep は見つからない時に終了コード1を返します）"
+    if head in ("test", "["):
+        return "条件に合いません（終了コード1）"
+    if head in ("diff", "cmp"):
+        return "違いがあります（終了コード1）"
+    return ""
+
+
 def _job(args, risk, session, approved=False):
     if "job" in args:
         item = JOBS.get(args["job"])
@@ -937,6 +956,9 @@ def _job(args, risk, session, approved=False):
                 text=True, encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL)
             output = (completed.stdout or "") + (("\n" if completed.stdout else "") + completed.stderr if completed.stderr else "")
             failed = completed.returncode != 0 or bool(re.search(r"\berror\b", output, re.I))
+            meaning = _exit_one_meaning(command) if completed.returncode == 1 and not (completed.stderr or "").strip() else ""
+            if meaning:
+                return {"ok": True, "終了コード": 1, "結果": (output.rstrip() + "\n" if output.strip() else "") + meaning}
             return {"ok": not failed, "終了コード": completed.returncode,
                     "結果": ("誤り: " if failed else "") + (output or ("出力なし" if not failed else "命令が失敗しました"))}
         except subprocess.TimeoutExpired:
@@ -1259,9 +1281,13 @@ def _run(name, args, risk, session, approved=False, settei=None):
                     answers.append(one)
         return {"ok": bool(answers), "結果": "\n".join(answers) or "分かりませんでした。shで調べてください。"}
     if name == "move":
-        src, dst = _home_resolve(args["src"]), _home_resolve(args["dst"])
+        raw_src = str(args["src"]).rstrip("/")
+        contents = raw_src.endswith(("/.", "/*"))   # mv 元/* 先/ と同じく、中身を先へ
+        src, dst = _home_resolve(raw_src[:-2] if contents else args["src"]), _home_resolve(args["dst"])
         if not os.path.lexists(src):
             return {"ok": False, "結果": f"見つかりません: {args['src']}"}
+        if contents and src.is_dir() and not src.is_symlink():
+            return _move_contents(src, dst)
         as_folder = (dst.is_dir() or args["dst"].endswith("/")
                      or (not os.path.lexists(dst) and not dst.suffix and src.suffix))   # 「整理へ移して」はフォルダのこと（9/28 J04）
         if as_folder:
@@ -1354,6 +1380,30 @@ def _hyou(paths, columns, session):
     if missing:
         result["足りない"] = missing[:10]
     return result
+
+def _move_contents(src, dst):
+    """フォルダの中身だけを先のフォルダへ移す（元の空のフォルダは残す）。先に同じ名前が1つでもあれば何も移さない。
+    10/2 J29: 入れ子になった 初日/初日 を、中身だけ1つ上へ移して直そうとした。"""
+    if os.path.lexists(dst) and (dst.is_symlink() or not dst.is_dir()):
+        return {"ok": False, "結果": f"移動先がフォルダではありません: {dst}"}
+    if os.path.commonpath((os.path.realpath(src), os.path.realpath(dst))) == os.path.realpath(src):
+        return {"ok": False, "結果": "元フォルダの中へは移せません"}
+    children = sorted(src.iterdir())
+    if _unmovable(src) or _unmovable(dst, big=False) or any(_unmovable(child) for child in children):
+        return {"ok": False, "結果": "保護された場所や大きなフォルダは移せません"}
+    odd = [child.name for child in children if not child.is_symlink() and not (child.is_file() or child.is_dir())]
+    if odd:
+        return {"ok": False, "結果": "特殊なファイルがあるので移しません: " + "、".join(odd[:5])}
+    clashes = [str(dst / child.name) for child in children if os.path.lexists(dst / child.name)]
+    if clashes:
+        return {"ok": False, "結果": "移動先に同じ名前があります（上書きしません）: " + "、".join(clashes[:5])}
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in children:
+            shutil.move(str(child), str(dst / child.name))
+    except OSError as error:
+        return {"ok": False, "結果": str(error)}
+    return {"ok": True, "結果": f"中身 {len(children)} 件を移しました（元の空のフォルダは残っています）", "元": str(src), "先": str(dst)}
 
 def _copy_contents(src, dst):
     """フォルダの中身だけを先のフォルダへ写す。先に同じ名前が1つでもあれば何も写さない（上書きしない）。"""

@@ -431,6 +431,20 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     result = jiyuu._run("copy", {"src": str(folder), "dst": str(same)}, "戻せる", "test")
     assert result["ok"] and (same / "配布" / "手順.txt").exists() and not (same / folder.name).exists()
     assert not jiyuu._run("copy", {"src": str(folder) + "/.", "dst": str(folder / "配布")}, "戻せる", "test")["ok"]
+    # 10/2 J29: move も「元/.」は中身を（入れ子になった 初日/初日 を1つ上へ）。元の空のフォルダは残す。
+    nest = home / "Desktop" / "入れ子" / "初日"
+    (nest / "初日" / "配布").mkdir(parents=True)
+    (nest / "初日" / "進行.txt").write_text("開始")
+    (nest / "初日" / "配布" / "手順.txt").write_text("受付")
+    result = jiyuu._run("move", {"src": str(nest / "初日") + "/.", "dst": str(nest) + "/"}, "戻せる", "test")
+    assert result["ok"] and (nest / "進行.txt").read_text() == "開始" and (nest / "配布" / "手順.txt").exists(), result
+    assert (nest / "初日").is_dir() and not any((nest / "初日").iterdir())
+    assert not jiyuu._run("move", {"src": str(nest) + "/.", "dst": str(nest / "配布")}, "戻せる", "test")["ok"]
+    # 10/2 J12: grep の一致なし・test の偽・diff の違いは、終了コード1でも誤りにしない（パイプは最後の命令で決まる）。
+    assert "一致する所はありません" in jiyuu._exit_one_meaning('grep -rl "港湾" ~/ 2>/dev/null')
+    assert jiyuu._exit_one_meaning("/usr/bin/grep -c x a.txt") and jiyuu._exit_one_meaning("[ -f a ]")
+    assert jiyuu._exit_one_meaning("grep x a | head -3") == "" and jiyuu._exit_one_meaning("grep x a && echo ok") == ""
+    assert jiyuu._exit_one_meaning("ls nothing") == ""
     # 10/2 J40: 頼みの場所に無かった時は、そのことも言ってから聞く。
     weekly = [home / "Documents" / "週報.txt", home / "Desktop" / "提出用" / "週報.txt"]
     guard = jiyuu._request_guard("copy", {"src": str(weekly[0]), "dst": str(weekly[1])},
