@@ -1028,6 +1028,62 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert jiyuu._unfinished_plan("月曜.txtの内容を確認します。")   # 10/1 J14
     assert not jiyuu._unfinished_plan("フォルダは3つあります。")
     assert not jiyuu._unfinished_plan("コピーし、一覧.csv に3行を書きました。原本は残しています。")
+    # 達成条件の台帳: 新しい言い回しを中心に、曖昧な依頼は条件化しない。
+    ledger_cases = [
+        "~/Documents/原稿.txt のバックアップを ~/Desktop/保管 に作成。原本はそのままにする。",
+        "~/Documents/設定.ini を /Users/test/Desktop/退避/別名.ini に複製してから、[開発] 節はそのままにしておく。",
+        "~/Desktop/集計.csv の列を 品名,必要数 にして保存。",
+    ]
+    ledgers = [jiyuu._ledger_extract(item) for item in ledger_cases]
+    assert ledgers[0] == [
+        {"type": "copy", "src": "~/Documents/原稿.txt", "dst": "~/Desktop/保管/原稿.txt"},
+        {"type": "unchanged", "path": "~/Documents/原稿.txt"}]
+    assert ledgers[1][0] == {"type": "copy", "src": "~/Documents/設定.ini",
+                              "dst": "/Users/test/Desktop/退避/別名.ini"}
+    assert {"type": "unchanged_parts", "path": "~/Documents/設定.ini",
+            "section": "開発", "comments": False} in ledgers[1]
+    assert ledgers[2] == [{"type": "csv_header", "path": "~/Desktop/集計.csv",
+                           "header": ["品名", "必要数"]}]
+    assert jiyuu._ledger_extract("~/Documents/a.txt と ~/Desktop/b.txt を整理して") == []
+    assert jiyuu._ledger_extract("~/Desktop/集計.csv を作る。列は特に指定しない") == []
+    assert jiyuu._ledger_extract("~/Documents/a.txt を ~/Desktop/b.txt にコピーし、~/Desktop/c.txt にもコピー") == []
+    copy_file = home / "Documents" / "確認元.txt"
+    copy_dest = home / "Desktop" / "確認先.txt"
+    copy_file.parent.mkdir(parents=True, exist_ok=True)
+    copy_dest.parent.mkdir(parents=True, exist_ok=True)
+    copy_file.write_text("変更前\n")
+    copy_dest.write_text("変更前\n")
+    config = home / "Documents" / "環境.txt"
+    config.write_text("[本番]\n通知=無効\n# 維持\n[試験]\n通知=無効\n")
+    csv_file = home / "Desktop" / "条件.csv"
+    csv_file.write_text("列1,列2\n値,値\n")
+    conditions = [{"type": "copy", "src": "~/Documents/確認元.txt", "dst": "~/Desktop/確認先.txt"},
+                  {"type": "csv_header", "path": "~/Desktop/条件.csv", "header": ["列1", "列2"]},
+                  {"type": "unchanged_parts", "path": "~/Documents/環境.txt", "section": "本番", "comments": True}]
+    snapshots = jiyuu._ledger_start(conditions)
+    assert jiyuu._ledger_check(conditions, snapshots) == []  # 満たせば促しなし
+    before = (copy_file.read_bytes(), copy_dest.read_bytes(), csv_file.read_bytes(), config.read_bytes())
+    copy_dest.write_text("違う\n")
+    unmet = jiyuu._ledger_check(conditions, snapshots)
+    assert unmet and "確認先.txt" in unmet[0]
+    first, nudged = jiyuu._ledger_finish("作業しました。", unmet, False)
+    second, nudged_again = jiyuu._ledger_finish(first, unmet, nudged)
+    assert first.startswith("まだ満たしていない:") and nudged
+    assert "未達の条件:" in second and "確認先.txt" in second and not nudged_again
+    assert (copy_file.read_bytes(), csv_file.read_bytes(), config.read_bytes()) == (before[0], before[2], before[3])
+    # 301ファイルまたは20MiB超の対象は snapshot を取らず、条件を確認対象から外す。
+    oversized = home / "Documents" / "多いフォルダ"
+    oversized.mkdir()
+    for index in range(301):
+        (oversized / f"{index}.txt").write_text("x")
+    assert jiyuu._ledger_snapshot(str(oversized)) is None
+    large_file = home / "Documents" / "大きい.txt"
+    large_file.write_bytes(b"x" * (20 * 1024 * 1024 + 1))
+    assert jiyuu._ledger_snapshot(str(large_file)) is None
+    assert jiyuu._ledger_check([{"type": "copy", "src": str(oversized),
+                                 "dst": str(home / "Desktop" / "控え")}],
+                                {str(oversized): None}) == []
+    checks += 1
     tickets = home / "Documents" / "作業票"
     tickets.mkdir(parents=True)
     ticket = tickets / "あ.txt"
@@ -1167,5 +1223,10 @@ _two = ["/tmp/koukai-x/Documents/今回/報告.txt", "/tmp/koukai-x/Desktop/提�
 assert jiyuu._request_guard("write", {"path": "/tmp/koukai-x/Desktop/提出控え/索引.csv", "content": "x"},
                             "~/Documents/今回/報告.txt の写しと 索引.csv を作って", _two, "戻せる") == ""
 assert "候補が複数" in jiyuu._request_guard("write", {"path": "/tmp/koukai-x/Desktop/報告.txt", "content": "x"}, "報告.txt を書き直して", _two, "戻せる")
+checks += 1
+# 10/1 Claude: コピーと同じ文の「元はそのまま」は元を指す。先（コピーで変わる場所）を「変えない」にしない。
+_c = jiyuu._ledger_extract("~/Documents/a.txt を ~/Desktop/控え にコピーして、元はそのままにしといて")
+assert {"type": "unchanged", "path": "~/Documents/a.txt"} in _c and not any(c["type"] == "unchanged" and "控え" in c["path"] for c in _c), _c
+assert not any(c["type"] == "unchanged" for c in jiyuu._ledger_extract("~/A と ~/B を見比べて、そのまま答えて"))
 checks += 1
 print(f"jiyuu 自己試験: {checks}/{checks} PASS")

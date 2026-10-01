@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html.parser
 import json
 import os
@@ -184,6 +185,172 @@ def _unfinished_plan(text: str) -> bool:
     # 10/1 J14: 「月曜.txtの内容を確認します。」だけで止まった。短く、過去形が無く、状態の「あります・います」でもない時も予定とみる
     return (len(text) <= 60 and "ました" not in text
             and not re.search(r"(?:あり|い|でき|なり|わかり|分かり|ござい)ます[。.]?$", sentences[-1]))
+
+
+def _ledger_extract(request: str) -> list[dict]:
+    """明示されたコピー・CSV見出し・保持条件だけを規則で抽出する。"""
+    conditions = []
+    path_re = re.compile(r"(?:~|/Users/[^\s、。]+)(?:/[^\s、。]*)*")
+    copy_words = re.compile(r"コピー|写し|複製|控え|退避|バックアップ")
+    preserve_words = re.compile(r"そのまま|変えない|変えず|残して|残す|触らない|触らず|手を付けず|手ぇ付けず|いじらない")
+    sentences = re.split(r"(?<=[。！？!?])|\n+", request)
+    for sentence in sentences:
+        paths = list(path_re.finditer(sentence))
+        copied_src = None
+        if copy_words.search(sentence) and len(paths) == 2:
+            src, dst = (m.group(0).rstrip("/,") for m in paths)
+            rename = re.search(r"新しい名前は\s*([^\s、。]+)\s*に|([^\s、。]+)\s*という名前で", sentence)
+            name = next((v for v in rename.groups() if v), None) if rename else None
+            if name:
+                target = str(Path(dst) / name)
+            elif dst.endswith("/") or not Path(dst).suffix:
+                target = str(Path(dst) / Path(src.rstrip("/")).name)
+            else:
+                target = dst
+            conditions.append({"type": "copy", "src": src, "dst": target})
+            copied_src = src
+
+        # CSV見出しはパスと「列」が同じ文にあり、カンマ区切りの語がある場合のみ。
+        csv_paths = [m.group(0).rstrip("、") for m in paths if m.group(0).lower().endswith(".csv")]
+        if len(csv_paths) == 1 and "列" in sentence:
+            header_match = re.search(r"([\w一-龯ぁ-んァ-ヶー]+(?:\s*,\s*[\w一-龯ぁ-んァ-ヶー]+)+)", sentence)
+            if header_match:
+                conditions.append({"type": "csv_header", "path": csv_paths[0],
+                                   "header": [part.strip() for part in header_match.group(1).split(",")]})
+
+        if preserve_words.search(sentence):
+            section = re.search(r"\[([^\]]+)\]\s*節", sentence)
+            if section:
+                parts_path = paths[0].group(0) if len(paths) == 1 else next(
+                    (c["src"] for c in reversed(conditions) if c["type"] == "copy"), None)
+                if parts_path:
+                    conditions.append({"type": "unchanged_parts", "path": parts_path,
+                                   "section": section.group(1), "comments": "コメント" in sentence})
+            elif copied_src or re.search(r"原本|元の|元は|元ファイル|もとの|もとは|オリジナル", sentence):
+                # 10/1 Claude: コピーと同じ文の「そのまま」や「原本・元」は、コピー元を指す（先を指すと、コピーで変わるのに未達と言ってしまう）。
+                copy_conditions = [c for c in conditions if c["type"] == "copy"]
+                src = copied_src or (copy_conditions[-1]["src"] if copy_conditions else None)
+                if src:
+                    conditions.append({"type": "unchanged", "path": src})
+            elif len(paths) == 1:
+                conditions.append({"type": "unchanged", "path": paths[0].group(0)})
+            # 場所が2つ以上でコピーでもない文は、どこにかかるか分からないので作らない
+    return conditions
+
+
+def _ledger_snapshot(path: str):
+    """秘密・保護場所には触れず、通常ファイル／フォルダの中身を記録する。"""
+    target = _home_resolve(path)
+    if _secret_path(str(target)) or gate._is_protected_path(str(target), mutation=False):
+        return None
+    budget = {"files": 0, "bytes": 0}
+    try:
+        def snapshot(item):
+            if item.is_symlink() or _secret_path(str(item)) or gate._is_protected_path(str(item), mutation=False):
+                return ("skip",)
+            if item.is_file():
+                size = item.stat().st_size
+                budget["files"] += 1
+                budget["bytes"] += size
+                if budget["files"] > 300 or budget["bytes"] > 20 * 1024 * 1024:
+                    raise OverflowError
+                return ("file", item.read_bytes())
+            if item.is_dir():
+                items = []
+                for child in sorted(item.iterdir(), key=lambda entry: entry.name):
+                    value = snapshot(child)
+                    if value is None:
+                        return None
+                    if value != ("skip",):
+                        items.append((child.name, value[0], value[1] if value[0] == "file" else value))
+                return ("dir", tuple(items))
+            return ("absent",)
+        if target.is_symlink():
+            return None
+        if target.is_file() or target.is_dir():
+            return snapshot(target)
+        return ("absent",)
+    except (OSError, ValueError, OverflowError):
+        return None
+
+
+def _ledger_parts(path: str, section: str, comments: bool):
+    target = _home_resolve(path)
+    if _secret_path(str(target)) or gate._is_protected_path(str(target), mutation=False):
+        return None
+    try:
+        if target.is_symlink() or not target.is_file():
+            return None
+        lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeError):
+        return None
+    selected, inside = [], False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            inside = stripped[1:-1] == section
+        if inside or comments and line.lstrip().startswith("#"):
+            selected.append(line)
+    return tuple(selected)
+def _ledger_start(conditions):
+    snapshots = {}
+    for condition in conditions:
+        if condition["type"] in ("copy", "unchanged"):
+            path = condition["src"] if condition["type"] == "copy" else condition["path"]
+            snapshots.setdefault(path, _ledger_snapshot(path))
+        elif condition["type"] == "unchanged_parts":
+            snapshots.setdefault((condition["path"], condition["section"], condition["comments"]),
+                                 _ledger_parts(condition["path"], condition["section"], condition["comments"]))
+    return snapshots
+
+
+def _ledger_check(conditions, snapshots):
+    unmet = []
+    for condition in conditions:
+        kind = condition["type"]
+        paths = ([condition["src"], condition["dst"]] if kind == "copy" else
+                 [condition["path"]])
+        if any(_secret_path(path) or gate._is_protected_path(str(_home_resolve(path)), mutation=False)
+               for path in paths):
+            continue
+        if kind == "copy":
+            original = snapshots.get(condition["src"])
+            if original is None:  # 読み取り上限などで初回 snapshot が取れない条件は使わない。
+                continue
+            target = _ledger_snapshot(condition["dst"])
+            source_now = _ledger_snapshot(condition["src"])
+            if original is None or target != original or source_now in (None, ("absent",)):
+                unmet.append(f"{condition['dst']} に変更前の写しがあり、原本 {condition['src']} が残っている")
+        elif kind == "csv_header":
+            target = _home_resolve(condition["path"])
+            if _secret_path(str(target)) or gate._is_protected_path(str(target), mutation=False):
+                continue
+            try:
+                with target.open("r", encoding="utf-8-sig", newline="") as stream:
+                    header = next(csv.reader(stream), [])
+            except (OSError, UnicodeError, csv.Error):
+                header = []
+            if header != condition["header"]:
+                unmet.append(f"{condition['path']} の1行目が {','.join(condition['header'])}")
+        elif kind == "unchanged":
+            before = snapshots.get(condition["path"])
+            if before is not None and _ledger_snapshot(condition["path"]) != before:
+                unmet.append(f"{condition['path']} が変更前のまま")
+        elif kind == "unchanged_parts":
+            key = (condition["path"], condition["section"], condition["comments"])
+            before = snapshots.get(key)
+            if before is not None and _ledger_parts(*key) != before:
+                unmet.append(f"{condition['path']} の [{condition['section']}] 節とコメントが変更前のまま")
+    return unmet
+
+
+def _ledger_finish(answer: str, unmet: list[str], nudged: bool):
+    if not unmet:
+        return answer, False
+    detail = "\n".join(f"- {item}" for item in unmet)
+    if not nudged:
+        return "まだ満たしていない:\n" + detail, True
+    return answer.rstrip() + "\n未達の条件:\n" + detail, False
 
 
 def _raw_tool_call(text: str) -> bool:
@@ -1424,6 +1591,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
     messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text) + _memory_hint(text)})
+    ledger = _ledger_extract(text)
+    ledger_snapshots = _ledger_start(ledger)
+    ledger_nudged = False
     gate._reset_session()
     context = _outbound()
     context.request = text
@@ -1489,6 +1659,16 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 messages.append({"role": "assistant", "content": reply["content"][:1200]})
                 messages.append({"role": "user", "content": "まだ途中なら、予定は書かずに道具を呼んで最後まで進めてください。終わっていれば、結果だけを短く答えてください。"})
                 continue
+            if not calls and not force and ledger:
+                unmet = _ledger_check(ledger, ledger_snapshots)
+                if unmet:
+                    prompt, should_nudge = _ledger_finish("", unmet, ledger_nudged)
+                    if should_nudge:
+                        ledger_nudged = should_nudge
+                        messages.append({"role": "assistant", "content": reply["content"][:1200]})
+                        messages.append({"role": "user", "content": prompt + "\n未達の条件を満たしてから、道具なしで短く答えてください。"})
+                        continue
+                    reply["content"] = _ledger_finish(reply["content"], unmet, ledger_nudged)[0]
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 # 9/29: 道具が1つも成功していないのに「完了しました」とは言わない（返事が空・壊れた時）。
