@@ -584,7 +584,7 @@ body:not(.no-term) #term{width:min(380px,34vw);flex:0 0 min(380px,34vw);border-l
 @media(max-width:680px){
   aside{display:flex;width:180px;min-width:150px;flex-basis:180px}.tabs{padding:12px 9px}.nav{padding:3px 7px}
   .nav button{padding:7px 8px;font-size:12px}.grouprow{padding:7px 6px}.grouprow button{min-width:30px}
-  .grouprow button:not(#c-new){display:none}#chatlist{padding:4px}.crow{padding:7px 5px;font-size:12px}
+  .grouprow button:not(#c-new):not(#c-seiri){display:none}#chatlist{padding:4px}.crow{padding:7px 5px;font-size:12px}
   .crow .n,.crow .hi{font-size:10px}.me{padding:9px 7px}.me #bug{display:none}.me .badge{font-size:10px}
   header{height:48px;padding:0 12px;gap:8px}header .meter{display:none}
   #log{padding:22px 14px 28px}.empty{margin-top:9vh}.empty h2{font-size:20px}
@@ -702,6 +702,7 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
     <button id="c-new" title="新しい会話をはじめる">新規</button>
     <button id="c-arch" title="しまったものも見る">しまったもの</button>
     <button id="c-trash" title="ゴミ箱を見る">ゴミ箱</button>
+    <button id="c-seiri" title="会話の整理案を見て選ぶ">整理</button>
     <button id="c-sel" title="えらんでまとめて（組に入れる・しまう・ゴミ箱へ）">えらんでまとめて</button>
   </div>
   <div id="seibar" hidden></div>
@@ -1506,10 +1507,35 @@ document.getElementById("net-btn").onclick = (e) => {
 document.getElementById("c-arch").onclick = () => { ARCH = !ARCH; TRASH = false; drawChats(); };
 document.getElementById("c-trash").onclick = () => { TRASH = !TRASH; SEL = false; ERANDA.clear(); drawChats(); };
 document.getElementById("c-sel").onclick = () => { SEL = !SEL; TRASH = false; ERANDA.clear(); drawChats(); };
+document.getElementById("c-seiri").onclick = async () => {
+  const result = await api("/chat/seiri/an", {method:"POST", body:JSON.stringify({})});
+  if (result.error) return;
+  const proposals = result.案 || [];
+  const labels = {"組":"組にまとめる", "しまう":"しまう", "ゴミ箱":"ゴミ箱へ（ゴミ箱から戻せます）"};
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:#0009;display:grid;place-items:center;padding:16px";
+  overlay.innerHTML = `<section style="background:var(--panel);color:var(--fg);width:min(620px,95vw);max-height:85vh;overflow:auto;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 12px 50px #0008">
+    <h2 style="margin:0 0 8px">整理の案</h2><p style="margin:0 0 12px;color:var(--dim)">チェックを外した案は次回から出しません。ゴミ箱の会話は戻せます。</p>
+    ${proposals.length ? ["組", "しまう", "ゴミ箱"].map(kind => {
+      const rows = proposals.map((p,i)=>({...p,_i:i})).filter(p=>p.区分===kind);
+      return rows.length ? `<h3 style="margin:14px 0 5px">${labels[kind]}</h3>` + rows.map(p=>`<label style="display:flex;gap:9px;padding:8px 4px;border-top:1px solid var(--line);align-items:flex-start"><input type="checkbox" data-seiri="${p._i}" checked><span><b>${esc(p.題)}</b>${kind==="組"?` → ${esc(p.組)}`:""}<br><small style="color:var(--dim)">${esc(p.理由)}</small></span></label>`).join("") : "";
+    }).join("") : `<p>今は整理の案がありません。</p>`}
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn" data-cancel>やめる</button><button class="btn" data-apply ${proposals.length?"":"disabled"}>この通りにする</button></div></section>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector("[data-cancel]").onclick = close;
+  overlay.onclick = e => { if(e.target===overlay) close(); };
+  overlay.querySelector("[data-apply]").onclick = async () => {
+    const items = proposals.map((p,i)=>({...p, checked:!!overlay.querySelector(`[data-seiri="${i}"]`)?.checked}));
+    await api("/chat/seiri/suru", {method:"POST", body:JSON.stringify({案:items})});
+    close(); refresh();
+  };
+};
 document.getElementById("chat-menu").onclick=e=>{
   e.stopPropagation(); if(DD)return closeDrop();
   openDrop(e.currentTarget,[
     {名:"えらんでまとめる",絵:"chk",する:()=>document.getElementById("c-sel").click()},
+    {名:"整理の案を見る",絵:"chk",する:()=>document.getElementById("c-seiri").click()},
     {名:"しまったもの",絵:"box",する:()=>document.getElementById("c-arch").click()},
     {名:"ゴミ箱",絵:"del",する:()=>document.getElementById("c-trash").click()}
   ],{left:true});

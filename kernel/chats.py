@@ -24,6 +24,7 @@ ROOT = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "
 DIR = os.path.join(ROOT, "chats")
 DB = os.path.join(ROOT, "chats.sqlite3")
 TITLE_EXAMPLES = os.path.join(ROOT, "title_examples.json")
+SEIRI_OBOE = os.environ.get("KERNEL_SEIRI_OBOE") or os.path.join(ROOT, "seiri_oboe.json")
 
 _INIT_LOCK = threading.RLock()
 _READY = False
@@ -552,6 +553,146 @@ def matomete(ids, nani, group_name=""):
         except Exception:
             continue
     return n
+
+
+def _seiri_oboe():
+    try:
+        with open(SEIRI_OBOE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            return {"外した": data.get("外した", []), "組名": data.get("組名", [])}
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return {"外した": [], "組名": []}
+
+
+def _save_seiri_oboe(data):
+    os.makedirs(os.path.dirname(SEIRI_OBOE), exist_ok=True)
+    temp = SEIRI_OBOE + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+    os.replace(temp, SEIRI_OBOE)
+
+
+def _seiri_keywords(title):
+    """題から共通語候補を取る。漢字・カタカナ・英数字の語と、長い漢字語の2〜4字の部分（ひらがなの切れ端は組の名にしない）。"""
+    title = str(title or "").lower()
+    words = set(re.findall(r"[a-z0-9]{2,}|[一-龯々]{2,}|[ァ-ヶー]{2,}", title))
+    for word in tuple(words):
+        if re.fullmatch(r"[一-龯々]{3,}", word):
+            words.update(word[i:i+n] for n in range(2, min(4, len(word))+1)
+                         for i in range(len(word)-n+1))
+    stop = {"について", "ための", "したい", "ください", "お願い", "相談", "方法", "教えて", "メモ", "記録"}
+    return {word for word in words if word not in stop and not word.endswith(("について", "ください"))}
+
+
+def seiri_an():
+    """規則だけで整理案を作る。各案は会話1件単位で返す。"""
+    now = _now()
+    day = 86400
+    chats = [detail for c in listing(include_archived=True)
+             if not c.get("削除日時") and (detail := load(c["id"]))]
+    oboe = _seiri_oboe()
+    rejected = {(str(x.get("id")), str(x.get("区分"))) for x in oboe["外した"] if isinstance(x, dict)}
+    proposals = []
+    first_by_text = {}
+    for c in chats:
+        first = next((str(t.get("文", "")).strip() for t in c["やりとり"] if t.get("役") == "user" and str(t.get("文", "")).strip()), "")
+        if first:
+            first_by_text.setdefault(first, []).append(c)
+    trash_ids = set()
+    for copies in first_by_text.values():
+        if len(copies) > 1:
+            keep = max(copies, key=lambda c: (c.get("更新", 0), c.get("作った", 0)))
+            trash_ids.update(c["id"] for c in copies if c["id"] != keep["id"])
+    for c in chats:
+        reason = None
+        if c["id"] in trash_ids:
+            reason = "最初の発言が同じ会話が複数あるため（新しい会話は残します）"
+        elif c.get("題", "").startswith("試験: "):
+            reason = "題が「試験: 」で始まるため"
+        if reason and (c["id"], "ゴミ箱") not in rejected:
+            proposals.append({"id": c["id"], "区分": "ゴミ箱", "題": c["題"], "理由": reason})
+
+    eligible = [c for c in chats if c["id"] not in trash_ids and (c["id"], "ゴミ箱") not in rejected]
+    ungrouped = [c for c in eligible if not c.get("組")]
+    known_groups = [g["名"] for g in groups(include_archived=True) if g["名"]]
+    accepted_names = [str(name) for name in oboe["組名"] if str(name).strip()]
+    group_assignments = {}
+    for c in ungrouped:
+        title = c.get("題", "")
+        match = next((name for name in known_groups if name in title), None)
+        if match:
+            group_assignments[c["id"]] = (match, "題に既存の組名「%s」が含まれるため" % match)
+    remaining = [c for c in ungrouped if c["id"] not in group_assignments]
+    keyword_members = {}
+    for c in remaining:
+        for word in _seiri_keywords(c.get("題", "")):
+            keyword_members.setdefault(word, []).append(c)
+    viable = {word: members for word, members in keyword_members.items() if len(members) >= 2}
+    used = set(group_assignments)
+    # 本人が以前受け入れた組名は、その言葉に合う未分類会話へ優先して再利用する。
+    for name in accepted_names:
+        members = [c for c in remaining if c["id"] not in used and name.lower() in c.get("題", "").lower()]
+        if len(members) >= 2:
+            for c in members:
+                group_assignments[c["id"]] = (name, "以前受け入れた組名「%s」を再利用" % name)
+                used.add(c["id"])
+    for word, members in sorted(viable.items(), key=lambda kv: (-len(kv[1]), -len(kv[0]), kv[0])):
+        members = [c for c in members if c["id"] not in used]
+        if len(members) < 2:
+            continue
+        for c in members:
+            group_assignments[c["id"]] = (word, "題に共通する言葉「%s」があるため" % word)
+            used.add(c["id"])
+    for c in ungrouped:
+        if c["id"] in group_assignments and (c["id"], "組") not in rejected:
+            name, reason = group_assignments[c["id"]]
+            proposals.append({"id": c["id"], "区分": "組", "題": c["題"], "理由": reason, "組": name})
+    for c in eligible:
+        if c.get("組") or c["id"] in group_assignments or c.get("しまった"):
+            continue
+        short_old = len(c.get("やりとり", [])) <= 2 and now - c.get("更新", now) >= 7 * day
+        if (short_old or now - c.get("更新", now) >= 30 * day) and (c["id"], "しまう") not in rejected:
+            reason = ("発言が2件以下で、7日以上更新がないため（消さずにしまう）" if short_old
+                      else "組に入っておらず、30日以上更新がないため")
+            proposals.append({"id": c["id"], "区分": "しまう", "題": c["題"], "理由": reason})
+    return proposals
+
+
+def seiri_suru(items):
+    """画面が返した全案から未チェックを学習し、チェック済みだけを実行する。"""
+    current = {(x["id"], x["区分"]): x for x in seiri_an()}
+    oboe = _seiri_oboe()
+    rejected = {(str(x.get("id")), str(x.get("区分"))) for x in oboe["外した"] if isinstance(x, dict)}
+    accepted = set(map(str, oboe["組名"]))
+    done = 0
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = (str(item.get("id", "")), str(item.get("区分", "")))
+        proposal = current.get(key)
+        if not proposal:
+            continue
+        if not item.get("checked"):
+            rejected.add(key)
+            continue
+        try:
+            if key[1] == "ゴミ箱":
+                done += bool(remove(key[0]))
+            elif key[1] == "しまう":
+                done += bool(archive(key[0], True))
+            elif key[1] == "組":
+                name = _group(proposal.get("組", ""))
+                if name and set_group(key[0], name):
+                    done += 1
+                    accepted.add(name)
+        except (ValueError, sqlite3.Error):
+            continue
+    oboe["外した"] = [{"id": cid, "区分": category} for cid, category in sorted(rejected)]
+    oboe["組名"] = sorted(accepted)
+    _save_seiri_oboe(oboe)
+    return done
 
 
 def transcript(cid):

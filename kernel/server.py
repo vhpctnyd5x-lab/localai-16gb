@@ -1577,6 +1577,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/chat/rename":
             c = chats.rename(body.get("id"), body.get("題"))
             return self._json({"ok": bool(c)})
+        if path == "/chat/seiri/an":
+            return self._json({"案": chats.seiri_an()})
+        if path == "/chat/seiri/suru":
+            return self._json({"ok": True, "実行": chats.seiri_suru(body.get("案", []))})
         if path == "/chat/archive":
             c = chats.archive(body.get("id"), bool(body.get("on", True)))
             return self._json({"ok": bool(c)})

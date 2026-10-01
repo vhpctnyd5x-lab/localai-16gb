@@ -28,11 +28,13 @@ class ServerApiTests(unittest.TestCase):
         self.old_dir, self.old_db, self.old_examples, self.old_ready = (
             server.chats.DIR, server.chats.DB, server.chats.TITLE_EXAMPLES, server.chats._READY,
         )
+        self.old_seiri_oboe = server.chats.SEIRI_OBOE
         self.old_settings = server.CTX.get("設定")
         server.CTX["設定"] = {"モード": "試験", "会話の長さ": 8}
         server.chats.DIR = str(root / "legacy")
         server.chats.DB = str(root / "chats.sqlite3")
         server.chats.TITLE_EXAMPLES = str(root / "title_examples.json")
+        server.chats.SEIRI_OBOE = str(root / "seiri_oboe.json")
         server.chats._READY = False
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler)
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
@@ -46,6 +48,7 @@ class ServerApiTests(unittest.TestCase):
         server.chats.DIR, server.chats.DB, server.chats.TITLE_EXAMPLES, server.chats._READY = (
             self.old_dir, self.old_db, self.old_examples, self.old_ready,
         )
+        server.chats.SEIRI_OBOE = self.old_seiri_oboe
         server.CTX["設定"] = self.old_settings
         self.tmp.cleanup()
 
@@ -67,6 +70,59 @@ class ServerApiTests(unittest.TestCase):
         self.assertIsNone(server.chats.load(cid))
         self.assertTrue(self.post("/chat/restore", {"id": cid})["ok"])
         self.assertIsNotNone(server.chats.load(cid))
+
+    def test_seiri_suggests_three_kinds_learns_rejection_and_restores_trash(self):
+        now = time.time()
+
+        def conversation(title, messages=2, age_days=0):
+            chat = server.chats.create()
+            server.chats.rename(chat["id"], title)
+            for i in range(messages):
+                server.chats.add_turn(chat["id"], "user" if i % 2 == 0 else "bot", f"本文{i}-{title}")
+            with server.chats._db() as conn:
+                conn.execute("UPDATE conversations SET created=?, updated=? WHERE id=?",
+                             (now-age_days*86400, now-age_days*86400, chat["id"]))
+            return chat["id"]
+
+        old_trial = conversation("試験: 古い確認", age_days=40)
+        old_active = conversation("昔の議事録", messages=4, age_days=40)
+        left = conversation("京都旅行の予定", messages=4)
+        right = conversation("京都旅行の持ち物", messages=4)
+        suggested = self.post("/chat/seiri/an", {})["案"]
+        self.assertEqual({x["区分"] for x in suggested}, {"ゴミ箱", "しまう", "組"})
+        # しまう候補を外すと覚え、他のチェック済みだけ実行する。
+        items = [{**x, "checked": x["id"] != old_active} for x in suggested]
+        result = self.post("/chat/seiri/suru", {"案": items})
+        self.assertGreaterEqual(result["実行"], 3)
+        self.assertNotIn(old_active, {x["id"] for x in self.post("/chat/seiri/an", {})["案"]})
+        self.assertTrue(self.post("/chat/restore", {"id": old_trial})["ok"])
+
+    def test_seiri_duplicate_first_message_keeps_newest_and_group_name_is_reused(self):
+        first, second = server.chats.create(), server.chats.create()
+        for chat in (first, second):
+            server.chats.rename(chat["id"], "同じ相談")
+            server.chats.add_turn(chat["id"], "user", "同じ最初の発言")
+        with server.chats._db() as conn:
+            conn.execute("UPDATE conversations SET updated=? WHERE id=?", (time.time()-20, first["id"]))
+        ideas = self.post("/chat/seiri/an", {})["案"]
+        trash = [x for x in ideas if x["区分"] == "ゴミ箱"]
+        self.assertEqual([x["id"] for x in trash], [first["id"]])
+        server.chats.remove(first["id"])
+        self.assertTrue(self.post("/chat/restore", {"id": first["id"]})["ok"])
+
+        a, b = server.chats.create(), server.chats.create()
+        for chat, title in ((a, "星空写真の整理"), (b, "星空写真の共有")):
+            server.chats.rename(chat["id"], title)
+            server.chats.add_turn(chat["id"], "user", title)
+        group_ideas = [x for x in self.post("/chat/seiri/an", {})["案"] if x["区分"] == "組"]
+        selected_name = next(x["組"] for x in group_ideas if x["id"] == a["id"])
+        self.post("/chat/seiri/suru", {"案": [{**x, "checked": x["id"] == a["id"]} for x in group_ideas]})
+        c, d = server.chats.create(), server.chats.create()
+        for chat, title in ((c, f"{selected_name}の追加案"), (d, f"{selected_name}を共有")):
+            server.chats.rename(chat["id"], title)
+            server.chats.add_turn(chat["id"], "user", title)
+        reused = [x for x in self.post("/chat/seiri/an", {})["案"] if x["区分"] == "組" and x["id"] in {c["id"], d["id"]}]
+        self.assertEqual({x["組"] for x in reused}, {selected_name})
 
     def test_screen_only_new_chat_creates_no_database_row(self):
         empty = server.chats.create()
