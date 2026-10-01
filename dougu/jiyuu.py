@@ -782,7 +782,7 @@ def _knowledge_terms(text):
     return [word for word in dict.fromkeys(_KNOWLEDGE_SEP.split(str(text or "").strip())) if len(word) >= 2]
 
 
-def _knowledge(query, request=""):
+def _knowledge(query, request="", detail=False):
     """学んだ知識を探す。FTS5 の unicode61 は日本語を語に分けないので、語に分けて題・本文で点を付ける。
     10/1 dougu/chishiki_kouka.py（覚えた記事から作った25問）: 頭脳の検索語だけでは正しい記事が上位3件に 8/25。
     本人の頼みの語も使い、ありふれた語ほど軽く数える（IDF）と 24/25。"""
@@ -796,7 +796,7 @@ def _knowledge(query, request=""):
         with sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=2) as db:
             total = db.execute("SELECT count(*) FROM chishiki").fetchone()[0] or 1
             has_trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone()
-            candidates, weight = {}, {}
+            candidates, weight, counts = {}, {}, {}
             for term in terms:
                 if has_trigram and len(term) >= 3:
                     sql, params = "FROM chishiki_trigram WHERE chishiki_trigram MATCH ?", ('"' + term.replace('"', '""') + '"',)
@@ -806,6 +806,7 @@ def _knowledge(query, request=""):
                 if not count:
                     continue
                 weight[term] = math.log(total / count) + 0.1   # どの記事にも出る語も少しだけ数える
+                counts[term] = count
                 for rowid, title, body, source in db.execute("SELECT rowid,title,text,source " + sql + " LIMIT 200", params):
                     candidates[rowid] = (title, body, source)
             scored = []
@@ -814,7 +815,7 @@ def _knowledge(query, request=""):
                 if score > 0:
                     scored.append((score, rowid, title, body, source))
             scored.sort(key=lambda item: (-item[0], item[1]))
-            rows = [(title, body, source, rowid) for _, rowid, title, body, source in scored[:3]]
+            rows = [(title, body, source, score) for score, rowid, title, body, source in scored[:3]]
             related = {}
             try:
                 for _, rowid, title, _, _ in scored[:3]:
@@ -828,12 +829,28 @@ def _knowledge(query, request=""):
     except sqlite3.Error:
         return {"ok": True, "結果": "まだ学んでいません"}
     result = []
-    for title, body, source, _ in rows:
+    for title, body, source, score in rows:
         term = max((word for word in weight if word in body), key=weight.get, default="")   # いちばん珍しい語の前後
         at = body.find(term) if term else -1
         excerpt = body[max(0, at - 150):at + 150] if at >= 0 else body[:300]
         result.append({"題": title, "本文": excerpt, "出どころ": source, "関連": related.get(title, [])[:3]})
+        if detail:
+            result[-1].update({"点": round(score, 1), "珍しい語": sum(1 for word in weight if counts[word] <= 10 and (word in title or word in body))})
     return {"ok": True, "結果": result if result else "まだ学んでいません"}
+
+
+def _knowledge_hint(request):
+    """10/1: 頭脳が shiru を呼ばなくても、学んだ記事が頼みに強く合う時だけ、最初から記事の前後を添える。
+    dougu/chishiki_kouka.py の25問では、正しい記事を渡すと正答 6 → 22。線（点24以上・珍しい語2つ以上）は
+    覚えた記事の問い 19/25 が入り、道具の26問は場所・ファイル名を含む頼みを除けば 0 件。"""
+    if re.search(r"~/|/Users/|/Volumes/|\.[A-Za-z0-9]{1,5}\b", str(request or "")):
+        return ""
+    found = _knowledge("", request, detail=True)["結果"]
+    if not isinstance(found, list):
+        return ""
+    picked = [{"題": item["題"], "本文": item["本文"]} for item in found[:2]
+              if item.get("点", 0) >= 24 and item.get("珍しい語", 0) >= 2]
+    return ("\n学んだ記事（事前学習。参考で、頼みに合わなければ使わない）: " + json.dumps(picked, ensure_ascii=False)) if picked else ""
 
 
 def _network_available() -> bool:
@@ -1337,7 +1354,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     for row in (rireki or [])[-6:]:
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
-    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text})
+    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text)})
     gate._reset_session()
     context = _outbound()
     context.request = text

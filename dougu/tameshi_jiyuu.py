@@ -507,6 +507,16 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         tokyo = next(row for row in japanese if row["題"] == "東京の歴史")
         assert "東京では町の歴史" in tokyo["本文"] and len(tokyo["本文"]) <= 300
         assert "江戸" in tokyo["関連"]
+        # 10/1: 本人の頼みの語も使う（頭脳の検索語が外れても引ける）。強く合う時だけ最初から添え、場所・ファイル名の頼みには添えない。
+        assert any(row["題"] == "東京の歴史" for row in jiyuu._knowledge("昔", "東京の町の歴史が知りたい")["結果"])
+        strong = {"ok": True, "結果": [{"題": "東京の歴史", "本文": "東京では町の歴史", "点": 30, "珍しい語": 3}]}
+        with mock.patch.object(jiyuu, "_knowledge", return_value=strong):
+            assert "東京の歴史" in jiyuu._knowledge_hint("東京の町の歴史を教えて")
+            assert jiyuu._knowledge_hint("~/Documents/東京.txt を読んで") == ""
+            assert jiyuu._knowledge_hint("メモ.txt に東京の歴史を書いて") == ""
+        weak = {"ok": True, "結果": [{"題": "東京の歴史", "本文": "…", "点": 10, "珍しい語": 3}]}
+        with mock.patch.object(jiyuu, "_knowledge", return_value=weak):
+            assert jiyuu._knowledge_hint("東京の町の歴史を教えて") == ""
     checks += 1
 
     # AppleScriptの読み取り・送信・完全削除、ネット命令の案内。
