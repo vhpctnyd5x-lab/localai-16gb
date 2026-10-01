@@ -1611,6 +1611,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             c = chats.rename(body.get("id"), body.get("題"))
             return self._json({"ok": bool(c)})
         if path == "/chat/seiri/an":
+            # 10/2: Qwen3.6 が整理の案を考える。畳まれていたら起こす（起こせなければ規則の案だけになる）。
+            try:
+                moderu_youi(KYOUDOU_MODERU["kyoudou"])
+            except Exception:
+                pass
             return self._json({"案": chats.seiri_an()})
         if path == "/chat/seiri/suru":
             return self._json({"ok": True, "実行": chats.seiri_suru(body.get("案", []))})

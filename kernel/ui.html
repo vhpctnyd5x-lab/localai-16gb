@@ -1553,28 +1553,38 @@ document.getElementById("c-arch").onclick = () => { ARCH = !ARCH; TRASH = false;
 document.getElementById("c-trash").onclick = () => { TRASH = !TRASH; SEL = false; ERANDA.clear(); drawChats(); };
 document.getElementById("c-sel").onclick = () => { SEL = !SEL; TRASH = false; ERANDA.clear(); drawChats(); };
 document.getElementById("c-seiri").onclick = async () => {
-  const result = await api("/chat/seiri/an", {method:"POST", body:JSON.stringify({})});
-  if (result.error) return;
-  const proposals = result.案 || [];
   const labels = {"組":"組にまとめる", "しまう":"しまう", "ゴミ箱":"ゴミ箱へ（ゴミ箱から戻せます）"};
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:#0009;display:grid;place-items:center;padding:16px";
   overlay.innerHTML = `<section style="background:var(--panel);color:var(--fg);width:min(620px,95vw);max-height:85vh;overflow:auto;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 12px 50px #0008">
-    <h2 style="margin:0 0 8px">整理の案</h2><p style="margin:0 0 12px;color:var(--dim)">チェックを外した案は次回から出しません。ゴミ箱の会話は戻せます。</p>
-    ${proposals.length ? ["組", "しまう", "ゴミ箱"].map(kind => {
-      const rows = proposals.map((p,i)=>({...p,_i:i})).filter(p=>p.区分===kind);
-      return rows.length ? `<h3 style="margin:14px 0 5px">${labels[kind]}</h3>` + rows.map(p=>`<label style="display:flex;gap:9px;padding:8px 4px;border-top:1px solid var(--line);align-items:flex-start"><input type="checkbox" data-seiri="${p._i}" checked><span><b>${esc(p.題)}</b>${kind==="組"?` → ${esc(p.組)}`:""}<br><small style="color:var(--dim)">${esc(p.理由)}</small></span></label>`).join("") : "";
-    }).join("") : `<p>今は整理の案がありません。</p>`}
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn" data-cancel>やめる</button><button class="btn" data-apply ${proposals.length?"":"disabled"}>この通りにする</button></div></section>`;
+    <h2 style="margin:0 0 8px">整理の案</h2><p data-status style="margin:0 0 12px;color:var(--dim)">Qwen3.6 が整理の案を考えています…（1〜2分）</p>
+    <div data-proposals></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn" data-cancel>閉じる</button><button class="btn" data-apply disabled>この通りにする</button></div></section>`;
   document.body.appendChild(overlay);
-  const close = () => overlay.remove();
+  let closed = false;
+  const close = () => { closed = true; overlay.remove(); };
   overlay.querySelector("[data-cancel]").onclick = close;
   overlay.onclick = e => { if(e.target===overlay) close(); };
-  overlay.querySelector("[data-apply]").onclick = async () => {
-    const items = proposals.map((p,i)=>({...p, checked:!!overlay.querySelector(`[data-seiri="${i}"]`)?.checked}));
-    await api("/chat/seiri/suru", {method:"POST", body:JSON.stringify({案:items})});
-    close(); refresh();
-  };
+  try {
+    const result = await api("/chat/seiri/an", {method:"POST", body:JSON.stringify({})});
+    if (closed || !overlay.isConnected) return;
+    if (result.error) throw new Error("整理案の取得に失敗");
+    const proposals = result.案 || [];
+    overlay.querySelector("[data-status]").textContent = "チェックを外した案は次回から出しません。ゴミ箱の会話は戻せます。";
+    overlay.querySelector("[data-proposals]").innerHTML = proposals.length ? ["組", "しまう", "ゴミ箱"].map(kind => {
+      const rows = proposals.map((p,i)=>({...p,_i:i})).filter(p=>p.区分===kind);
+      return rows.length ? `<h3 style="margin:14px 0 5px">${labels[kind]}</h3>` + rows.map(p=>`<label style="display:flex;gap:9px;padding:8px 4px;border-top:1px solid var(--line);align-items:flex-start"><input type="checkbox" data-seiri="${p._i}" checked><span><b>${esc(p.題)}</b>${kind==="組"?` → ${esc(p.組)}`:""}<br><small style="color:var(--dim)">${esc(p.理由)} <span style="opacity:.65">${esc(p.出どころ || "規則")}</span></small></span></label>`).join("") : "";
+    }).join("") : `<p>今は整理の案がありません。</p>`;
+    const apply = overlay.querySelector("[data-apply]");
+    apply.disabled = !proposals.length;
+    apply.onclick = async () => {
+      const items = proposals.map((p,i)=>({...p, checked:!!overlay.querySelector(`[data-seiri="${i}"]`)?.checked}));
+      await api("/chat/seiri/suru", {method:"POST", body:JSON.stringify({案:items})});
+      close(); refresh();
+    };
+  } catch (error) {
+    if (!closed && overlay.isConnected) overlay.querySelector("[data-status]").textContent = "整理の案を取得できませんでした。閉じて、もう一度お試しください。";
+  }
 };
 document.getElementById("chat-menu").onclick=e=>{
   e.stopPropagation(); if(DD)return closeDrop();
