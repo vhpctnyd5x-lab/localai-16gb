@@ -1109,8 +1109,99 @@ def _shell_find_paths(args, result):
     return paths
 
 
-def _missing_hint(name, args, result, found=()):
-    """場所が無い時だけ、次に探す手を道具の返事へ添える。found はこの頼みで find が見つけた場所。"""
+def _safe_candidate(raw):
+    path = _home_resolve(raw)
+    return (path.exists() and not _secret_path(path)
+            and not gate._is_protected_path(str(path), mutation=True))
+
+
+def _shell_ls_paths(args, result):
+    """単独の ls だけを読む。名前表示と通常の長い表示以外の旗・展開は採らない。"""
+    parsed = _shell_parts(args.get("command", ""))
+    if not result.get("ok") or not parsed or len(parsed[0]) != 1:
+        return []
+    words = parsed[0][0]
+    if words[0] not in ("ls", "/bin/ls", "/usr/bin/ls"):
+        return []
+    flags, operands, options = "", [], True
+    for word in words[1:]:
+        if options and word == "--":
+            options = False
+        elif options and word.startswith("-"):
+            if not re.fullmatch(r"-[1aAlF]+", word):
+                return []
+            flags += word[1:]
+        else:
+            operands.append(word)
+    if len(operands) != 1 or re.search(r"[*?\[\]{}$`\n]", operands[0]):
+        return []
+    root = _home_resolve(operands[0])
+    if not root.is_dir() or not _safe_candidate(root):
+        return []
+    paths = []
+    for line in str(result.get("結果", "")).splitlines():
+        if "l" in flags:
+            fields = line.split(None, 8)
+            if len(fields) != 9 or not re.fullmatch(r"[bcdlps-][rwxStTs-]{9}[@+.]?", fields[0]):
+                continue
+            line = fields[8].split(" -> ", 1)[0] if fields[0][0] == "l" else fields[8]
+        if "F" in flags and line.endswith(("/", "*", "@", "=", "|")):
+            line = line[:-1]
+        if not line or line in (".", "..") or "/" in line or "\t" in line:
+            continue
+        path = root / line
+        if _safe_candidate(path):
+            paths.append(str(path))
+            if len(paths) >= 100:
+                break
+    return paths
+
+
+def _missing_candidates(raw, found=(), request=""):
+    """見つけた場所と、依頼に明記された実在フォルダの直下だけ。同じ実体は1件。"""
+    filename = Path(str(raw).rstrip("/")).name
+    if not filename:
+        return []
+    paths = list(found)
+    pattern = r'''"((?:~/|/)[^"\n]+)"|'((?:~/|/)[^'\n]+)'|((?:~/|/)[^\s"'「」『』、。，,;；:：!?！？()（）<>]+)'''
+    for match in re.finditer(pattern, request):
+        folder = _home_resolve(next(part for part in match.groups() if part))
+        if folder.is_dir() and _safe_candidate(folder):
+            paths.append(str(folder / filename))
+    known = {}
+    original = os.path.realpath(_home_resolve(raw))
+    for raw_path in paths:
+        path = _home_resolve(raw_path)
+        real = os.path.realpath(path)
+        if path.name == filename and real != original and _safe_candidate(path):
+            known.setdefault(real, str(path))
+    return list(known.values())
+
+
+def _missing_result(result):
+    return (not result.get("ok") and any(word in str(result.get("結果", ""))
+            for word in ("見つかりません", "存在しません", "場所がありません")))
+
+
+def _retry_read(args, result, found, request, session, settei=None):
+    """read だけ、唯一の候補を通常の門番・道具で1回読み直す。"""
+    if not _missing_result(result):
+        return result
+    candidates = _missing_candidates(args["path"], found, request)
+    if len(candidates) != 1:
+        return result
+    corrected = {**args, "path": candidates[0]}
+    risk = _risk("read", corrected)
+    if risk != "見る" or _request_guard("read", corrected, request, found, risk):
+        return result
+    retried = _run("read", corrected, risk, session, settei=settei)
+    retried["結果"] = (f"場所を直しました: {args['path']} → {corrected['path']}\n"
+                       + str(retried.get("結果", "")))
+    return retried
+
+
+def _missing_hint(name, args, result, found=(), request=""):
+    """場所が無い時だけ候補を名指しする。変更系は自動で直さない。"""
     if result.get("ok"):
         return result
     if name == "sh" and "No such file or directory" in str(result.get("結果", "")):
@@ -1120,20 +1211,18 @@ def _missing_hint(name, args, result, found=()):
             if _plain_path(src) and _plain_path(dst) and os.path.lexists(_home_resolve(src)) and not _home_resolve(dst).parent.is_dir():
                 result["次"] = f"移動先のフォルダがありません。先に mkdir -p {shlex.quote(str(_home_resolve(dst).parent))} を実行してください。"
         return result
-    if name not in ("read", "edit", "move", "trash", "find"):
+    if name not in ("read", "edit", "move", "trash", "find"):   # write は親のフォルダを作るので場所が無くならない
         return result
-    body = str(result.get("結果", ""))
-    if "見つかりません" not in body and "存在しません" not in body and "場所がありません" not in body:   # 最後は read（9/30 J16）
+    if not _missing_result(result):
         return result
     raw = args.get("src", args.get("path", args.get("dir", "")))
     if name == "trash":
         raw = args["paths"][0] if args["paths"] else ""
     filename = Path(str(raw).rstrip("/")).name
-    # 9/30 30B の J02: find で見つけた場所を写し間違えた（Downloads/ が抜けた）。見つけた場所をそのまま返す。
-    known = [p for p in found if Path(p).name == filename
-             and os.path.realpath(p) != os.path.realpath(_home_resolve(raw))]
+    known = _missing_candidates(raw, found, request)
     if known and name != "find":
-        result["次"] = f"前に見つかった場所は {known[-1]} です。この場所でもう一度{name}してください。"
+        result["次"] = (f"前に見つかった場所は {known[0]} です。この場所でもう一度{name}してください。" if len(known) == 1
+                       else f"同じ名前の候補は {'、'.join(known)} です。どれか確かめてから{name}してください。")
     elif filename and name != "find":
         result["次"] = f"場所を決めつけず、findのdirを~、globを**/{filename}として探し、見つかった場所を確認してください。"
     elif name == "find":
@@ -1213,7 +1302,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     used = 0
     seen: set[str] = set()
     read_seen: set[str] = set()    # 変更が成功したら再確認を許す。変更操作の重複は禁止のまま。
-    found: list[str] = []          # この頼みで find が見つけた場所（写し間違いの時に返す）
+    found: list[str] = []          # この頼みで find・read の一覧・sh の find/ls が見つけた場所
     timed_out: set[str] = set()    # 時間切れになった命令の頭の2語
     force = False
     sensei_used = False
@@ -1373,6 +1462,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                         if name == "sensei":
                             sensei_used = True
                         result = _run(name, args, risk, session, approved=(mode == "バイパス" or risk == "戻せない"), settei=settei)
+                        if name == "read":
+                            result = _retry_read(args, result, found, text, session, settei)
                         if result.get("ok") and name in ("read", "sh", "skill"):
                             context.read_contents.append(str(result.get("結果", "")))
                         if result.get("ok") and name == "web" and args.get("query"):
@@ -1383,13 +1474,14 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                                 found.extend(str(p) for p in result.get("場所", []))
                         elif name == "sh":
                             found.extend(_shell_find_paths(args, result))
+                            found.extend(_shell_ls_paths(args, result))
                         elif name == "read" and result.get("ok") and result.get("場所") and isinstance(result.get("名前"), list):
                             # 9/30 J16: 一覧で見た場所も覚え、書き間違えた時に返す（~/Documents/作業票/あ.txt → ~/Documents/あ.txt）
                             found.extend(str(Path(str(result["場所"])) / str(n).rstrip("/")) for n in result["名前"])
                         if name == "sh" and not result.get("ok") and "時間切れ" in str(result.get("結果", "")) and _command_key(args):
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
-                        result = _missing_hint(name, args, result, found)
+                        result = _missing_hint(name, args, result, found, text)
                         if rewrite_note and result.get("ok"):
                             result["次"] = rewrite_note
                     if result.get("ok"):

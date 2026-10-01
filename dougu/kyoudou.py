@@ -1546,7 +1546,10 @@ def _read_file(
             hidden_names.sort()
             counts = dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
             shown = names[:50]
-            result_text = f"フォルダ内の名前（全{len(names)}件）: " + ("、".join(shown) or "空です")
+            folders = counts.get("フォルダ", 0)
+            result_text = (f"フォルダ {folders}件・ファイル {len(names) - folders}件"
+                           f"（. で始まる隠し {len(hidden_names)}件は数えていない）\n"
+                           f"フォルダ内の名前（全{len(names)}件）: " + ("、".join(shown) or "空です"))
             if len(names) > len(shown):
                 result_text += f"（先頭{len(shown)}件を表示）"
             types_text = "、".join(f"{kind} {count}件" for kind, count in counts.items()) or "なし"
@@ -3723,6 +3726,7 @@ def _self_test() -> None:
         (folder / "sub").mkdir()
         listed = _read_file(str(folder), start="0", end="0")
         assert listed["ok"] and listed["件数"] == 5 and "a.jsonl" in listed["結果"]
+        assert listed["結果"].startswith("フォルダ 1件・ファイル 4件（. で始まる隠し 1件は数えていない）\n")
         assert "sub/" in listed["結果"]
         assert "._d.jsonl" not in listed["結果"].split("隠し", 1)[0]
         assert "._d.jsonl" in listed["結果"].split("隠し", 1)[1]

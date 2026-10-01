@@ -393,6 +393,8 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
                                {"ok": False, "結果": "mv: No such file or directory"})
     assert "mkdir -p" in hint["次"] and str(missing_dst.parent) in hint["次"]
     seen_path = str(home / "Downloads" / "old.tmp")
+    Path(seen_path).parent.mkdir(exist_ok=True)
+    Path(seen_path).write_text("old")
     hint = jiyuu._missing_hint("trash", {"paths": [str(home / "old.tmp")]}, {"ok": False, "結果": "見つかりません: x"}, [seen_path])
     assert seen_path in hint["次"]
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
@@ -956,6 +958,10 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert jiyuu._unfinished_plan("前の結果に基づき、3つ残っていると判断します。次に、コピー先のファイルを確認し、各ファイルの本文の件数を数えます。")
     assert not jiyuu._unfinished_plan("3つのファイルをコピーし、一覧.csv を作りました。")
     assert not jiyuu._unfinished_plan("完了しました。次に何かあれば言ってください。")
+    tickets = home / "Documents" / "作業票"
+    tickets.mkdir(parents=True)
+    ticket = tickets / "あ.txt"
+    ticket.write_text("状態: 完了\n内容: 梱包\n")
     hint = jiyuu._missing_hint("read", {"path": "~/Documents/あ.txt"}, {"ok": False, "結果": "場所がありません: /x/あ.txt"},
                                [str(home / "Documents" / "作業票" / "あ.txt")])
     assert "作業票/あ.txt" in hint["次"]
@@ -969,6 +975,121 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         with mock.patch.object(jiyuu, "_run", return_value={"ok": True, "結果": "正午"}):
             assert jiyuu.kotaeru("試験") == "正午でした。"
     assert "予定は書かずに" in sent[-1]
+    checks += 1
+    # J16: 素直な ls の出力だけを候補にする。長い表示・空白名・旗付きも確認。
+    spaced = tickets / "空 白.txt"
+    spaced.write_text("空白名")
+    for command, output in (("ls ~/Documents/作業票", "あ.txt\n空 白.txt\n"),
+                            ("/bin/ls -1aF -- ~/Documents/作業票", ".\n..\nあ.txt\n空 白.txt\n"),
+                            ("ls -la ~/Documents/作業票", "total 8\n-rw-r--r-- 1 user staff 10 Oct 1 12:00 あ.txt\n")):
+        paths = jiyuu._shell_ls_paths({"command": command}, {"ok": True, "結果": output})
+        assert str(ticket) in paths
+        assert all(Path(p).parent == tickets for p in paths)
+    for command in ("ls", "ls -R ~/Documents/作業票", "ls -d ~/Documents/作業票",
+                    "ls ~/Documents/作業票 ~/Desktop", "ls ~/Documents/*", "ls 'broken",
+                    "ls ~/Documents/作業票 | cat", "ls ~/Documents/作業票; echo x",
+                    "ls $(echo ~/Documents/作業票)", "ls ~/Documents/作業票 > /tmp/x"):
+        assert not jiyuu._shell_ls_paths({"command": command}, {"ok": True, "結果": "あ.txt"})
+    assert not jiyuu._shell_ls_paths({"command": "ls ~/Documents/作業票"}, {"ok": False, "結果": "あ.txt"})
+    checks += 1
+
+    missing = {"ok": False, "結果": "場所がありません"}
+    wrong = {"path": "~/Documents/あ.txt", "start": "1", "end": "1"}
+    request = "~/Documents/作業票 のtxtを読んで"
+    fixed = jiyuu._retry_read(wrong, dict(missing), [], request, "test")
+    assert fixed["ok"] and "状態: 完了" in fixed["結果"]
+    assert f"場所を直しました: ~/Documents/あ.txt → {ticket}" in fixed["結果"]
+    assert wrong["path"] == "~/Documents/あ.txt"
+    # found と依頼から同じ実体が重なっても1件。start/end は保持する。
+    with mock.patch.object(jiyuu, "_run", return_value={"ok": True, "結果": "本文"}) as run:
+        fixed = jiyuu._retry_read(wrong, dict(missing), [str(ticket), str(ticket)], request, "test")
+        assert fixed["ok"] and run.call_count == 1
+        assert run.call_args.args[1] == {**wrong, "path": str(ticket)}
+    checks += 1
+
+    # 輪を通して ls の記憶から自動再読。依頼文に場所が無い場合も found が効く。
+    replies = iter([{"content": "", "tool_calls": [call("sh", command="ls ~/Documents/作業票")]},
+                    {"content": "", "tool_calls": [call("read", path="~/Documents/あ.txt")]},
+                    {"content": "完了です。"}])
+    tool_results = []
+    def capture_retry(messages, *a, **k):
+        if messages[-1]["role"] == "tool":
+            tool_results.append(json.loads(messages[-1]["content"]))
+        return next(replies)
+    with mock.patch.object(jiyuu, "_ask", side_effect=capture_retry), \
+         mock.patch.object(jiyuu, "_job", return_value={"ok": True, "結果": "あ.txt\n"}):
+        assert jiyuu.kotaeru("作業票を読んで", mode="読むだけ") == "完了です。"
+    assert tool_results[-1]["ok"] and "場所を直しました" in tool_results[-1]["結果"]
+    checks += 1
+
+    other = home / "Documents" / "別票"
+    other.mkdir()
+    (other / "あ.txt").write_text("別の本文")
+    nested_ticket = tickets / "奥" / "奥.txt"
+    nested_ticket.parent.mkdir()
+    nested_ticket.write_text("奥の本文")
+    with mock.patch.object(jiyuu, "_run") as run:
+        for paths, text in (([], "~/Documents/作業票 と ~/Documents/別票 を読んで"),
+                            ([str(ticket), str(other / "あ.txt")], ""), ([], "場所不明")):
+            assert jiyuu._retry_read(wrong, dict(missing), paths, text, "test") == missing
+        assert jiyuu._retry_read({"path": "~/奥.txt"}, dict(missing), [], request, "test") == missing
+        assert jiyuu._retry_read(wrong, {"ok": False, "結果": "読取を拒否"}, [str(ticket)], request, "test")["結果"] == "読取を拒否"
+        run.assert_not_called()
+    quoted = home / "Documents" / "空 白票"
+    quoted.mkdir()
+    (quoted / "あ.txt").write_text("空白")
+    assert jiyuu._missing_candidates(wrong["path"], [], f'"{quoted}" を読んで') == [str(quoted / "あ.txt")]
+    checks += 1
+
+    # 秘密・守りの場所、その場所へのリンクは候補にも助言にも使わない。
+    secret = home / ".ssh"
+    secret.mkdir(exist_ok=True)
+    (secret / "あ.txt").write_text("試験用")
+    protected = home / "守り"
+    protected.mkdir()
+    (protected / "あ.txt").write_text("試験用")
+    (tickets / "秘密.txt").symlink_to(secret / "あ.txt")
+    (tickets / "守り.txt").symlink_to(protected / "あ.txt")
+    with mock.patch.object(jiyuu.gate, "_protected_roots", return_value=[str(protected.resolve())]), \
+         mock.patch.object(jiyuu, "_run") as run:
+        assert not jiyuu._missing_candidates(wrong["path"], [str(secret / "あ.txt"), str(protected / "あ.txt")], f"{secret} と {protected}")
+        assert not jiyuu._shell_ls_paths({"command": "ls ~/Documents/作業票"}, {"ok": True, "結果": "秘密.txt\n守り.txt"})
+        assert jiyuu._retry_read(wrong, dict(missing), [], f"{secret} と {protected}", "test") == missing
+        run.assert_not_called()
+    with mock.patch.object(jiyuu, "_risk", return_value="禁止"), mock.patch.object(jiyuu, "_run") as run:
+        assert jiyuu._retry_read(wrong, dict(missing), [str(ticket)], request, "test") == missing
+        run.assert_not_called()
+    with mock.patch.object(jiyuu, "_request_guard", return_value="止める"), mock.patch.object(jiyuu, "_run") as run:
+        assert jiyuu._retry_read(wrong, dict(missing), [str(ticket)], request, "test") == missing
+        run.assert_not_called()
+    checks += 1
+
+    # 変更系は依頼フォルダから名指しするだけ。候補が複数なら両方を提示する。
+    for name, args in (("move", {"src": wrong["path"], "dst": "~/Desktop/あ.txt"}),
+                       ("trash", {"paths": [wrong["path"]]}),
+                       ("edit", {**wrong, "old": "状態", "new": "状況"})):   # write は親のフォルダを作るので外す
+        original_args = dict(args)
+        hint = jiyuu._missing_hint(name, args, dict(missing), [], request)
+        assert not hint["ok"] and str(ticket) in hint["次"] and args == original_args
+    hint = jiyuu._missing_hint("edit", wrong, dict(missing), [], "~/Documents/作業票 と ~/Documents/別票")
+    assert str(ticket) in hint["次"] and str(other / "あ.txt") in hint["次"]
+    assert ticket.read_text().startswith("状態: 完了")
+    checks += 1
+
+    # 本番の数え間違い: フォルダ3つ + .DS_Store はフォルダ3、ファイル0。
+    desktop = home / "数え用Desktop"
+    desktop.mkdir()
+    for name in ("甲", "乙", "丙"):
+        (desktop / name).mkdir()
+    (desktop / ".DS_Store").write_text("試験用")
+    listed = jiyuu.gate._read_file(str(desktop))
+    assert listed["結果"].startswith("フォルダ 3件・ファイル 0件（. で始まる隠し 1件は数えていない）\n")
+    assert listed["件数"] == 3 and listed["種類別"] == {"フォルダ": 3} and listed["隠し"] == 1
+    assert listed["名前"] == ["丙/", "乙/", "甲/"]
+    empty = desktop / "甲"
+    assert jiyuu.gate._read_file(str(empty))["結果"].startswith("フォルダ 0件・ファイル 0件（. で始まる隠し 0件は数えていない）")
+    (desktop / "見える.txt").write_text("本文")
+    assert jiyuu.gate._read_file(str(desktop))["結果"].startswith("フォルダ 3件・ファイル 1件（. で始まる隠し 1件は数えていない）")
     checks += 1
     # 9/30 Claude: あいまい判定は文を書く時に止めない。紛らわしい候補と別の名前のファイルは書ける（J19 の 索引.csv）。
 assert jiyuu._request_guard("write", {"path": "/tmp/koukai-x/メモ.txt", "content": "x"}, "適当に名前をつけて保存して", [], "戻せる") == ""
