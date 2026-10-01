@@ -2399,8 +2399,6 @@ async function refresh(){
           }
         }catch(e){if(!keep) keep = "kyoudou:";}
         let h = '<optgroup label="手元"><option value="kyoudou:">カーネル＋Qwen3.6（おすすめ）</option>'
-          + '<option value="kyoudou:30b">カーネル＋Qwen3-30B（書くのが速い）</option>'
-          + '<option value="kyoudou:mimo9">カーネル＋MiMo 9B（軽い）</option>'
           + '<option value="">カーネル（前の仕組み）</option></optgroup>';
         if (te.length){
           h += '<optgroup label="手元のモデルに じかに（外に出ません）">'
@@ -2621,9 +2619,7 @@ setteiSheet = setteiSheetNew;
 const MODEL_INFO={
   "":{name:"カーネル（前の仕組み）",desc:"すぐ答える近道・辞書・ページ作り。外の先生にも相談"},
   "kyoudou:":{name:"カーネル＋Qwen3.6（おすすめ）",desc:"パソコン操作・ファイル整理・調べ物。一手ずつ動いて確かめる。知識の試験 94%・道具の11問 全問正解"},
-  "kyoudou:30b":{name:"カーネル＋Qwen3-30B（書くのが速い）",desc:"前のおすすめ。書く速さは Qwen3.6 の1.7倍、知識の試験は 82〜85%"},
   "kyoudou:q36":{name:"カーネル＋Qwen3.6（新しい・賢い）",desc:"2026年4月の新しい専門家型。道具の11問は全問正解。読む速さは 30B と同じくらい、書く速さは6割"},
-  "kyoudou:mimo9":{name:"カーネル＋MiMo 9B（軽い）",desc:"MiMo-V2.6 の蒸留版。メモリは半分。道具の試験は 30B より弱い"},
   "groq:openai/gpt-oss-120b":{name:"Groq 120B",desc:"外のモデルと話す。ネットが必要"},
   "groq:openai/gpt-oss-20b":{name:"Groq 20B",desc:"外の軽いモデルと話す。ネットが必要"},
   fast:{name:"NVIDIA fast",desc:"Nemotron Lightning 30B。9/28 は 17 秒で応答"},

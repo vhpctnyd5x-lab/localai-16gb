@@ -280,12 +280,6 @@ _KOUKAI_JIKKEN = os.path.expanduser("~/LocalAI_mirror/koukai/dougu/jikken")
 # 30B も語彙を 99.99% に削る（dougu/hayasa.py: 書く 13.9→15.4・読む 19.0→22.6 t/s、11問 11/11）。
 MODERU["local:main"].update({"llama": _KOUKAI_LSRV,
                              "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_ids.txt")}})
-MODERU["local:mimo9"] = {
-    "名": "手元 MiMo-V2.6 蒸留 9B（5.4GB）",
-    "file": os.path.join(_MODELS, "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"),
-    "opts": MODERU["local:main"]["opts"].copy(),
-    "輪の選び方": {"raw_template": True},
-}
 # 2026-09-30: 道具の11問 11/11（30B 10/11・MiMo 9/11・Ornith-1.5 8/11）。Qwen3.5 系なので呼び出しは XML（raw_template）。
 MODERU["local:q36"] = {
     "名": "手元 Qwen3.6-35B-A3B（11.7GB）",
@@ -303,12 +297,13 @@ MODERU["local:q36"] = {
 #   大きな読み直しが 15 → 37 回、26問は 3,709 → 4,315 秒と遅くなった。Qwen3.6 も -ub 256 のまま。
 # 9/30 手元のおすすめ（local:main）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。
 #   先生役・事前学習・温め役・協働の輪が同じ頭脳を使うので、頼みのたびの入れ替えが起きない（30B を名指しすると毎回入れ替わった）。
-#   30B は local:30b（画面では kyoudou:30b）。
-_b30, _q36 = MODERU.pop("local:main"), MODERU.pop("local:q36")
-_b30["名"] = "手元 Qwen3-30B-A3B（10.5GB・書くのが速い）"
-MODERU = {"local:main": _q36, "local:30b": _b30, **MODERU}
+# 10/1 本人:「Qwen3.6 で全部できる。30B と MiMo は置いておくのが負担」→ 選択肢から外し、ファイルはゴミ箱へ。
+#   前の設定で kyoudou:30b・kyoudou:mimo9 を選んでいても Qwen3.6 で動く。
+MODERU.pop("local:main")
+_q36 = MODERU.pop("local:q36")
+MODERU = {"local:main": _q36, **MODERU}
 # 協働の輪の michi → 頭脳
-KYOUDOU_MODERU = {"kyoudou": "local:main", "kyoudou:30b": "local:30b", "kyoudou:mimo9": "local:mimo9",
+KYOUDOU_MODERU = {"kyoudou": "local:main", "kyoudou:30b": "local:main", "kyoudou:mimo9": "local:main",
                   "kyoudou:q36": "local:main"}
 
 # いま載っているもの。プロセスを立てたのが誰かも覚える

@@ -36,7 +36,7 @@ SUP = HOME / "Library" / "Application Support" / "kernel-ai"
 KOUKAI = Path(__file__).resolve().parent.parent
 KERNEL = HOME / "LocalAI_mirror" / "kernel"
 LLAMA = HOME / "LocalAI_mirror" / "llama-latest" / "build" / "bin" / "llama-server"
-MODEL_30B = HOME / "LocalAI_mirror" / "models" / "Qwen3-30B-A3B-Q2_K.gguf"
+MODEL_MAIN = HOME / "LocalAI_mirror" / "models" / "Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf"   # 10/1: 30B は片付けた
 KEKKA = KOUKAI / "dougu" / "kekka"
 # koukai の写しの場所 → 本番の名前（dougu が正のもの）
 DOUGU_TO_KERNEL = {"jiyuu.py", "kyoudou.py", "hako.py"}
@@ -193,7 +193,7 @@ def j(args):
         time.sleep(1)
     out_dir = KEKKA / "kyoudou_0928"
     out_dir.mkdir(parents=True, exist_ok=True)
-    model = Path(args.model).expanduser() if args.model else MODEL_30B
+    model = Path(args.model).expanduser() if args.model else MODEL_MAIN
     log = open(out_dir / f"{args.out}_llama.log", "wb")
     # 例: --args "KOUKAI_EXPERT_P=0.70 --spec-type none"（頭の KOUKAI_…=値 は環境。先読みを変える時は既定の ngram を外す）
     extra, env = split_env(args.args)
