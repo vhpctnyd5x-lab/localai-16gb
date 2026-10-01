@@ -187,6 +187,9 @@ def _unfinished_plan(text: str) -> bool:
             and not re.search(r"(?:あり|い|でき|なり|わかり|分かり|ござい)ます[。.]?$", sentences[-1]))
 
 
+# 10/2: 台帳は既定で切る（KERNEL_LEDGER=1 の時だけ）。41問で、J14「A の3つの txt を B にコピー」をフォルダごとと読み違え、
+#   J19「新しい写しは X にして」を読めず、上書きしてはいけない前回分を「原本と同じであるべき」と促して壊した。
+#   条件を正しく読めた時だけ効く仕組みなので、読み違えが無くなるまで本番では使わない。
 def _ledger_extract(request: str) -> list[dict]:
     """明示されたコピー・CSV見出し・保持条件だけを規則で抽出する。"""
     conditions = []
@@ -1591,7 +1594,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
     messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text) + _memory_hint(text)})
-    ledger = _ledger_extract(text)
+    ledger = _ledger_extract(text) if os.environ.get("KERNEL_LEDGER") == "1" else []   # 10/2: 既定は切（下の説明）
     ledger_snapshots = _ledger_start(ledger)
     ledger_nudged = False
     gate._reset_session()
