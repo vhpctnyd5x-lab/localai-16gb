@@ -179,7 +179,10 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
              "先生に聞いた: mock", "振り返り: 例 → 技を提案: 例", "覚え書き: 1件"]
     log.write_text("".join(json.dumps({"時刻": now, "文": item}, ensure_ascii=False) + "\n" for item in kinds), encoding="utf-8")
     daily = gakushuu.overview(cfg)["今日の数"]
-    check(list(daily.values()) == [1, 1, 2, 1, 1, 1], "今日の活動6種を集計")
+    check(daily["読んだ記事"] == 1 and daily["本文を取り直した記事"] == 1
+          and daily["振り返り"] == 2 and daily["先生に聞いた"] == 1
+          and daily["技の提案"] == 1 and daily["覚え書き"] == 1
+          and daily["活用カード"] == 0, "今日の活動数")
     lock_path = gakushuu.folder() / "worker.lock"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -279,7 +282,8 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         return {"答え": "順に確かめて直す。", "error": None}
     cfg["事前学習"]["振り返りで外の先生に聞く"] = True
     cfg["先生"] = ["local:main", "groq:openai/gpt-oss-120b"]
-    with mock.patch.object(gakushuu, "_local_reflect", return_value=("秘密 /tmp/private.txt を読む", False)):
+    with mock.patch.object(gakushuu, "_local_reflect", return_value=("秘密 /tmp/private.txt を読む", False)), \
+         mock.patch.object(gakushuu, "_local_memories", return_value=[]):
         check(gakushuu.reflect_once(cfg, ask=teacher, network=True), "先生がQwen3.6の提案を直す")
     check("[ファイル]" in sent[0][0] and "/tmp/private.txt" not in sent[0][0]
           and "Qwen3.6の提案:" in sent[0][0] and "read_file" in sent[0][0]
@@ -327,6 +331,103 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     check("record-3" in gakushuu._state().get("見た記録", [])
           and len([s for s in gakushuu.skills() if s["made_by"] == "カーネル"]) == 2,
           "重複した記録は処理済みにする")
+
+    # 活用カード: 材料の順位、根拠の足切り、JSON囲み、上限、不要の抑止、匿名化、busy を全て偽物で確認。
+    failed = {"題": "ファイルを保存する", "文": "保存でつまずいた", "道具": ["write_file"],
+              "成否": "失敗", "識別": "card-failed"}
+    slow = {"題": "ファイルを一覧する", "文": "時間がかかった", "道具": ["list_files"],
+            "成否": "遅い", "識別": "card-slow"}
+    gakushuu._records = lambda: [slow, failed]
+    card_obj = {"題": "保存前の確認", "目的": "誤保存を減らす", "適用条件": "保存先が曖昧な時",
+                "根拠": [{"記事": "ファイルシステム", "事実": "ファイルは名前と保存場所を持つ。", "考え": "場所を先に確かめる。"}],
+                "手順": ["保存先を確認する", "名前を見直す", "保存した場所を開く"],
+                "確かめ方": "保存先に名前があるか見る", "まだ分からない点": "上書き時の動作"}
+    model_calls = []
+    def fake_card_model(record, evidence):
+        model_calls.append((record, evidence))
+        return "<think>除去する</think>```json\n" + json.dumps(card_obj, ensure_ascii=False) + "\n```", False
+    cfg["事前学習"]["振り返りで外の先生に聞く"] = False
+    evidence = [{"記事": "ファイルシステム", "一文": "ファイルは名前と保存場所を持つ。"},
+                {"記事": "ディレクトリ", "一文": "ディレクトリはファイルを分類する。"}]
+    check(not gakushuu.make_teian_once(cfg, local=fake_card_model, search=lambda request, terms: []),
+          "関連根拠が無い時はカードを作らない")
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)  # 足切りは試行間隔を消費しない運用を保証
+    check(gakushuu.make_teian_once(cfg, local=fake_card_model,
+                                   search=lambda request, terms: evidence), "関連知識からカード作成")
+    check(model_calls[0][0]["識別"] == "card-failed", "つまずいた用件を遅い用件より先に選ぶ")
+    stored = gakushuu.teian_list()[0]
+    check(stored["中身"]["題"] == card_obj["題"] and stored["根拠の記事"] == "ファイルシステム",
+          "think と JSON 囲みを除いてカード保存")
+    gakushuu._records = lambda: [failed]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(not gakushuu.make_teian_once(cfg, local=lambda *_: ("{}", False),
+                                       search=lambda request, terms: evidence), "作成済み用件は再提示しない")
+    gakushuu.teian_action({"id": stored["id"], "状態": "試す"})
+    favored = {"題": failed["題"], "文": "同じ型", "道具": ["write_file"], "成否": "失敗", "識別": "card-favored"}
+    other = {"題": "別の題", "文": "別件", "道具": ["write_file"], "成否": "失敗", "識別": "card-other"}
+    gakushuu._records = lambda: [other, favored]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    selected_requests = []
+    check(not gakushuu.make_teian_once(cfg, local=lambda *_: ("{}", False),
+        search=lambda request, terms: (selected_requests.append(request),
+            [{"記事": "新しい記事", "一文": "保存先を確認する。"}] if request == failed["題"] else [])[1]),
+          "試すの優先候補を調べる")
+    check(selected_requests == [failed["題"]], "試すが多い用件の型を少し優先")
+    gakushuu._records = lambda: [failed]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(gakushuu.teian_action({"id": stored["id"], "状態": "不要", "不要の理由": "もうできる"})["ok"],
+          "不要と理由を保存")
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(not gakushuu.make_teian_once(cfg, local=fake_card_model,
+                                       search=lambda request, terms: evidence), "不要な用件を再提示しない")
+    gakushuu._records = lambda: [dict(failed, 識別="same-request-new-record")]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(not gakushuu.make_teian_once(cfg, local=fake_card_model,
+                                       search=lambda request, terms: evidence), "不要にした用件・記事の組を再提示しない")
+
+    card_obj["目的"] = "秘密の名前さんの保存説明"
+    teacher_record = {"題": "秘密の名前さんの保存手順", "文": "保存先に迷った", "道具": ["write_file"],
+                      "成否": "失敗", "識別": "teacher-card"}
+    gakushuu._records = lambda: [teacher_record]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    teacher_cfg = {**cfg, "先生": ["groq:先生"], "先生を使う": True,
+                   "事前学習": {**cfg["事前学習"], "振り返りで外の先生に聞く": True}}
+    teacher_questions = []
+    def fake_teacher(question, teacher_settings, timeout=None):
+        teacher_questions.append((question, teacher_settings))
+        return {"答え": "根拠に合っています。危険な操作はありません。"}
+    check(gakushuu.make_teian_once(teacher_cfg, local=fake_card_model,
+                                   search=lambda request, terms: evidence, ask=fake_teacher), "先生確認付きカード")
+    question, teacher_settings = teacher_questions[0]
+    check("対象A" in question and "秘密の名前さん" not in question and teacher_settings["先生の深さ"] == "high",
+          "先生への文は仮名・high")
+    check("先生の確かめ" in gakushuu.teian_list()[0]["中身"], "先生の確認をカードへ保存")
+    teian_payloads = []
+    def interrupted_card_http(req, timeout=None):
+        payload = json.loads(req.data)
+        teian_payloads.append(payload)
+        return FakeHTTP('data: {"choices":[{"delta":{"content":"途中"}}]}\n'.encode(), interrupt=True)
+    with mock.patch.object(gakushuu.urllib.request, "urlopen", side_effect=interrupted_card_http):
+        answer, stopped = gakushuu._local_teian(teacher_record, evidence)
+    check(stopped and answer is None and (gakushuu.folder() / "busy").exists(), "生成中に busy なら直ちに破棄")
+    check(teian_payloads[0]["stream"] and teian_payloads[0]["max_tokens"] == 600
+          and teian_payloads[0]["chat_template_kwargs"]["enable_thinking"] is False,
+          "活用カードは600トークン・思考なし")
+    (gakushuu.folder() / "busy").unlink(missing_ok=True)
+    (gakushuu.folder() / "busy").touch()
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(not gakushuu.make_teian_once(cfg, local=lambda *_: (_ for _ in ()).throw(AssertionError("busy中に呼ばれた")),
+                                       search=lambda *_: evidence), "busy ならモデルを呼ばず停止")
+    (gakushuu.folder() / "busy").unlink(missing_ok=True)
+    gakushuu._records = lambda: [dict(teacher_record, 題="別の保存手順", 識別="card-third")]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(gakushuu.make_teian_once(cfg, local=fake_card_model, search=lambda *_: evidence), "3枚目まで作成")
+    with gakushuu._teian_db() as db:
+        db.execute("INSERT INTO teian(題,中身,根拠の記事,用件の識別,状態,作った日時) VALUES(?,?,?,?,?,?)",
+                   ("4枚目", json.dumps(card_obj), "記事", "fourth", "提案中", gakushuu.time.strftime("%Y-%m-%d %H:%M:%S")))
+    gakushuu._records = lambda: [dict(teacher_record, 識別="card-fourth")]
+    (gakushuu.folder() / "state.json").unlink(missing_ok=True)
+    check(not gakushuu.make_teian_once(cfg, local=fake_card_model, search=lambda *_: evidence), "1日3枚の上限")
 
     spec = importlib.util.spec_from_file_location("kernel_server_test", ROOT / "kernel" / "server.py")
     server = importlib.util.module_from_spec(spec)
@@ -425,6 +526,12 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         check(code == 200 and (base / "trash" / "私の技.md").exists(), "ゴミ箱")
         code, result = request("/gakushuu")
         check(code == 200 and result["数"]["記事"] == 3, "事前学習 GET")
+        code, result = request("/gakushuu/teian")
+        check(code == 200 and len(result["提案"]) >= 2, "活用カード GET")
+        proposal_id = result["提案"][0]["id"]
+        code, result = request("/gakushuu/teian", {"id": proposal_id, "状態": "後で"})
+        check(code == 200 and next(x for x in result["提案"] if x["id"] == proposal_id)["状態"] == "後で",
+              "活用カード POST")
         # 9/30: 実機のモデル状態に左右されないよう、「何も載っていない」ことにする。
         with mock.patch.object(server, "_temoto_okosu", return_value="すでに動いています") as wake, \
              mock.patch.object(server, "_gakushuu_process"), \

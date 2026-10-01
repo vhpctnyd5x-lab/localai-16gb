@@ -667,6 +667,262 @@ def _safe_for_teacher(value):
     return gate._scrub(value)
 
 
+def _teian_db():
+    db = _db()
+    db.execute("""CREATE TABLE IF NOT EXISTS teian (
+        id INTEGER PRIMARY KEY, 題 TEXT NOT NULL, 中身 TEXT NOT NULL,
+        根拠の記事 TEXT NOT NULL, 用件の識別 TEXT NOT NULL, 用件の題 TEXT NOT NULL DEFAULT '', 状態 TEXT NOT NULL DEFAULT '提案中',
+        不要の理由 TEXT NOT NULL DEFAULT '', 作った日時 TEXT NOT NULL, 選んだ日時 TEXT NOT NULL DEFAULT ''
+    )""")
+    columns = {r[1] for r in db.execute("PRAGMA table_info(teian)")}
+    if "用件の題" not in columns:
+        db.execute("ALTER TABLE teian ADD COLUMN 用件の題 TEXT NOT NULL DEFAULT ''")
+    db.execute("CREATE INDEX IF NOT EXISTS teian_day ON teian(作った日時)")
+    return db
+
+
+def teian_list():
+    with _teian_db() as db:
+        rows = db.execute("SELECT id,題,中身,根拠の記事,状態,不要の理由,作った日時,選んだ日時 FROM teian ORDER BY id DESC LIMIT 30").fetchall()
+    result = []
+    for ident, title, content, article, status, reason, made, chosen in rows:
+        try:
+            content = json.loads(content)
+        except ValueError:
+            continue
+        result.append({"id": ident, "題": title, "中身": content, "根拠の記事": article,
+                       "状態": status, "不要の理由": reason, "作った日時": made, "選んだ日時": chosen})
+    return result
+
+
+def teian_action(body):
+    ident, status, reason = body.get("id"), body.get("状態"), body.get("不要の理由", "")
+    if isinstance(ident, bool) or not isinstance(ident, int) or status not in ("試す", "後で", "不要"):
+        raise ValueError("活用カードの選択が違います")
+    if status == "不要" and reason not in ("用件に合わない", "もうできる", "手順が違う"):
+        raise ValueError("不要の理由を選んでください")
+    if status != "不要":
+        reason = ""
+    with _teian_db() as db:
+        cur = db.execute("UPDATE teian SET 状態=?,不要の理由=?,選んだ日時=? WHERE id=?",
+                         (status, reason, time.strftime("%Y-%m-%d %H:%M:%S"), ident))
+        if not cur.rowcount:
+            raise ValueError("活用カードが見つかりません")
+    return {"ok": True, "提案": teian_list()}
+
+
+def _teian_terms(text):
+    words = re.findall(r"[一-龥ぁ-んァ-ヶーA-Za-z0-9]{2,}", str(text or ""))
+    terms = list(dict.fromkeys(words))
+    for word in words:
+        if len(word) > 3:
+            terms.extend(word[i:i + 2] for i in range(len(word) - 1))
+    return list(dict.fromkeys(terms))[:30]
+
+
+def _teian_evidence(request, *, search=None):
+    """依頼の語をIDFで順位付けし、上位記事と枝の隣2本までの根拠を返す。"""
+    terms = _teian_terms(request)
+    if search is not None:
+        return search(request, terms)
+    scored = {}
+    try:
+        with _db() as db:
+            total = db.execute("SELECT count(*) FROM chishiki").fetchone()[0] or 1
+            for term in terms:
+                rows = db.execute("SELECT rowid,title,text FROM chishiki WHERE title LIKE ? OR text LIKE ? LIMIT 100",
+                                  (f"%{term}%", f"%{term}%")).fetchall()
+                if not rows:
+                    continue
+                weight = 0.1 + __import__("math").log(total / len(rows))
+                for rowid, title, text in rows:
+                    old = scored.get(rowid, (0, title, text))
+                    scored[rowid] = (old[0] + weight * (3 * title.count(term) + text.count(term)), title, text)
+            ranked = sorted(scored.values(), reverse=True)
+            if not ranked:
+                return []
+            maximum = sum(0.1 + __import__("math").log(total + 1) for _ in terms) or 1
+            if ranked[0][0] / maximum < 0.08:
+                return []
+            selected = [ranked[0]]
+            title = ranked[0][1]
+            neighbors = [r[0] for r in db.execute(
+                "SELECT saki FROM tsunagari WHERE moto=? UNION SELECT moto FROM tsunagari WHERE saki=?", (title, title))]
+            for neighbor in neighbors:
+                hit = next((row for row in ranked if row[1] == neighbor), None)
+                if hit:
+                    selected.append(hit)
+                if len(selected) == 3:
+                    break
+            result = []
+            for _score, title, body in selected:
+                sentences = re.split(r"(?<=[。！？])\s*|\n+", body)
+                sentence = max(sentences, key=lambda s: sum(s.count(t) for t in terms), default="").strip()
+                if sentence:
+                    result.append({"記事": title, "一文": sentence[:500]})
+            return result
+    except (OSError, sqlite3.Error):
+        return []
+
+
+def _local_teian(record, evidence):
+    if (folder() / "busy").exists():
+        return None, True
+    prompt = ("本人の用件に合う実行可能な提案カードをJSONだけで作る。根拠の事実とAIの考えを分ける。"
+              "本人名・他者名・会社名など固有名詞は出力せず『対象A』などの仮名にする。"
+              "無関係・危険・根拠不足なら {}。手順は3〜5個、道具名でなく本人に分かる言葉。"
+              "形式: {\"題\":\"\",\"目的\":\"\",\"適用条件\":\"\",\"根拠\":[{\"記事\":\"\",\"事実\":\"\",\"考え\":\"\"}],"
+              "\"手順\":[\"\"],\"確かめ方\":\"\",\"まだ分からない点\":\"\"}\n本人の用件: "
+              + record.get("題", "") + "\n根拠段落: " + json.dumps(evidence, ensure_ascii=False))
+    payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 600, "stream": True, "temperature": 0,   # 10/1 Claude: 日本語のカード JSON は 300〜500 トークン。240 では切れて読めない
+               "chat_template_kwargs": {"enable_thinking": False}}
+    try:
+        if (folder() / "busy").exists():
+            return None, True
+        req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json"})
+        parts = []
+        with urllib.request.urlopen(req, timeout=240) as response:   # 読む 1,000 トークン＋書く 600 で2分前後（この Mac）
+            while True:
+                if (folder() / "busy").exists():
+                    return None, True
+                line = response.readline()
+                if (folder() / "busy").exists():
+                    return None, True
+                if not line:
+                    break
+                if not line.startswith(b"data: "):
+                    continue
+                data = line[6:].strip()
+                if data == b"[DONE]":
+                    break
+                chunk = json.loads(data)
+                parts.append(chunk.get("choices", [{}])[0].get("delta", {}).get("content") or "")
+        return "".join(parts).strip() or None, False
+    except (OSError, ValueError, KeyError, IndexError):
+        return None, (folder() / "busy").exists()
+
+
+def _parse_teian(raw):
+    raw = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.S).strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I).strip()
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    required = ("題", "目的", "適用条件", "確かめ方", "まだ分からない点")
+    if not isinstance(value, dict) or not all(isinstance(value.get(k), str) for k in required):
+        return None
+    evidence, steps = value.get("根拠"), value.get("手順")
+    if not isinstance(evidence, list) or not evidence or not isinstance(steps, list) or not 3 <= len(steps) <= 5:
+        return None
+    if any(not isinstance(s, str) or not s.strip() for s in steps):
+        return None
+    return {"題": value["題"][:100], "目的": value["目的"][:300], "適用条件": value["適用条件"][:300],
+            "根拠": evidence[:3], "手順": [s[:180] for s in steps], "確かめ方": value["確かめ方"][:300],
+            "まだ分からない点": value["まだ分からない点"][:300]}
+
+
+def _teian_teacher_text(card, record):
+    text = json.dumps(card, ensure_ascii=False)
+    source = str(record.get("題", ""))
+    # 「○○さん/様/氏」等は先生へ出す前に、依頼に含まれた呼び名ごと仮名へ置換する。
+    names = set(re.findall(r"[一-龥ぁ-ん]{2,8}(?=(?:さん|様|氏|くん|ちゃん))", source))
+    for name in sorted(names, key=len, reverse=True):
+        text = text.replace(name, "対象A")
+    return _safe_for_teacher(text)
+
+
+def make_teian_once(cfg, *, local=None, search=None, ask=None):
+    opts = cfg.get("事前学習", DEFAULT)
+    if not opts.get("出どころ", {}).get("振り返り") or (folder() / "busy").exists():
+        return False
+    state = _state()
+    if time.time() - state.get("最後の活用試行時刻", 0) < 600:
+        return False
+    state["最後の活用試行時刻"] = time.time()
+    _write(folder() / "state.json", state)
+    today = time.strftime("%Y-%m-%d")
+    with _teian_db() as db:
+        if db.execute("SELECT count(*) FROM teian WHERE 作った日時 LIKE ?", (today + "%",)).fetchone()[0] >= 3:
+            return False
+        done = {r[0] for r in db.execute("SELECT 用件の識別 FROM teian")}
+        done_pairs = set(db.execute("SELECT 用件の題,根拠の記事 FROM teian"))
+        tried_topics = {r[0]: r[1] for r in db.execute(
+            "SELECT 用件の題,count(*) FROM teian WHERE 状態='試す' GROUP BY 用件の題") if r[0]}
+        tried_articles = {r[0]: r[1] for r in db.execute(
+            "SELECT 根拠の記事,count(*) FROM teian WHERE 状態='試す' GROUP BY 根拠の記事")}
+    records = [r for r in _records() if r.get("識別") not in done and r.get("道具")]
+    if not records:
+        return False
+    counts = {}
+    for r in _records():
+        key = _stem(r.get("題", ""))
+        counts[key] = counts.get(key, 0) + 1
+    records.sort(key=lambda r: (r.get("成否") == "失敗", r.get("成否") == "遅い",
+                                counts.get(_stem(r.get("題", "")), 0),
+                                tried_topics.get(_stem(r.get("題", "")), 0)), reverse=True)
+    record = evidence = None
+    for candidate in records:
+        found = _teian_evidence(candidate.get("題", ""), search=search)
+        if not found:
+            continue
+        if len(found) > 1:
+            found.sort(key=lambda item: tried_articles.get(item.get("記事", ""), 0), reverse=True)
+        pair = (_stem(candidate.get("題", "")), found[0].get("記事", ""))
+        if pair in done_pairs:
+            continue
+        record, evidence = candidate, found
+        break
+    if not evidence:
+        return False
+    raw, interrupted = _local_teian(record, evidence) if local is None else local(record, evidence)
+    if interrupted or (folder() / "busy").exists():
+        return False
+    card = _parse_teian(raw)
+    if not card:
+        return False
+    facts = {item.get("記事"): item.get("一文", "") for item in evidence if item.get("記事") and item.get("一文")}
+    grounded = []
+    for claim in card["根拠"]:
+        if not isinstance(claim, dict):
+            continue
+        title = claim.get("記事")
+        thought = claim.get("考え")
+        if title in facts and isinstance(thought, str) and thought.strip():
+            grounded.append({"記事": title, "事実": facts[title], "考え": thought[:300]})
+    if not grounded:
+        return False
+    card["根拠"] = grounded
+    external = [x for x in (cfg.get("先生") or []) if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
+    if opts.get("振り返りで外の先生に聞く") and cfg.get("先生を使う") and external and not (folder() / "busy").exists():
+        question = ("対象A。人名・固有名詞は対象Aなどの仮名に置き換え済みです。"
+                    "『根拠に合っているか』『危ない手順はないか』だけ確認してください。\n" +
+                    _teian_teacher_text(card, record))
+        try:
+            if ask is None:
+                import sensei
+                ask = sensei.kiku
+            response = ask(question, {**cfg, "先生": external, "先生の深さ": "high"}, timeout=60)
+            review = str(response.get("答え", "")).strip()
+            if review and not response.get("error"):
+                card["先生の確かめ"] = _safe_for_teacher(review)[:500]
+                _log("先生の確かめ: " + card["先生の確かめ"])
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    if (folder() / "busy").exists():
+        return False
+    made = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _teian_db() as db:
+        db.execute("INSERT INTO teian(題,中身,根拠の記事,用件の識別,用件の題,状態,作った日時) VALUES(?,?,?,?,?,?,?)",
+                   (card["題"], json.dumps(card, ensure_ascii=False), evidence[0]["記事"], record["識別"],
+                    _stem(record.get("題", "")), "提案中", made))
+    _log(f"活用カード: {card['題']}")
+    _status(f"活用カード: {card['題']}")
+    return True
+
+
 def reflect_once(cfg, *, ask=None, network=None):
     global _WAIT_LOGGED
     opts = cfg.get("事前学習", DEFAULT)
@@ -782,6 +1038,7 @@ def overview(cfg, running=False):
             "振り返り": sum(x.startswith("振り返り:") for x in today_events),
             "先生に聞いた": sum(x.startswith("先生に聞いた:") for x in today_events),
             "技の提案": sum("技を提案:" in x for x in today_events),
+            "活用カード": sum(x.startswith("活用カード:") for x in today_events),
             "覚え書き": sum(x.startswith("覚え書き:") for x in today_events),
         }
     except (OSError, ValueError, TypeError):
@@ -790,7 +1047,8 @@ def overview(cfg, running=False):
     external = [x for x in (cfg.get("先生") or []) if isinstance(x, str) and not x.startswith(("local:", "ollama:"))]
     ai = {"記事を読む": {"モデル": "なし（Wikipedia API）", "思考": "なし"},
           "振り返り": {"モデル": "手元 Qwen3.6", "思考": "なし", "上限トークン": 300},
-          "外の先生": {"モデル": external, "思考の深さ": "high（深く。gpt-oss のとき）"}}
+          "活かす役": {"モデル": "手元 Qwen3.6", "思考": "なし", "上限トークン": 600},
+          "確かめ": {"モデル": external, "思考の深さ": "high（外の先生）"}}
     return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
             "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count, "覚え書き": memory["数"]},
             "覚え書き": memory["一覧"],
@@ -799,7 +1057,7 @@ def overview(cfg, running=False):
             "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
             "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
             "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"],
-            "AI": ai, "今日の数": counts, "活動": recent, "記録": recent}
+            "AI": ai, "今日の数": counts, "活動": recent, "記録": recent, "活用提案": teian_list()}
 
 
 
@@ -811,6 +1069,8 @@ def _wiki(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 def _activity_kind(message):
+    if message.startswith("活用カード:"): return "活用カード"
+    if message.startswith("先生の確かめ:"): return "先生の確かめ"
     if message.startswith("Wikipedia:"): return "記事"
     if message.startswith("本文を取り直し:"): return "本文を取り直し"
     if message.startswith("先生に聞いた:"): return "先生"
@@ -894,6 +1154,7 @@ def run():
                     if opts.get("出どころ", {}).get("Wikipedia", True):
                         learn_once(cfg)
                     reflect_once(cfg)
+                    make_teian_once(cfg)
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")
                 _status("失敗を記録し、次を待っています")

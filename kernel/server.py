@@ -1121,11 +1121,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path in ("/skills", "/gakushuu"):
+        if path in ("/skills", "/gakushuu", "/gakushuu/teian"):
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
             if path == "/skills":
                 return self._json({"スキル": gakushuu.skills()})
+            if path == "/gakushuu/teian":
+                return self._json({"提案": gakushuu.teian_list()})
             running = _GAKUSHUU_PROCESS is not None and _GAKUSHUU_PROCESS.poll() is None
             return self._json(gakushuu.overview(CTX["設定"], running))
         if path in ("/", "/index.html"):
@@ -1191,6 +1193,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self._json({"error": "項目が違います"}, 400)
         path = self.path.split("?")[0]
+
+        if path == "/gakushuu/teian":
+            try:
+                result = gakushuu.teian_action(body)
+                return self._json(result)
+            except (ValueError, TypeError, OSError) as e:
+                return self._json({"error": str(e)}, 400)
 
         if path == "/gakushuu/oboe":
             try:
