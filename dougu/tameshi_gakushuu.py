@@ -60,8 +60,21 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     check(all(x["深さ"] == 1 for x in queued), "リンク題に深さを記録")
     with sqlite3.connect(gakushuu.folder() / "chishiki.sqlite3") as db:
         check(db.execute("SELECT count(*) FROM chishiki WHERE chishiki MATCH '試験記事'").fetchone()[0] == 1, "FTS5 検索")
+        check(db.execute("SELECT 1 FROM tsunagari WHERE moto='試験記事' AND saki='候補題一' AND shurui='リンク'").fetchone(),
+              "記事保存時にリンク枝")
     check(not gakushuu.learn_once(cfg, wiki_module=FakeWiki), "同じ記事を入れない")
     check(gakushuu.overview(cfg)["数"]["記事"] == 1, "記事数")
+    branch_dir = base / "branch-test"
+    with mock.patch.dict(os.environ, {"KERNEL_GAKUSHUU_DIR": str(branch_dir)}):
+        with gakushuu._db() as db:
+            db.executemany("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)", [
+                ("関係記事", "試験記事を本文で参照する。", "Wikipedia", "", "今日"),
+                ("試験記事", "独立した本文。", "Wikipedia", "", "今日")])
+        rebuilt = gakushuu.rebuild_relationships()
+        with gakushuu._db() as db:
+            check(db.execute("SELECT 1 FROM tsunagari WHERE moto='関係記事' AND saki='試験記事' AND shurui='本文'").fetchone(),
+                  "既存記事の本文枝を作り直す")
+        check(gakushuu.rebuild_relationships() == rebuilt, "枝の再構築は重複しない")
 
     class DepthWiki:
         calls = 0

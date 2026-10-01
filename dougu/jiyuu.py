@@ -776,16 +776,65 @@ def _knowledge(query):
     path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "chishiki.sqlite3"
     if not path.is_file() or not query.strip():
         return {"ok": True, "結果": "まだ学んでいません"}
+    # FTS5 の unicode61 は日本語を語に分けない。句読点・空白・よくある助詞で
+    # 分割し、2文字以上の検索語をタイトルと本文で採点する。
+    separators = r"[\s、。，．・:：;；!?！？()（）\[\]【】「」『』\"'、]+|から|まで|より|って|など|には|では|とは|へは|の|は|が|を|に|へ|で|と|も|や"
+    terms = list(dict.fromkeys(word for word in re.split(separators, query.strip()) if len(word) >= 2))
+    if not terms:
+        terms = [query.strip()] if len(query.strip()) >= 2 else []
+    if not terms:
+        return {"ok": True, "結果": "まだ学んでいません"}
     try:
         with sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=2) as db:
-            terms = [f'"{word.replace(chr(34), chr(34) * 2)}"' for word in query.split() if word]
-            rows = db.execute("SELECT title,text,source FROM chishiki WHERE chishiki MATCH ? LIMIT 3", (" ".join(terms),)).fetchall() if terms else []
-            if not rows:
-                rows = db.execute("SELECT title,text,source FROM chishiki WHERE title LIKE ? OR text LIKE ? LIMIT 3",
-                                  (f"%{query}%", f"%{query}%")).fetchall()
+            has_trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone()
+            candidates = {}
+            if has_trigram:
+                for term in terms:
+                    if len(term) >= 3:
+                        safe = term.replace('"', '""')
+                        for rowid, title, body, source in db.execute(
+                                "SELECT rowid,title,text,source FROM chishiki_trigram WHERE chishiki_trigram MATCH ? LIMIT 500",
+                                (f'"{safe}"',)):
+                            candidates[rowid] = (title, body, source)
+                    else:
+                        pattern = f"%{term}%"
+                        for rowid, title, body, source in db.execute(
+                                "SELECT rowid,title,text,source FROM chishiki WHERE title LIKE ? OR text LIKE ? LIMIT 500",
+                                (pattern, pattern)):
+                            candidates[rowid] = (title, body, source)
+            else:
+                for term in terms:
+                    pattern = f"%{term}%"
+                    for rowid, title, body, source in db.execute(
+                            "SELECT rowid,title,text,source FROM chishiki WHERE title LIKE ? OR text LIKE ? LIMIT 500",
+                            (pattern, pattern)):
+                        candidates[rowid] = (title, body, source)
+            scored = []
+            for rowid, (title, body, source) in candidates.items():
+                score = sum((3 if term in title else 0) + (1 if term in body else 0) for term in terms)
+                if score:
+                    scored.append((score, rowid, title, body, source))
+            scored.sort(key=lambda item: (-item[0], item[1]))
+            rows = [(title, body, source, rowid) for _, rowid, title, body, source in scored[:3]]
+            related = {}
+            try:
+                for _, rowid, title, _, _ in scored[:3]:
+                    for (name,) in db.execute(
+                            "SELECT t.saki FROM tsunagari t JOIN chishiki c ON c.title=t.saki WHERE t.moto=? GROUP BY t.saki"
+                            " ORDER BY max(t.shurui='リンク') DESC, length(t.saki) DESC, t.saki LIMIT 3",   # リンク・具体的な題を先に
+                            (title,)):
+                        related.setdefault(title, []).append(name)
+            except sqlite3.Error:
+                pass
     except sqlite3.Error:
         return {"ok": True, "結果": "まだ学んでいません"}
-    return {"ok": True, "結果": [{"題": title, "本文": text[:300], "出どころ": source} for title, text, source in rows] if rows else "まだ学んでいません"}
+    result = []
+    for title, body, source, _ in rows:
+        term = next((word for word in terms if word in body), "")
+        at = body.find(term) if term else -1
+        excerpt = body[max(0, at - 150):at + 150] if at >= 0 else body[:300]
+        result.append({"題": title, "本文": excerpt, "出どころ": source, "関連": related.get(title, [])[:3]})
+    return {"ok": True, "結果": result if result else "まだ学んでいません"}
 
 
 def _network_available() -> bool:

@@ -490,9 +490,23 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         with sqlite3.connect(learning / "chishiki.sqlite3") as db:
             db.execute("CREATE VIRTUAL TABLE chishiki USING fts5(title,text,source,url,added)")
             for number in range(4):
-                db.execute("INSERT INTO chishiki VALUES (?,?,?,?,?)", (f"星{number}", "星の話" * 100, "Wikipedia", "https://example.org", "今日"))
-        got = jiyuu._run("shiru", {"query": "星"}, "見る", "test")["結果"]
+                db.execute("INSERT INTO chishiki VALUES (?,?,?,?,?)", (f"星空{number}", "星空の話" * 100, "Wikipedia", "https://example.org", "今日"))
+            db.execute("INSERT INTO chishiki VALUES (?,?,?,?,?)",
+                       ("東京の歴史", "昔の話。" * 120 + "東京では町の歴史が続いてきた。ぜひ知りたい。", "Wikipedia", "https://example.org", "今日"))
+            db.execute("CREATE TABLE tsunagari(moto TEXT,saki TEXT,shurui TEXT)")
+            db.execute("INSERT INTO tsunagari VALUES (?,?,?)", ("東京の歴史", "江戸", "本文"))
+            db.execute("INSERT INTO chishiki VALUES (?,?,?,?,?)", ("江戸", "東京にあった町", "Wikipedia", "https://example.org", "今日"))
+            try:
+                db.execute("CREATE VIRTUAL TABLE chishiki_trigram USING fts5(title,text,source UNINDEXED,tokenize='trigram')")
+                db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) SELECT rowid,title,text,source FROM chishiki")
+            except sqlite3.OperationalError:  # trigram 非対応 SQLite では LIKE 経路を試す。
+                pass
+        got = jiyuu._run("shiru", {"query": "星空"}, "見る", "test")["結果"]
         assert len(got) == 3 and all(len(row["本文"]) <= 300 for row in got)
+        japanese = jiyuu._knowledge("東京の歴史を知りたい") ["結果"]
+        tokyo = next(row for row in japanese if row["題"] == "東京の歴史")
+        assert "東京では町の歴史" in tokyo["本文"] and len(tokyo["本文"]) <= 300
+        assert "江戸" in tokyo["関連"]
     checks += 1
 
     # AppleScriptの読み取り・送信・完全削除、ネット命令の案内。

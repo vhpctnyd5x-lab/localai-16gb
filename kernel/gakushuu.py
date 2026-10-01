@@ -104,7 +104,62 @@ def _db():
     p.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(p, timeout=5)
     db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chishiki USING fts5(title, text, source UNINDEXED, url UNINDEXED, added UNINDEXED)")
+    db.execute("CREATE TABLE IF NOT EXISTS tsunagari(moto TEXT NOT NULL, saki TEXT NOT NULL, shurui TEXT NOT NULL, UNIQUE(moto,saki,shurui))")
+    db.execute("CREATE TABLE IF NOT EXISTS chishiki_meta(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+    _ensure_knowledge_indexes(db)
     return db
+
+
+def _ensure_knowledge_indexes(db):
+    """既存DBの枝・日本語部分一致索引を初回だけ作る。以後の更新は保存時。"""
+    trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone()
+    if not trigram:
+        try:
+            db.execute("CREATE VIRTUAL TABLE chishiki_trigram USING fts5(title,text,source UNINDEXED,tokenize='trigram')")
+            db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) SELECT rowid,title,text,source FROM chishiki")
+        except sqlite3.OperationalError:  # SQLite が trigram tokenizer を持たない場合も通常検索は動く。
+            pass
+    done = db.execute("SELECT v FROM chishiki_meta WHERE k='枝再構築'").fetchone()
+    if not done:
+        _rebuild_relationships(db)
+
+
+def _rebuild_relationships(db):
+    """本文中の保存済み記事題を1回走査して枝を作る（リンク枝は保持）。"""
+    rows = db.execute("SELECT title,text FROM chishiki ORDER BY length(title) DESC").fetchall()
+    db.execute("DELETE FROM tsunagari WHERE shurui='本文'")
+    names = [(title, title.casefold()) for title, _ in rows if len(title) >= 2]
+    for source, body in rows:
+        folded = body.casefold()
+        edges = [(source, title, "本文") for title, key in names
+                 if title != source and key in folded]
+        db.executemany("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", edges)
+    db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('枝再構築','1')")
+    return db.execute("SELECT count(*) FROM tsunagari").fetchone()[0]
+
+
+def rebuild_relationships():
+    """保存済み全記事の本文枝を作り直す。既存リンク枝は消さない。"""
+    with _db() as db:
+        db.execute("DELETE FROM chishiki_meta WHERE k='枝再構築'")
+        return _rebuild_relationships(db)
+
+
+def _add_article_edges(db, title, body, links=()):
+    current = title.casefold()
+    for other, old_body in db.execute("SELECT title,text FROM chishiki WHERE title<>? AND length(title)>=2", (title,)):
+        if other.casefold() in body.casefold():
+            db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (title, other, "本文"))
+        if current in old_body.casefold():
+            db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (other, title, "本文"))
+    for other in links:
+        if isinstance(other, str) and len(other.strip()) >= 2 and other.strip() != title:
+            db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (title, other.strip(), "リンク"))
+
+
+def _add_trigram(db, rowid, title, body, source):
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone():
+        db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) VALUES(?,?,?,?)", (rowid, title, body, source))
 
 
 def used_bytes():
@@ -291,8 +346,10 @@ def learn_once(cfg, *, wiki_module=None):
     with _db() as db:
         if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (actual,)).fetchone():
             return False
-        db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
-                   (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
+        cursor = db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
+                            (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
+        _add_trigram(db, cursor.lastrowid, actual, body, "Wikipedia")
+        _add_article_edges(db, actual, body, article.get("ほかの候補", []))
     remaining = [x for x in state.get("次の題", [])
                  if (x.get("題") if isinstance(x, dict) else x) != title]
     if depth < MAX_DEPTH:
@@ -538,15 +595,21 @@ def overview(cfg, running=False):
     try:
         with _db() as db:
             count = db.execute("SELECT count(*) FROM chishiki").fetchone()[0]
+            recent = db.execute("SELECT title FROM chishiki ORDER BY rowid DESC LIMIT 5").fetchall()
+            branches = [{"題": title, "関連": [r[0] for r in db.execute(
+                "SELECT saki FROM tsunagari WHERE moto=? GROUP BY saki ORDER BY max(shurui='リンク') DESC, length(saki) DESC, saki LIMIT 3", (title,))]} for (title,) in recent]
+            branch_count = db.execute("SELECT count(*) FROM tsunagari").fetchone()[0]
     except sqlite3.Error:
         count = 0
+        branches, branch_count = [], 0
     try:
         lines = _tail_lines(folder() / "log.jsonl", 20)
         logs = [_read_line(line) for line in lines]
     except OSError:
         logs = []
     return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
-            "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills())},
+            "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count},
+            "つながり": branches,
             "使った容量MB": round(used_bytes() / 1024 / 1024, 2), "上限MB": opts["上限MB"],
             "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
             "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
