@@ -150,7 +150,8 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     checks += 1
 
     # 指定フォルダを保ち、見つからない時はホームから再探索する手を返す。
-    assert "指定されたフォルダ" in jiyuu._system() and "findでホーム以下" in jiyuu._system()
+    assert "指定場所を使い" in jiyuu._system() and "場所を想像せず" in jiyuu._system()
+    assert "findでホーム以下" in jiyuu._system()
     for name, args in (("move", {"src": "~/Documents/meeting.txt", "dst": "~/Desktop/整理"}),
                        ("trash", {"paths": ["~/Downloads/old.tmp"]})):
         result = jiyuu._missing_hint(name, args, {"ok": False, "結果": "見つかりません"})

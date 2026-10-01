@@ -28,14 +28,12 @@ sys.dont_write_bytecode = True  # 読取だけの kernel/ に import の .pyc �
 import kyoudou as gate
 import web
 
-SYSTEM = ("あなたはMacの作業係。計画し、結果を見て日本語で答える。複数手は達成条件を決める。"
-          "ファイルを作るのはwrite。"
-          "コピーはcopy、移動はmove、削除はtrash。shで消す・移すな。指定されたフォルダを使い、パス途中に~を書かない。"
-          "見つからなければfindでホーム以下を探す。変更後はfindかreadで確認。"
-          "Macの状態はmac、指定ファイルはread、アプリはshのopen -a、設定はshのdefaults read。"
-          "同じ手を繰り返さず、拒否を迂回しない。未知はshiru→web。"
-          "読んだ結果に無ければ『見つかりませんでした』。記憶で補わない。"
-          "手順はskill、senseiは最後。道具なしで終了。")
+SYSTEM = ("Mac作業係。計画し、結果を見て日本語で答える。複数手は達成条件を決める。"
+          "作成=write、コピー=copy、移動=move、削除=trash（shで消す・移すな）。"
+          "指定場所を使い、場所を想像せず、パス途中に~を書かない。見つからなければfindでホーム以下を探し、変更後はfind/readで確認。"
+          "Macの状態=mac、指定ファイル=read、アプリ起動=shのopen -a、設定読取=shのdefaults read。"
+          "同じ手を繰り返さず、拒否を迂回しない。不明はshiru→web。"
+          "結果に無ければ『見つかりませんでした』。記憶で補わない。手順はskill、senseiは最後。道具なしで終了。")
 
 _OUTBOUND = threading.local()
 _REQUEST_OPTS = threading.local()
@@ -125,25 +123,25 @@ def _tool(name, description, properties, required):
             "parameters": {"type": "object", "properties": properties, "required": required}}}
 
 def _s(description):
-    return {"type": "string"}  # 項目名で意味が分かる説明を繰り返さない
+    return {"type": "string", **({"description": description} if description else {})}
 
 TOOLS = [
-    _tool("sh", "砂箱で命令実行。裏仕事の確認・停止も可。",
-          {"command": _s("命令"), "background": {"type": "boolean"},
-           "job": _s("仕事ID"), "action": {"type": "string", "enum": ["output", "stop"]}}, []),
-    _tool("read", "ファイル・フォルダを読む。", {"path": _s("場所"), "start": _s("開始"), "end": _s("終了")}, ["path"]),
-    _tool("write", "ファイルを書く。", {"path": _s("場所"), "content": _s("中身")}, ["path", "content"]),
-    _tool("edit", "一致する1か所を直す。", {"path": _s("場所"), "old": _s("元"), "new": _s("新")}, ["path", "old", "new"]),
-    _tool("find", "名前または本文から探す。", {"dir": _s("起点"), "glob": _s("名前の型"), "text": _s("本文")}, ["dir"]),
-    _tool("trash", "対象をゴミ箱に移す。", {"paths": {"type": "array", "items": _s("場所")}}, ["paths"]),
-    _tool("mac", "Macを見る。what: 音量/volume、電池/battery、メモリ/memory、時刻/time、ネット/network、版/version、ディスク/disk、CPU・アプリ/cpu・app、稼働/uptime、外付け/external。", {"what": _s("見たいこと")}, ["what"]),
-    _tool("move", "移動・改名。上書き不可。dstがフォルダなら中へ。", {"src": _s("元"), "dst": _s("先")}, ["src", "dst"]),
-    _tool("copy", "コピー。上書き不可。dstがフォルダなら中へ。", {"src": _s("元"), "dst": _s("先")}, ["src", "dst"]),
-    _tool("web", "検索か公開ページの読取。", {"query": _s("検索語"), "url": _s("URL")}, []),
-    _tool("skill", "手順を読む。", {"name": _s("スキル名")}, ["name"]),
-    _tool("shiru", "学んだ知識を探す。", {"query": _s("知りたいこと")}, ["query"]),
-    _tool("sensei", "道具の失敗2回後だけ外の先生へ相談。承認要。", {"question": _s("相談すること")}, ["question"]),
-    _tool("chrome", "Chromeで開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s("URL"), "find": _s("探す言葉")}, ["action"]),
+    _tool("sh", "砂箱で実行。裏仕事も確認・停止可。",
+          {"command": _s(""), "background": {"type": "boolean"},
+           "job": _s(""), "action": {"type": "string", "enum": ["output", "stop"]}}, []),
+    _tool("read", "ファイル・一覧を読む。", {"path": _s(""), "start": _s("行"), "end": _s("行")}, ["path"]),
+    _tool("write", "ファイルを書く。", {"path": _s(""), "content": _s("")}, ["path", "content"]),
+    _tool("edit", "一致する1か所を置換。", {"path": _s(""), "old": _s("前"), "new": _s("後")}, ["path", "old", "new"]),
+    _tool("find", "名前・本文で探す。", {"dir": _s("起点"), "glob": _s("名前型"), "text": _s("")}, ["dir"]),
+    _tool("trash", "ゴミ箱へ移す。", {"paths": {"type": "array", "items": _s("")}}, ["paths"]),
+    _tool("mac", "Mac情報: 音量、電池、メモリ、時刻、ネット、版、ディスク、CPU/アプリ、稼働、外付け。whatは英語名も可。", {"what": _s("")}, ["what"]),
+    _tool("move", "移動・改名。上書きなし。", {"src": _s(""), "dst": _s("")}, ["src", "dst"]),
+    _tool("copy", "コピー。上書きなし。", {"src": _s(""), "dst": _s("")}, ["src", "dst"]),
+    _tool("web", "検索・公開ページ読取。", {"query": _s(""), "url": _s("")}, []),
+    _tool("skill", "手順を読む。", {"name": _s("")}, ["name"]),
+    _tool("shiru", "知識を探す。", {"query": _s("")}, ["query"]),
+    _tool("sensei", "道具で2回失敗後に相談。承認要。", {"question": _s("")}, ["question"]),
+    _tool("chrome", "Chrome: 開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s(""), "find": _s("")}, ["action"]),
 ]
 SPECS = {item["function"]["name"]: item["function"]["parameters"] for item in TOOLS}
 JOBS: dict[str, tuple[subprocess.Popen, Path, threading.Thread]] = {}
