@@ -136,10 +136,7 @@ def main():
     parser.add_argument("--wa", action="store_true", help="輪と同じ前置きで道具を呼ばせ、書く速さと先読みだけを見る")
     args = parser.parse_args()
     convs = wa_convs() if args.wa else None
-    line = honban.base()
-    was_on = honban.call(line, "/gakushuu").get("入")
-    if was_on:
-        honban.call(line, "/gakushuu", {"入": False})
+    was_on = honban.gakushuu_yasumu()
     subprocess.run(["pkill", "-x", "llama-server"])
     time.sleep(3)
     model = Path(args.model).expanduser()
@@ -149,8 +146,7 @@ def main():
             result = measure(model, extra, honban.KEKKA / f"hayasa_{name}.log", args.n, Path(args.llama).expanduser(), convs)
             print(f"{model.name[:34]:34} {name:8} {json.dumps(result, ensure_ascii=False)}", flush=True)
     finally:
-        if was_on:
-            honban.call(honban.base(), "/gakushuu", {"入": True})
+        honban.gakushuu_modosu(was_on)
 
 
 if __name__ == "__main__":

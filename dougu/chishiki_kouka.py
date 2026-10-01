@@ -91,10 +91,7 @@ def main():
     scratch = tempfile.mkdtemp(prefix="chishiki-")   # 輪を読み込む時、本物の記録・技・控えに触れない
     os.environ.update({k: scratch for k in ("KERNEL_KIROKU_DIR", "KERNEL_HIKAE_DIR", "KERNEL_TSUIKA_DIR", "KERNEL_WAZA_DIR")})
     import jiyuu   # 輪と同じ検索（今の形）
-    line = honban.base()
-    was_on = honban.call(line, "/gakushuu").get("入")
-    if was_on:
-        honban.call(line, "/gakushuu", {"入": False})
+    was_on = honban.gakushuu_yasumu()
     subprocess.run(["pkill", "-x", "llama-server"])
     time.sleep(3)
     env = dict(os.environ, KOUKAI_VOCAB_KEEP=str(honban.KOUKAI / "dougu/jikken/vocab_keep_9999_q36_ids.txt"))
@@ -140,8 +137,7 @@ def main():
     finally:
         server.terminate()
         server.wait()
-        if was_on:
-            honban.call(honban.base(), "/gakushuu", {"入": True})
+        honban.gakushuu_modosu(was_on)
         with open(args.out, "w", encoding="utf-8") as f:
             for r in results:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")

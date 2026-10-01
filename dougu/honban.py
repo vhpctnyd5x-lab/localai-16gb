@@ -83,6 +83,29 @@ def base(old="", wait=120):
     raise SystemExit("サーバーが立っていません（server.url と kernel-ai.log を見る）")
 
 
+def gakushuu_yasumu():
+    """試験の前に事前学習を止め、前の状態を返す。アプリが立っていなければ何もしない（学習も動いていない）。
+    10/2: 夜中にアプリが閉じていて、知識の測り直しが「サーバーが立っていません」で始まらなかった。"""
+    try:
+        line = base(wait=20)
+    except SystemExit:
+        print("アプリが立っていないので、事前学習を止めずに測ります", flush=True)
+        return False
+    was_on = call(line, "/gakushuu").get("入")
+    if was_on:
+        call(line, "/gakushuu", {"入": False})
+    return was_on
+
+
+def gakushuu_modosu(was_on):
+    if not was_on:
+        return
+    try:
+        call(base(), "/gakushuu", {"入": True})
+    except SystemExit:
+        print("アプリが立っていないので、事前学習を戻せませんでした", flush=True)
+
+
 def call(line, path, body=None, timeout=30):
     b, token = _parts(line)
     headers = {"X-Token": token, "Origin": b, "Referer": b + "/", "Content-Type": "application/json"}
@@ -182,10 +205,7 @@ def gakushuu(args):
 
 def j(args):
     """アプリの 30B と試験のモデルは同時に載らない（16GB）。事前学習を止めて 11問、元に戻す。"""
-    line = base()
-    was_on = call(line, "/gakushuu").get("入")
-    if was_on:
-        call(line, "/gakushuu", {"入": False})
+    was_on = gakushuu_yasumu()
     subprocess.run(["pkill", "-x", "llama-server"])
     for _ in range(30):
         if subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode:
@@ -217,8 +237,7 @@ def j(args):
     finally:
         server.terminate()
         server.wait()
-        if was_on:
-            call(base(), "/gakushuu", {"入": True})
+        gakushuu_modosu(was_on)
     rows = [r for r in (out_dir / f"{args.out}.md").read_text(encoding="utf-8").splitlines() if r.startswith("| J")]
     print(f"{model.name}: PASS {sum('PASS' in r for r in rows)} / {len(rows)}")
     for row in rows:
