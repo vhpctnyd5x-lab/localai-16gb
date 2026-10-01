@@ -555,6 +555,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         strong = {"ok": True, "結果": [{"題": "東京の歴史", "本文": "東京では町の歴史", "点": 30, "珍しい語": 3}]}
         with mock.patch.object(jiyuu, "_knowledge", return_value=strong):
             assert "東京の歴史" in jiyuu._knowledge_hint("東京の町の歴史を教えて")
+            assert "ファイルではない" in jiyuu._knowledge_hint("東京の町の歴史を教えて")
             assert jiyuu._knowledge_hint("~/Documents/東京.txt を読んで") == ""
             assert jiyuu._knowledge_hint("メモ.txt に東京の歴史を書いて") == ""
         weak = {"ok": True, "結果": [{"題": "東京の歴史", "本文": "…", "点": 10, "珍しい語": 3}]}
@@ -1091,6 +1092,14 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     hint = jiyuu._missing_hint("read", {"path": "~/Documents/あ.txt"}, {"ok": False, "結果": "場所がありません: /x/あ.txt"},
                                [str(home / "Documents" / "作業票" / "あ.txt")])
     assert "作業票/あ.txt" in hint["次"]
+    # 10/2: 知識を添えた頼みで作り話の場所を読んだら、ホームを探させず知識へ戻す（見つかった候補があればそちらが先）。
+    made_up = {"ok": False, "結果": "場所がありません: /tmp/learned_articles.json"}
+    assert "shiru" in jiyuu._missing_hint("read", {"path": "/tmp/learned_articles.json"}, dict(made_up), [], "", knowledge=True)["次"]
+    assert "shiru" not in jiyuu._missing_hint("read", {"path": "/tmp/learned_articles.json"}, dict(made_up), [], "")["次"]
+    assert "shiru" in jiyuu._missing_hint("sh", {"command": "cat /tmp/x.json"},
+                                          {"ok": False, "結果": "cat: /tmp/x.json: No such file or directory"}, [], "", knowledge=True)["次"]
+    assert "作業票/あ.txt" in jiyuu._missing_hint("read", {"path": "~/Documents/あ.txt"}, {"ok": False, "結果": "場所がありません: /x/あ.txt"},
+                                               [str(ticket)], "", knowledge=True)["次"]
     sent = []
     replies = iter([{"content": "", "tool_calls": [call("mac", what="時刻")]},
                     {"content": "時刻を確かめました。次に、結果を記録します。"}, {"content": "正午でした。"}])

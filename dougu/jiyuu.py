@@ -1030,7 +1030,10 @@ def _knowledge_hint(request):
         return ""
     picked = [{"題": item["題"], "本文": item["本文"]} for item in found[:2]
               if item.get("点", 0) >= 24 and item.get("珍しい語", 0) >= 2]
-    return ("\n学んだ記事（事前学習。参考で、頼みに合わなければ使わない）: " + json.dumps(picked, ensure_ascii=False)) if picked else ""
+    # 10/2 dougu/chishiki_wa.py: 「学んだ記事: …」だと頭脳はファイルの指定と受け取り、25問中7問で
+    # /tmp/learned_articles.json などを読みに行った（1問は find でホームを探し続けて 660 秒で時間切れ）。
+    return ("\n覚えている知識（事前学習の記事から写した抜き書き。ファイルではないので探さない。頼みに合わなければ使わない）: "
+            + json.dumps(picked, ensure_ascii=False)) if picked else ""
 
 
 def _memory_hint(request):
@@ -1504,16 +1507,21 @@ def _retry_read(args, result, found, request, session, settei=None):
     return retried
 
 
-def _missing_hint(name, args, result, found=(), request=""):
-    """場所が無い時だけ候補を名指しする。変更系は自動で直さない。"""
+def _missing_hint(name, args, result, found=(), request="", knowledge=False):
+    """場所が無い時だけ候補を名指しする。変更系は自動で直さない。
+    knowledge: 依頼に覚えている知識を添えた時。知識の問いで場所を作り話して探し回らないよう、知識へ戻す。"""
     if result.get("ok"):
         return result
+    back = ("依頼に添えた「覚えている知識」は会話の中の文で、ファイルではありません。"
+            "知識の問いなら、それか shiru で答えてください。")
     if name == "sh" and "No such file or directory" in str(result.get("結果", "")):
         parsed = _shell_parts(args.get("command", ""))
         if parsed and parsed[0][0][:1] == ["mv"] and len(parsed[0][0]) == 3:
             src, dst = parsed[0][0][1:]
             if _plain_path(src) and _plain_path(dst) and os.path.lexists(_home_resolve(src)) and not _home_resolve(dst).parent.is_dir():
                 result["次"] = f"移動先のフォルダがありません。先に mkdir -p {shlex.quote(str(_home_resolve(dst).parent))} を実行してください。"
+        if knowledge and "次" not in result:
+            result["次"] = back
         return result
     if name not in ("read", "edit", "move", "copy", "trash", "find"):   # write は親のフォルダを作るので場所が無くならない
         return result
@@ -1527,6 +1535,8 @@ def _missing_hint(name, args, result, found=(), request=""):
     if known and name != "find":
         result["次"] = (f"前に見つかった場所は {known[0]} です。この場所でもう一度{name}してください。" if len(known) == 1
                        else f"同じ名前の候補は {'、'.join(known)} です。どれか確かめてから{name}してください。")
+    elif filename and name != "find" and knowledge:
+        result["次"] = back + f"ファイルを探す頼みなら、findのdirを~、globを**/{filename}として探してください。"
     elif filename and name != "find":
         result["次"] = f"場所を決めつけず、findのdirを~、globを**/{filename}として探し、見つかった場所を確認してください。"
     elif name == "find":
@@ -1593,7 +1603,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     for row in (rireki or [])[-6:]:
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
-    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + _knowledge_hint(text) + _memory_hint(text)})
+    knowledge = _knowledge_hint(text)
+    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text)})
     ledger = _ledger_extract(text) if os.environ.get("KERNEL_LEDGER") == "1" else []   # 10/2: 既定は切（下の説明）
     ledger_snapshots = _ledger_start(ledger)
     ledger_nudged = False
@@ -1801,7 +1812,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                         if name == "sh" and not result.get("ok") and "時間切れ" in str(result.get("結果", "")) and _command_key(args):
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
-                        result = _missing_hint(name, args, result, found, text)
+                        result = _missing_hint(name, args, result, found, text, knowledge=bool(knowledge))
                         if rewrite_note and result.get("ok"):
                             result["次"] = rewrite_note
                     if result.get("ok"):
