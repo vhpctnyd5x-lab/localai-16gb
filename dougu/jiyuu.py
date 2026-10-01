@@ -1254,9 +1254,15 @@ def _run(name, args, risk, session, approved=False, settei=None):
         shutil.move(str(src), str(dst))
         return {"ok": True, "結果": "移しました", "元": str(src), "先": str(dst)}
     if name == "copy":
-        src, dst = _home_resolve(args["src"]), _home_resolve(args["dst"])
+        raw_src = str(args["src"]).rstrip("/")
+        contents = raw_src.endswith(("/.", "/*"))   # cp -R 元/. 先 と同じく、中身を先へ
+        src, dst = _home_resolve(raw_src[:-2] if contents else args["src"]), _home_resolve(args["dst"])
         if not os.path.lexists(src):
             return {"ok": False, "結果": f"見つかりません: {args['src']}"}
+        if src.is_dir() and not src.is_symlink():
+            # 10/2 J29: 先に mkdir した同じ名前の空フォルダへ写すと、初日/初日 と入れ子になっていた。
+            if contents or dst.is_dir() and not dst.is_symlink() and dst.name == src.name and not any(dst.iterdir()):
+                return _copy_contents(src, dst)
         as_folder = (dst.is_dir() or args["dst"].endswith("/")
                      or (not os.path.lexists(dst) and not dst.suffix and src.suffix))
         if as_folder:
@@ -1278,6 +1284,26 @@ def _run(name, args, risk, session, approved=False, settei=None):
         return {"ok": True, "結果": web.sagasu(args["query"])}
     result = web.yomu(args["url"])
     return {"ok": not bool(result.get("error")), "結果": result}
+
+def _copy_contents(src, dst):
+    """フォルダの中身だけを先のフォルダへ写す。先に同じ名前が1つでもあれば何も写さない（上書きしない）。"""
+    if os.path.lexists(dst) and (dst.is_symlink() or not dst.is_dir()):
+        return {"ok": False, "結果": f"コピー先がフォルダではありません: {dst}"}
+    if os.path.commonpath((os.path.realpath(src), os.path.realpath(dst))) == os.path.realpath(src):
+        return {"ok": False, "結果": "元フォルダの中へはコピーできません"}
+    if _unmovable(src) or _unmovable(dst, big=False):
+        return {"ok": False, "結果": "保護された場所から、または保護された場所へはコピーできません"}
+    children = sorted(src.iterdir())
+    clashes = [str(dst / child.name) for child in children if os.path.lexists(dst / child.name)]
+    if clashes:
+        return {"ok": False, "結果": "コピー先に同じ名前があります（上書きしません）: " + "、".join(clashes[:5])}
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in children:
+            gate._copy_path(child, dst / child.name)
+    except OSError as error:
+        return {"ok": False, "結果": str(error)}
+    return {"ok": True, "結果": f"中身 {len(children)} 件をコピーしました", "元": str(src), "先": str(dst)}
 
 def _emit(on_event, event):
     if on_event is not None:
@@ -1396,7 +1422,11 @@ def _request_guard(name, args, request, found, risk):
                     if str(path) in request or _show_path(path) in request]
         if sources and all(_home_resolve(src) in selected for src in sources):
             continue
-        return ("候補が複数あります: " + "、".join(_show_path(path) for path in sorted(candidates.values()))
+        # 10/2 J40: 頼みの場所に無かったことも言う（なぜ聞かれているのか本人に分かるように）。
+        missing = [token for token in dict.fromkeys(re.findall(r"[^\s、。，,「」『』（）()]*" + re.escape(filename), request))
+                   if "/" in token and not os.path.lexists(_home_resolve(token))]
+        return ("".join(f"{token} は見つかりません。" for token in missing)
+                + "候補が複数あります: " + "、".join(_show_path(path) for path in sorted(candidates.values()))
                 + "。どれを使うか教えてください。")
     return ""
 

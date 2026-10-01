@@ -416,6 +416,26 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     existing_dir.mkdir()
     result = jiyuu._run("copy", {"src": str(src), "dst": str(existing_dir)}, "戻せる", "test")
     assert result["ok"] and (existing_dir / src.name).read_text() == "second"
+    # 10/2 J29: 「元/.」は中身を先へ（cp -R 元/. 先）。先に mkdir した同じ名前の空フォルダも入れ子にしない。
+    (folder / "配布").mkdir()
+    (folder / "配布" / "手順.txt").write_text("受付")
+    inner = home / "Desktop" / "控え" / "初日"
+    inner.mkdir(parents=True)
+    result = jiyuu._run("copy", {"src": str(folder) + "/.", "dst": str(inner) + "/"}, "戻せる", "test")
+    assert result["ok"] and (inner / "nested.txt").read_text() == "nested" and (inner / "配布" / "手順.txt").read_text() == "受付"
+    assert not (inner / folder.name).exists() and (folder / "nested.txt").exists()
+    again = jiyuu._run("copy", {"src": str(folder) + "/.", "dst": str(inner)}, "戻せる", "test")
+    assert not again["ok"] and "上書きしません" in again["結果"]
+    same = home / "Desktop" / "控え2" / folder.name
+    same.mkdir(parents=True)
+    result = jiyuu._run("copy", {"src": str(folder), "dst": str(same)}, "戻せる", "test")
+    assert result["ok"] and (same / "配布" / "手順.txt").exists() and not (same / folder.name).exists()
+    assert not jiyuu._run("copy", {"src": str(folder) + "/.", "dst": str(folder / "配布")}, "戻せる", "test")["ok"]
+    # 10/2 J40: 頼みの場所に無かった時は、そのことも言ってから聞く。
+    weekly = [home / "Documents" / "週報.txt", home / "Desktop" / "提出用" / "週報.txt"]
+    guard = jiyuu._request_guard("copy", {"src": str(weekly[0]), "dst": str(weekly[1])},
+                                 "~/Downloads/週報.txt を ~/Desktop/提出用 にコピーして", [str(p) for p in weekly], "戻せる")
+    assert guard.startswith("~/Downloads/週報.txt は見つかりません。候補が複数あります:"), guard
     assert jiyuu._rewrite_sh("sh", {"command": f'cp -R "{folder}" "{home}/Desktop/tree-copy"'})[0] == "copy"
     for command in (f"cp -n {src} {copied}", f"cp {src} {copied} && echo done",
                     f"cp {src} {home}/../elsewhere.txt", f"cp -r {folder} {home}/Desktop/tree-copy; ls"):
@@ -881,7 +901,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
              mock.patch.object(jiyuu, "_kiku") as approval:
             answer = jiyuu.kotaeru(request21, mode="バイパス")
         assert "候補が複数あります:" in answer and "東/見積.txt" in answer and "西/見積.txt" in answer
-        assert "どれを使うか教えてください" in answer
+        assert "どれを使うか教えてください" in answer and "見つかりません" not in answer
         assert all(entry.args[0] == "find" for entry in run.call_args_list)
         approval.assert_not_called()
         assert east.read_text() == "東" and west.read_text() == "西" and not destination.exists()
