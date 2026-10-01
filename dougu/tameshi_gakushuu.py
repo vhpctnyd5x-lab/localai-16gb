@@ -119,6 +119,28 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     grown = gakushuu._state()
     check([x["題"] for x in grown["次の題"]] == ["広げた題一", "広げた題二"] and all(x["深さ"] == 2 for x in grown["次の題"])
           and grown["広げる"] == [], "覚えた記事からリンクを広げる")
+    # 10/2: 題もリンクを広げる先も尽きたら、覚えた記事の本文を取り直す（取れない題は読んだことにして先へ）。
+    gakushuu._write(gakushuu.folder() / "state.json", {**gakushuu._state(), "次の題": [], "広げる": [], "本文を読んだ題": [],
+                                                       "次は本文取り直し": False})
+    class RereadWiki:
+        calls = []
+        @classmethod
+        def ask(cls, title, chars=5000):
+            raise AssertionError("題が尽きた時は新しい題を探さない: " + title)
+        @classmethod
+        def article(cls, title, chars=20000):
+            cls.calls.append(title)
+            return {"題": title, "本文": "取り直した本文。" * 50}
+    check(gakushuu.learn_once(cfg, wiki_module=RereadWiki), "題が尽きたら本文を取り直す")
+    check(RereadWiki.calls and RereadWiki.calls[0] in gakushuu._state()["本文を読んだ題"], "取り直した題を覚える")
+    class NoBodyWiki(RereadWiki):
+        @classmethod
+        def article(cls, title, chars=20000):
+            cls.calls.append(title)
+            return None
+    before = len(gakushuu._state()["本文を読んだ題"])
+    check(not gakushuu.learn_once(cfg, wiki_module=NoBodyWiki), "本文が取れない時は False")
+    check(len(gakushuu._state()["本文を読んだ題"]) == before + 1, "取れない題も読んだことにして同じ題に止まらない")
     old = {"版": 1, "次の題": [{"題": "ゆめりあ", "深さ": 1}]}
     check(gakushuu._topic(old, set(), False) == gakushuu.LEARN_SEEDS[0], "旧版の次の題を捨てる")
     check(gakushuu._version_state({"版": 1, "見た記録": ["x.jsonl:1"]})["見た記録"] == [], "旧版の見た記録を捨てる")
@@ -153,6 +175,13 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         + json.dumps({"段階": "結果", "内容": {"ok": True, "ミリ秒": 45000}}, ensure_ascii=False) + "\n",
         encoding="utf-8")
     check(any(r["題"] == "遅い頼み" for r in gakushuu._records()), "遅い記録を読む")
+    # 10/2: 置き場を指定しない時は、今の輪の記録（kernel/kiroku）と前の操作記録（Application Support）の両方を読む。
+    saved_kiroku = os.environ.pop("KERNEL_KIROKU_DIR")
+    try:
+        check(gakushuu._record_dirs() == [Path(gakushuu.__file__).resolve().parent / "kiroku", gakushuu.ROOT / "kiroku"],
+              "今の輪の記録も読む")
+    finally:
+        os.environ["KERNEL_KIROKU_DIR"] = saved_kiroku
     nested = logdir / "atama"
     nested.mkdir()
     (nested / "operation.jsonl").write_text(json.dumps({"時": "2026-10-01 12:00:00", "目当て": "現行形式の失敗",

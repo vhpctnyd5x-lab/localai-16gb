@@ -320,12 +320,18 @@ def _recent_topics():
     return safe[:100]
 
 
+def _record_dirs():
+    """会話の記録の置き場。10/2: 今の輪（jiyuu・協働）の記録は kernel/kiroku（kyoudou.KIROKU_DIR）にあり、
+    ここ（Application Support/kiroku）には 9/17 の操作記録しか無かった。振り返りと活かす役は、その古い頼み1件だけを見ていた。"""
+    if os.environ.get("KERNEL_KIROKU_DIR"):
+        return [Path(os.environ["KERNEL_KIROKU_DIR"])]
+    return [Path(__file__).resolve().parent / "kiroku", ROOT / "kiroku"]
+
+
 def _records():
-    base = Path(os.environ.get("KERNEL_KIROKU_DIR", ROOT / "kiroku"))
-    if not base.is_dir():
-        return []
+    files = [(p, base) for base in _record_dirs() if base.is_dir() for p in base.rglob("*.jsonl")]
     found = []
-    for p in sorted(base.rglob("*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)[:80]:
+    for p, base in sorted(files, key=lambda x: x[0].stat().st_mtime, reverse=True)[:80]:
         try:
             lines = p.read_text(encoding="utf-8").splitlines()
             request = ""
@@ -418,6 +424,36 @@ def _topic_entry(state, known, use_conversation=False):
     return None
 
 
+def _refetch_one(state, wiki_module):
+    """覚えた Wikipedia の記事を1つ、本文（8,000字まで）で取り直す。取り直せたら True。
+    取れなかった題も読んだことにする（消えた記事などで、同じ題に止まり続けない）。"""
+    read_titles = set(state.get("本文を読んだ題", []))
+    with _db() as db:
+        old_titles = [r[0] for r in db.execute("SELECT title FROM chishiki WHERE source='Wikipedia' ORDER BY rowid")]
+    title = next((t for t in old_titles if t not in read_titles), None)
+    if not title or not hasattr(wiki_module, "article"):
+        return False
+    full = _wiki(wiki_module.article, title, chars=8000)
+    body = str((full or {}).get("本文", "")).strip()[:8000]
+    state["本文を読んだ題"] = (list(read_titles) + [title])[-5000:]
+    state["次は本文取り直し"] = False
+    if not body:
+        _write(folder() / "state.json", state)
+        _log(f"本文を取れず: {title}")
+        return False
+    with _db() as db:
+        row = db.execute("SELECT rowid FROM chishiki WHERE title=?", (title,)).fetchone()
+        db.execute("UPDATE chishiki SET text=? WHERE title=?", (body, title))
+        db.execute("DELETE FROM chishiki_trigram WHERE rowid=?", (row[0],))
+        _add_trigram(db, row[0], title, body, "Wikipedia")
+        db.execute("DELETE FROM tsunagari WHERE shurui='本文' AND (moto=? OR saki=?)", (title, title))
+        _add_article_edges(db, title, body)
+    _write(folder() / "state.json", state)
+    _status(f"本文を取り直した: {title}")
+    _log(f"本文を取り直し: {title}（{len(body)}字）")
+    return True
+
+
 def learn_once(cfg, *, wiki_module=None):
     """1記事だけ。外部依存は試験時に差し替え可能。"""
     if wiki_module is None:
@@ -437,33 +473,17 @@ def learn_once(cfg, *, wiki_module=None):
         return False
     known = _names()
     state = _state()
-    if state.get("次は本文取り直し"):
-        read_titles = set(state.get("本文を読んだ題", []))
-        with _db() as db:
-            old_titles = [r[0] for r in db.execute("SELECT title FROM chishiki WHERE source='Wikipedia' ORDER BY rowid")]
-        title = next((t for t in old_titles if t not in read_titles), None)
-        if title:
-            full = _wiki(wiki_module.article, title, chars=8000) if hasattr(wiki_module, "article") else None
-            body = str((full or {}).get("本文", "")).strip()[:8000]
-            if body:
-                with _db() as db:
-                    row = db.execute("SELECT rowid FROM chishiki WHERE title=?", (title,)).fetchone()
-                    db.execute("UPDATE chishiki SET text=? WHERE title=?", (body, title))
-                    db.execute("DELETE FROM chishiki_trigram WHERE rowid=?", (row[0],))
-                    _add_trigram(db, row[0], title, body, "Wikipedia")
-                    db.execute("DELETE FROM tsunagari WHERE shurui='本文' AND (moto=? OR saki=?)", (title, title))
-                    _add_article_edges(db, title, body)
-                state["本文を読んだ題"] = (list(read_titles) + [title])[-5000:]
-                state["次は本文取り直し"] = False
-                _write(folder() / "state.json", state)
-                _status(f"本文を取り直した: {title}")
-                _log(f"本文を取り直し: {title}（{len(body)}字）")
-                return True
+    if state.get("次は本文取り直し") and _refetch_one(state, wiki_module):
+        return True
     entry = _topic_entry(state, known, opts.get("会話の言葉から学ぶ題を選ぶ", False))
     if not entry:
         # 題が尽きたら、覚えた記事を引き直してリンクを広げる（wiki.py の手元のしまい場所を使うので軽い）。
         grow = [x for x in state.get("広げる", []) if isinstance(x, dict) and int(x.get("深さ", 1) or 1) < MAX_DEPTH]
         if not grow:
+            # 10/2: 題もリンクを広げる先も尽きたら、覚えた記事の本文を取り直す。0:08 に題が尽き、新しい記事を覚えないので
+            # 交互の取り直しも始まらず、2,332 記事が要約（中央 189 字）のまま止まっていた。
+            if _refetch_one(state, wiki_module):
+                return True
             _status("次の題を待っています")
             return False
         item = grow[0]
