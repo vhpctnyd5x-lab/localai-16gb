@@ -1857,6 +1857,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     sensei_used = False
     english_retry = False
     plan_nudged = False
+    csv_open: dict[str, list[str]] = {}   # 10/2 J25: 書いた CSV で、照合が違うと知らせたのに直していないもの
+    csv_nudged = False
     denied_label = ""
     try:
         _record(session, 0, "依頼", {"文": text, "モード": mode}, route)
@@ -1900,6 +1902,13 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 plan_nudged = True   # 1回だけ。終わっていれば答えを書き直すだけで済む
                 messages.append({"role": "assistant", "content": reply["content"][:1200]})
                 messages.append({"role": "user", "content": "まだ途中なら、予定は書かずに道具を呼んで最後まで進めてください。終わっていれば、結果だけを短く答えてください。"})
+                continue
+            if not calls and not force and not csv_nudged and any(csv_open.values()):
+                csv_nudged = True   # 1回だけ。照合の思い違いなら、そのままでよい理由を答えて終われる
+                pending = "／".join(problem for problems in csv_open.values() for problem in problems)[:400]
+                messages.append({"role": "assistant", "content": reply["content"][:1200]})
+                messages.append({"role": "user", "content": "書いた CSV に、確かめると違う所が残っています: " + pending
+                                 + "。直すなら write で書き直してください。そのままでよければ、理由を短く答えてください。"})
                 continue
             if not calls and not force and ledger:
                 unmet = _ledger_check(ledger, ledger_snapshots)
@@ -2043,6 +2052,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                         result = _missing_hint(name, args, result, found, text, knowledge=bool(knowledge))
                         if name == "write" and result.get("ok") and str(args.get("path", "")).lower().endswith(".csv"):
                             problems = _csv_problems(args.get("content", ""), text, context.read_contents, found)
+                            csv_open[str(_home_resolve(args["path"]))] = problems
                             if problems:
                                 result["次"] = ("書きましたが、確かめると違う所があります: " + "／".join(problems[:4])
                                                + "。直すなら write で書き直してください（hyou で作ると値をそのまま写せます）。")
