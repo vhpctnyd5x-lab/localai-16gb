@@ -1017,13 +1017,22 @@ def _knowledge(query, request="", detail=False):
         return {"ok": True, "結果": "まだ学んでいません"}
     result = []
     for title, body, source, score in rows:
-        term = max((word for word in weight if word in body), key=weight.get, default="")   # いちばん珍しい語の前後
-        at = body.find(term) if term else -1
-        excerpt = body[max(0, at - 150):at + 150] if at >= 0 else body[:300]
-        result.append({"題": title, "本文": excerpt, "出どころ": source, "関連": related.get(title, [])[:3]})
+        result.append({"題": title, "本文": _best_window(body, weight), "出どころ": source, "関連": related.get(title, [])[:3]})
         if detail:
             result[-1].update({"点": round(score, 1), "珍しい語": sum(1 for word in weight if counts[word] <= 10 and (word in title or word in body))})
     return {"ok": True, "結果": result if result else "まだ学んでいません"}
+
+
+def _best_window(body, weight, width=300, step=50):
+    """10/2: 300 字の窓をずらし、問いの語（珍しい語ほど重い）を最も多く含む所を渡す。
+    前の「いちばん珍しい語の前後」より答えが入る: 覚えた記事の問い 25問で 17 → 20、未見の25問で 22 → 24（記事に答えがあるのは 21・24）。"""
+    best, best_at = -1.0, 0
+    for at in range(0, max(1, len(body) - width + step), step):
+        part = body[at:at + width]
+        score = sum(value for term, value in weight.items() if term in part)
+        if score > best:
+            best, best_at = score, at
+    return body[best_at:best_at + width]
 
 
 def _knowledge_hint(request):
