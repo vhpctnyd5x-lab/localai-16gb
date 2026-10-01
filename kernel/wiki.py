@@ -154,11 +154,13 @@ def article(title, chars=20000, cache=True):
     c = _cache() if cache else {}
     if key in c:
         return c[key]
-    d = _get({"action": "query", "prop": "extracts", "explaintext": 1,
-              "exchars": chars, "titles": title, "redirects": 1})
+    params = {"action": "query", "prop": "extracts", "explaintext": 1, "titles": title, "redirects": 1}
+    if chars <= 1200:   # 10/2: exchars は 1,200 字までしか効かない（8,000 を頼んでも 1,200 字で切れていた）。長い時は全文を取って手元で切る
+        params["exchars"] = chars
+    d = _get(params)
     for _pid, pg in d.get("query", {}).get("pages", {}).items():
         if pg.get("extract", "").strip():
-            out = {"題": pg.get("title", title), "本文": pg["extract"].strip()}
+            out = {"題": pg.get("title", title), "本文": pg["extract"].strip()[:chars]}
             if cache:
                 c[key] = out
                 _save(c)

@@ -120,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     check([x["題"] for x in grown["次の題"]] == ["広げた題一", "広げた題二"] and all(x["深さ"] == 2 for x in grown["次の題"])
           and grown["広げる"] == [], "覚えた記事からリンクを広げる")
     # 10/2: 題もリンクを広げる先も尽きたら、覚えた記事の本文を取り直す（取れない題は読んだことにして先へ）。
-    gakushuu._write(gakushuu.folder() / "state.json", {**gakushuu._state(), "次の題": [], "広げる": [], "本文を読んだ題": [],
+    gakushuu._write(gakushuu.folder() / "state.json", {**gakushuu._state(), "次の題": [], "広げる": [], "全文を読んだ題": [],
                                                        "次は本文取り直し": False})
     class RereadWiki:
         calls = []
@@ -132,15 +132,25 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
             cls.calls.append(title)
             return {"題": title, "本文": "取り直した本文。" * 50}
     check(gakushuu.learn_once(cfg, wiki_module=RereadWiki), "題が尽きたら本文を取り直す")
-    check(RereadWiki.calls and RereadWiki.calls[0] in gakushuu._state()["本文を読んだ題"], "取り直した題を覚える")
+    check(RereadWiki.calls and RereadWiki.calls[0] in gakushuu._state()["全文を読んだ題"], "取り直した題を覚える")
     class NoBodyWiki(RereadWiki):
         @classmethod
         def article(cls, title, chars=20000):
             cls.calls.append(title)
             return None
-    before = len(gakushuu._state()["本文を読んだ題"])
+    before = len(gakushuu._state()["全文を読んだ題"])
     check(not gakushuu.learn_once(cfg, wiki_module=NoBodyWiki), "本文が取れない時は False")
-    check(len(gakushuu._state()["本文を読んだ題"]) == before + 1, "取れない題も読んだことにして同じ題に止まらない")
+    check(len(gakushuu._state()["全文を読んだ題"]) == before + 1, "取れない題も読んだことにして同じ題に止まらない")
+    # 10/2: Wikipedia の exchars は 1,200 字までしか効かない。長く頼む時は全文を取り、手元で切る。
+    import wiki
+    asked = []
+    def fake_get(params):
+        asked.append(dict(params))
+        return {"query": {"pages": {"1": {"title": "長い記事", "extract": "あ" * 9000}}}}
+    with mock.patch.object(wiki, "_get", side_effect=fake_get):
+        long_body = wiki.article("長い記事", chars=8000, cache=False)["本文"]
+        wiki.article("長い記事", chars=500, cache=False)
+    check("exchars" not in asked[0] and len(long_body) == 8000 and asked[1].get("exchars") == 500, "1,200 字より長い本文は全文を取って切る")
     old = {"版": 1, "次の題": [{"題": "ゆめりあ", "深さ": 1}]}
     check(gakushuu._topic(old, set(), False) == gakushuu.LEARN_SEEDS[0], "旧版の次の題を捨てる")
     check(gakushuu._version_state({"版": 1, "見た記録": ["x.jsonl:1"]})["見た記録"] == [], "旧版の見た記録を捨てる")

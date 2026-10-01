@@ -427,7 +427,8 @@ def _topic_entry(state, known, use_conversation=False):
 def _refetch_one(state, wiki_module):
     """覚えた Wikipedia の記事を1つ、本文（8,000字まで）で取り直す。取り直せたら True。
     取れなかった題も読んだことにする（消えた記事などで、同じ題に止まり続けない）。"""
-    read_titles = set(state.get("本文を読んだ題", []))
+    # 10/2: wiki.article が 1,200 字で切れていたので、全文で読み直した題は別の名前で数え直す（前の「本文を読んだ題」は使わない）
+    read_titles = set(state.get("全文を読んだ題", []))
     with _db() as db:
         old_titles = [r[0] for r in db.execute("SELECT title FROM chishiki WHERE source='Wikipedia' ORDER BY rowid")]
     title = next((t for t in old_titles if t not in read_titles), None)
@@ -435,7 +436,7 @@ def _refetch_one(state, wiki_module):
         return False
     full = _wiki(wiki_module.article, title, chars=8000)
     body = str((full or {}).get("本文", "")).strip()[:8000]
-    state["本文を読んだ題"] = (list(read_titles) + [title])[-5000:]
+    state["全文を読んだ題"] = (list(read_titles) + [title])[-5000:]
     state["次は本文取り直し"] = False
     if not body:
         _write(folder() / "state.json", state)
@@ -539,10 +540,10 @@ def learn_once(cfg, *, wiki_module=None):
                 break
         remaining += additions
     state["次は本文取り直し"] = True
-    state["本文を読んだ題"] = list(state.get("本文を読んだ題", []))
+    state["全文を読んだ題"] = list(state.get("全文を読んだ題", []))
     _log(f"Wikipedia: {actual}（{len(body)}字）")
     _status(f"記事を覚えた: {actual}", 最後の題=actual, 次の題=remaining[:100],
-            次は本文取り直し=True, 本文を読んだ題=state.get("本文を読んだ題", []),
+            次は本文取り直し=True, 全文を読んだ題=state.get("全文を読んだ題", []),
             見た題=(state.get("見た題", []) + [title])[-500:])
     return True
 
