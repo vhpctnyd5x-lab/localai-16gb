@@ -364,7 +364,7 @@ def extract_json(text: str):
 
 # ---------------------------------------------------------------- 先生ごとのコマンド組み立て
 
-def _build_cmd(teacher: str, prompt: str, system: str):
+def _build_cmd(teacher: str, prompt: str, system: str, effort: str = ""):
     """teacher 指定から (argv, env追加) を作る。未知なら ValueError。"""
     if ":" not in teacher:
         raise ValueError("先生の指定形式が不正: %r ('種別:モデル' の形式)" % teacher)
@@ -381,7 +381,8 @@ def _build_cmd(teacher: str, prompt: str, system: str):
         if system:
             argv += ["-s", system]
         argv.append(prompt)
-        return argv, {}
+        # 10/1: gpt-oss の考える深さ（low|medium|high）。空なら Groq の既定（medium）
+        return argv, ({"GROQ_EFFORT": effort} if effort in ("low", "medium", "high") else {})
 
     if kind == "ollama":
         # ollama には system 引数が無いのでプロンプト先頭に埋め込む
@@ -412,7 +413,7 @@ def available() -> list:
 
 
 def ask_one(teacher: str, prompt: str, system: str = "", timeout: int = 25,
-            retry: int = 2, fukasa: int = None) -> dict:
+            retry: int = 2, fukasa: int = None, effort: str = "") -> dict:
     if os.environ.get("KERNEL_ASHIATO"):      # 足あと（調べるとき用）
         import sys as _sys, traceback as _tb
         yobi = [f for f in _tb.extract_stack(limit=6)[:-1]]
@@ -426,7 +427,7 @@ def ask_one(teacher: str, prompt: str, system: str = "", timeout: int = 25,
     戻り値: {"teacher", "text", "json", "ms", "error"}
     """
     for i in range(retry + 1):
-        res = _ask_once(teacher, prompt, system, timeout, fukasa=fukasa)
+        res = _ask_once(teacher, prompt, system, timeout, fukasa=fukasa, effort=effort)
         err = res.get("error") or ""
         if "rate limit" not in err.lower() or i == retry:
             return res
@@ -887,7 +888,7 @@ def _ask_local(label: str, prompt: str, system: str, timeout: int,
 
 
 def _ask_once(teacher: str, prompt: str, system: str = "", timeout: int = 25,
-               fukasa: int = None) -> dict:
+               fukasa: int = None, effort: str = "") -> dict:
     t0 = time.monotonic()
     res = {"teacher": teacher, "text": "", "json": None, "ms": 0, "error": None}
 
@@ -916,7 +917,7 @@ def _ask_once(teacher: str, prompt: str, system: str = "", timeout: int = 25,
         return res
 
     try:
-        argv, extra_env = _build_cmd(teacher, prompt, system)
+        argv, extra_env = _build_cmd(teacher, prompt, system, effort)
     except Exception as e:
         res["error"] = str(e)
         res["ms"] = int((time.monotonic() - t0) * 1000)

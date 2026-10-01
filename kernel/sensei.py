@@ -53,7 +53,8 @@ def kiku(toi, cfg, rireki=None, timeout=240, sensei=None, system=None):
     kudari = _tsunagu(rireki or [], toi)
     saigo = None
     for who in panel:                      # 前から順に試す
-        r = teachers.ask_one(who, kudari, system=(system or SYS), timeout=timeout)
+        r = teachers.ask_one(who, kudari, system=(system or SYS), timeout=timeout,
+                             effort=str((cfg or {}).get("先生の深さ", "")))   # 10/1: 振り返りは high
         saigo = r
         if not r.get("error") and (r.get("text") or "").strip():
             ms = max(r["ms"], 1)
