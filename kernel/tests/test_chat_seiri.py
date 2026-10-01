@@ -81,6 +81,13 @@ class ChatSeiriTests(unittest.TestCase):
             proposals = [p for p in chats.seiri_an() if p.get("出どころ") == "Qwen3.6"]
         self.assertEqual([(p["id"], p["区分"]) for p in proposals], [(old["id"], "しまう")])
 
+    def test_archived_chat_is_not_archived_again(self):
+        done = self._chat("終わった作業", "もう済んだ", updated=chats._now() - 9 * 86400)
+        chats.archive(done["id"], True)
+        answer = {"組": [], "ゴミ箱": [], "しまう": [{"id": done["id"], "理由": "既にしまった"}]}
+        with patch.object(chats, "_ask_seiri_qwen", return_value=answer):
+            self.assertFalse([p for p in chats.seiri_an() if p.get("出どころ") == "Qwen3.6"])
+
     def test_timeout_falls_back_to_rules_only(self):
         chat = self._chat("試験: 古い会話", "古い試験", chats._now() - 8 * 86400)
         with patch.object(chats, "_ask_seiri_qwen", return_value=None):

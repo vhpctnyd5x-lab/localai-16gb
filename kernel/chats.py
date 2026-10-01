@@ -781,8 +781,8 @@ def _seiri_qwen_proposals(chats, answer):
             return
         if category == "ゴミ箱" and now - chat.get("更新", now) <= 7 * 86400:
             return
-        if category == "しまう" and now - chat.get("更新", now) <= 3 * 86400:   # 今使っている会話はしまわない（Claude 10/2）
-            return
+        if category == "しまう" and (chat.get("しまった") or now - chat.get("更新", now) <= 3 * 86400):
+            return   # 今使っている会話・もうしまった会話はしまわない（10/2 本番で「既にしまった状態のため」と出た）
         name = str(name or "").strip()[:12]
         if category == "組":
             if not name or chat.get("組") or chat.get("しまった"):
