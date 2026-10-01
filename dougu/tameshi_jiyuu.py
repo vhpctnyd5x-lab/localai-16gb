@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
@@ -988,6 +989,44 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert jiyuu._csv_problems("2026-10-04,佐藤", "日付,担当者 の順で", [], []) == ["1行目が列名（日付,担当者）になっていません"]
     assert jiyuu._csv_problems("案件,金額\nHARBOR-527,18400", "列は 案件,金額", ["案件: HARBOR-527\n金額: 18400円"], []) == []
     assert jiyuu._csv_problems("品名,必要数\n赤,10", "品名,必要数 の列で", ["品名: 赤ペン\n必要数: 12"], [])
+    checks += 1
+
+    # 10/2 本番: 「止める」で頭脳の生成をすぐ切る（流しながら受ける）。止めた後は道具を1つも動かさない。
+    class FakeStream:
+        def __init__(self, lines):
+            self.lines = lines
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            return iter(self.lines)
+    lines = [x.encode() for x in ('data: {"content": "こん", "stop": false}\n', '\n', 'data: {"content": "にちは", "stop": false}\n',
+                                  'data: {"content": "", "stop": true, "stopping_word": "", "tokens_evaluated": 12}\n')]
+    with mock.patch.object(jiyuu.urllib.request, "urlopen", return_value=FakeStream(lines)):
+        got = jiyuu._complete_stream("http://127.0.0.1:1/completion", {"prompt": "x"})
+    assert got["content"] == "こんにちは" and got["tokens_evaluated"] == 12 and got["stop"] is True
+    stop_flag = threading.Event()
+    def cut_after_first():
+        yield lines[0]
+        stop_flag.set()
+        yield lines[2]
+    saved_flag = jiyuu.gate.TOMERU
+    jiyuu.gate.TOMERU = stop_flag
+    try:
+        with mock.patch.object(jiyuu.urllib.request, "urlopen", return_value=FakeStream(cut_after_first())):
+            try:
+                jiyuu._complete_stream("http://127.0.0.1:1/completion", {"prompt": "x"})
+                raise AssertionError("止める印で止まらなかった")
+            except jiyuu._Stopped:
+                pass
+        stopped_file = home / "Desktop" / "止めた後.txt"
+        with mock.patch.object(jiyuu, "_ask", return_value={"content": "", "tool_calls": [call("write", path=str(stopped_file), content="x")]}), \
+             mock.patch.object(jiyuu, "_kiku", return_value=True):
+            answer = jiyuu.kotaeru(f"{stopped_file} を作って", mode="バイパス")
+        assert "停止されました" in answer and not stopped_file.exists(), answer
+    finally:
+        jiyuu.gate.TOMERU = saved_flag
     checks += 1
 
     # 10/2 J29: 失敗した手は、別の変更が成功した後ならやり直せる。成功した手の繰り返しは今までどおり止める。

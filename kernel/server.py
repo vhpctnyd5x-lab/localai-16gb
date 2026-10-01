@@ -1312,13 +1312,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         break
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # 画面が「止める」を押した（接続を切った）。生成も **いますぐ** 止める。
+                # 10/2 本番: 前は mado_tomeru が成功すると tomeru を立てず、新しい輪（jiyuu）は次の手へ進み続けていた。
+                tomeru.set()
                 try:
                     import teachers as _T
                     _T.mado_tomeru()
                     print("  [stream] mado_tomeru 済 ima=%r" % (_T._MADO.ima,), file=sys.stderr, flush=True)
                 except Exception as e:
                     print("  [stream] mado_tomeru 失敗 %r" % e, file=sys.stderr, flush=True)
-                    tomeru.set()
             return
 
         if path == "/ask":

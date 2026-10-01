@@ -560,8 +560,44 @@ def _parse_raw(raw):
     return {"content": re.sub(r"<tool_call>.*?</tool_call>", "", raw, flags=re.S).strip(), "tool_calls": calls}
 
 
+class _Stopped(Exception):
+    """画面の「止める」（gate.TOMERU）が立った。"""
+
+
+def _stopped():
+    return gate.TOMERU is not None and gate.TOMERU.is_set()
+
+
+def _complete_stream(url, payload):
+    """10/2 本番: 「止める」を押しても、頭脳が書き終えるまで（最長 240 秒）止まらなかった。流しながら受け、止める印が立ったら
+    接続を切る（llama-server は切れた接続の生成をやめる）。返す形は流さない /completion と同じ（content・stopping_word など）。"""
+    if _stopped():
+        raise _Stopped()
+    request = urllib.request.Request(url, data=json.dumps({**payload, "stream": True}, ensure_ascii=False).encode(),
+                                     headers={"Content-Type": "application/json"})
+    pieces, last = [], {}
+    with urllib.request.urlopen(request, timeout=240) as response:
+        for raw in response:
+            if _stopped():
+                raise _Stopped()
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                data = json.loads(line[5:].strip())
+            except ValueError:
+                continue
+            pieces.append(str(data.get("content") or ""))
+            if data.get("stop"):
+                last = data
+                break
+    return {**last, "content": "".join(pieces)}
+
+
 def _post_to(path, payload):
     url = os.environ.get("KERNEL_LOCAL_URL", "http://127.0.0.1:8080").rstrip("/") + path
+    if path == "/completion":
+        return _complete_stream(url, payload)
     request = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
                                      headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=240) as response:
@@ -1877,6 +1913,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 return "時間切れ、または停止されました。"
             try:
                 reply = _ask(messages, final=force)   # 9/28: 考える段は外した。force は答えだけを書かせる
+            except _Stopped:
+                _emit(on_event, {"type": "note", "text": "停止されました。"})
+                _record(session, step, "結果", {"ok": False, "結果": "停止されました"}, route)
+                return "停止されました。"
             except _ContextFull:
                 _compact(messages, hard=True)
                 reply = _ask(messages, final=True)
@@ -1947,6 +1987,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 _record(session, step, "結果", {"答え": answer}, route)
                 return answer
             for call in calls:
+                if _stopped():   # 10/2: 止めた後は、残りの道具を1つも動かさない
+                    _emit(on_event, {"type": "note", "text": "停止されました。"})
+                    _record(session, step, "結果", {"ok": False, "結果": "停止されました（残りの道具は動かしていません）"}, route)
+                    return "停止されました（残りの道具は動かしていません）。"
                 if used >= MAX_STEPS:
                     _emit(on_event, {"type": "note", "text": "20手の上限に達しました。"})
                     return "20手の上限に達しました。"
