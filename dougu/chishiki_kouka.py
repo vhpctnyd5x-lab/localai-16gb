@@ -121,11 +121,16 @@ def main():
             oracle = [{"題": row["題"], "本文": text[max(0, at - 100):at + 200]}] if text else []
             r = {"id": row["id"], "検索語": query,
                  "B_記事": [c["題"] for c in now], "C_記事": [c["題"] for c in fixed]}
-            for key, ctx in (("A", None), ("B", now), ("C", fixed), ("D", oracle)):
+            hint = jiyuu._knowledge_hint(q)   # H: 頭脳が shiru を呼ばない時、門番が最初に添える分だけ（輪と同じ）
+            r["H_添えた"] = bool(hint)
+            for key, ctx in (("A", None), ("B", now), ("C", fixed), ("D", oracle), ("H", hint)):
                 if key not in args.joken:
                     r[key], r[key + "_正"] = "", False
                     continue
-                user = q if ctx is None else ("学んだ記事:\n" + json.dumps(ctx, ensure_ascii=False) + "\n\n質問: " + q)
+                if key == "H":
+                    user = q + hint
+                else:
+                    user = q if ctx is None else ("学んだ記事:\n" + json.dumps(ctx, ensure_ascii=False) + "\n\n質問: " + q)
                 answer = ask(KOTAE, user)
                 r[key], r[key + "_正"] = answer[:80], atari(answer, row)
             r["B_正しい記事"] = row["題"] in r["B_記事"]
@@ -143,7 +148,8 @@ def main():
     n = len(results)
     if n:
         print(f"\n{n}問  正答 A なし {sum(r['A_正'] for r in results)}  B 今の検索 {sum(r['B_正'] for r in results)}"
-              f"  C 直した検索 {sum(r['C_正'] for r in results)}  D 正しい記事 {sum(r['D_正'] for r in results)}")
+              f"  C 直した検索 {sum(r['C_正'] for r in results)}  D 正しい記事 {sum(r['D_正'] for r in results)}"
+              f"  H 門番が添える {sum(r.get('H_正', False) for r in results)}（添えた {sum(r.get('H_添えた', False) for r in results)}）")
         print(f"正しい記事を引けた  B {sum(r['B_正しい記事'] for r in results)}  C {sum(r['C_正しい記事'] for r in results)}")
 
 
