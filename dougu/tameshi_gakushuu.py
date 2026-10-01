@@ -586,4 +586,16 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
         httpd.server_close()
         worker.join(timeout=3)
 
+    # 10/2 本人: 試した後も採用できる。採用したカードは技（スキル）として残り、次から頭脳が使える。
+    with gakushuu._teian_db() as db:
+        adopt_id = db.execute("INSERT INTO teian(題,中身,根拠の記事,用件の識別,用件の題,作った日時) VALUES(?,?,?,?,?,?)",
+                              ("保存先を確かめる技", json.dumps({"目的": "保存の失敗を防ぐ", "適用条件": "保存する時", "手順": ["場所を確かめる", "保存する"],
+                                                              "確かめ方": "read で確かめる", "根拠": [{"記事": "ファイルシステム", "事実": "保存先を確認する。"}]},
+                                                             ensure_ascii=False), "ファイルシステム", "adopt-test", "保存の頼み", "2026-09-01 08:00:00")).lastrowid
+    gakushuu.teian_action({"id": adopt_id, "状態": "試す"})
+    gakushuu.teian_action({"id": adopt_id, "状態": "採用"})
+    adopted = next((x for x in gakushuu.skills() if x["name"] == "保存先を確かめる技"), None)
+    check(adopted and adopted["on"] and "1. 場所を確かめる" in adopted["body"] and "活かす役" in adopted["body"], "採用したカードを技として残す")
+    check(next(x for x in gakushuu.teian_list() if x["id"] == adopt_id)["状態"] == "採用", "カードの状態は採用")
+
 print("OK: 本文取得・本文取り直し・活動数・FTS5・振り返り・外の先生・busy・10分・API")

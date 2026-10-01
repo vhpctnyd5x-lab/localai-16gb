@@ -126,8 +126,9 @@ main{flex:1;display:flex;flex-direction:column;min-width:0}
 .crow .x{opacity:0;padding:0 3px;border-radius:5px;color:#c76b5e}
 .crow:hover .x{opacity:1}
 .crow input[type=checkbox]{margin:0 2px 0 0}
-#seibar{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:6px 8px;font-size:11.5px;color:var(--dim)}
-#seibar .btn{padding:3px 8px;font-size:11px}
+[hidden]{display:none!important}   /* 10/2 本人: #seibar の display:flex が hidden に勝ち、選ぶ帯が消えなかった */
+#seibar,#trashbar{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:6px 8px;font-size:11.5px;color:var(--dim)}
+#seibar .btn,#trashbar .btn{padding:3px 8px;font-size:11px}
 .hibi{display:flex;align-items:center;gap:6px;padding:8px 8px 3px;font-size:11px;color:var(--faint);letter-spacing:.04em}
 .hibi .n{opacity:.7}
 .crow .dots:hover{background:#3a3a37}
@@ -1036,7 +1037,7 @@ function setView(view){
   document.getElementById("skills-btn").classList.toggle("on",view === "skills");
   document.body.classList.remove("sidebar-open");
   if(view === "skills")loadSkills();
-  if(view === "gakushuu")loadLearning();
+  if(view === "gakushuu"){if(LEARNING)drawLearning();loadLearning(true);}
 }
 document.querySelectorAll(".tabs .tab").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 document.getElementById("skills-btn").onclick=()=>setView("skills");
@@ -1097,27 +1098,42 @@ function drawSkills(){
   }
 }
 
+// 10/2 本人: 5秒ごとに丸ごと描き直していたので、選びかけの「不要にする理由」が閉じ、押そうとしたボタンが消え、
+// 入・切の切り替えが効かないことがあった。中身が変わった時だけ、触っていない時だけ描き直す。
+let LEARN_SIG = "", LEARN_BUSY = false, LEARN_PROPOSALS = null;
 async function updateLearning(payload){
+  LEARN_BUSY=true;
   try{
     const r=await api("/gakushuu",{method:"POST",body:JSON.stringify(payload)});
     if(r.error)throw Error(r.error);
-    await loadLearning();
-  }catch(e){shiraseru("事前学習を変更できませんでした: "+e.message);await loadLearning();}
+  }catch(e){shiraseru("事前学習を変更できませんでした: "+e.message);}
+  finally{LEARN_BUSY=false;}
+  await loadLearning(true);
 }
-async function loadLearning(){
+async function loadLearning(force=false){
   if(VIEW !== "gakushuu")return;
   try{
     const r=await api("/gakushuu");
     if(r.error)throw Error(r.error);
-    LEARNING=r;drawLearning();
-  }catch(e){workview.innerHTML=`<div class="work-error">${esc("事前学習を読めませんでした: "+e.message)}</div>`;}
+    LEARNING=r;
+    const sig=JSON.stringify(r), shown=!!workview.querySelector("#learn-on");
+    const active=document.activeElement;
+    const touching=shown&&active&&workview.contains(active)&&/^(SELECT|INPUT|TEXTAREA)$/.test(active.tagName);
+    if(!force&&shown&&(LEARN_BUSY||touching||sig===LEARN_SIG))return;
+    LEARN_SIG=sig;drawLearning();
+  }catch(e){
+    if(workview.querySelector("#learn-on"))shiraseru("事前学習を読めませんでした: "+e.message);   // 前の画面は残す
+    else workview.innerHTML=`<div class="work-error">${esc("事前学習を読めませんでした: "+e.message)}</div>`;
+  }
 }
 function scrollParent(el){   // 9/30: 描き直しでスクロールが上に戻らないよう、動いている箱を探す
   for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n).overflowY;if((s==="auto"||s==="scroll")&&n.scrollHeight>n.clientHeight)return n;}
   return document.scrollingElement||document.documentElement;
 }
 function drawLearning(){
-  const scroller=scrollParent(workview), keep=scroller.scrollTop;   // 5秒ごとに描き直すので、見ていた位置を覚えて戻す
+  const scroller=scrollParent(workview), keep=scroller.scrollTop;   // 描き直す時は、見ていた位置を覚えて戻す
+  const keepReasons={};   // 選びかけの「不要にする理由」も残す
+  workview.querySelectorAll("[data-teian-reason]").forEach(x=>{if(x.value)keepReasons[x.dataset.teianId]=x.value;});
   const g=LEARNING||{}, count=g.数||{}, source=g.出どころ||{};
   const used=Math.max(0,Number(g.使った容量MB)||0), limit=Math.max(1,Number(g.上限MB)||2048);
   const percent=Math.min(100,Math.round(used/limit*100));
@@ -1132,7 +1148,7 @@ function drawLearning(){
     <div class="work-card"><h2>容量</h2><div class="work-meter" role="progressbar" aria-label="使った容量" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><span style="width:${percent}%"></span></div><p class="work-note">${esc(used)} MB / ${esc(limit)} MB</p><label class="work-field">上限（MB）<input id="learn-limit" type="number" min="1" step="1" value="${esc(limit)}"></label><button class="btn" id="learn-save-limit" type="button">上限を保存</button></div>
     <div class="work-card"><h2>学ぶ条件</h2><div class="work-row"><label class="work-control"><input id="learn-wiki" type="checkbox" ${source.Wikipedia?"checked":""}>Wikipedia</label><label class="work-control"><input id="learn-review" type="checkbox" ${source.振り返り?"checked":""}>振り返り</label><label class="work-control"><input id="learn-charge" type="checkbox" ${g.充電中だけ?"checked":""}>充電中だけ</label></div><div class="work-row"><label class="work-control"><input id="learn-external-review" type="checkbox" ${g.振り返りで外の先生に聞く?"checked":""}>振り返りで外の先生に聞く</label><label class="work-control"><input id="learn-chat-topic" type="checkbox" ${g.会話の言葉から学ぶ題を選ぶ?"checked":""}>会話の言葉から学ぶ題を選ぶ</label></div><p class="work-note">入にすると、外の先生へ頼みの文と道具名・成否、Wikipediaへ会話から選んだ題を送ります。秘密とファイル名・場所は除きます。</p></div>
     <div class="work-card"><div class="work-row"><h2>覚え書き</h2><span class="sp"></span><span class="work-note">${esc(count.覚え書き??0)}件</span></div><div class="skill-list">${(g.覚え書き||[]).map(m=>`<article class="skill-card"><div class="work-row"><strong>${esc(m.種類)}</strong><span class="sp"></span><button class="btn bad" data-memory-delete="${esc(m.id)}" type="button">消す</button></div><p>${esc(m.文)}</p><small class="work-note">${esc(m.作成日時||"")}</small></article>`).join("")||'<p class="work-note">まだありません。</p>'}</div></div>
-    <div class="work-card"><h2>活用の提案</h2><div id="learn-teian" class="skill-list">${(g.活用提案||[]).map((p,i)=>{const c=p.中身||{};return `<article class="skill-card"><h2>${esc(p.題)}</h2><p><strong>目的:</strong> ${esc(c.目的||"")}</p><p><strong>適用条件:</strong> ${esc(c.適用条件||"")}</p><p><strong>根拠:</strong> ${(c.根拠||[]).map(x=>`${esc(x.記事||"")}（事実: ${esc(x.事実||x.一文||"")}／考え: ${esc(x.考え||"")}）`).join("; ")}</p><ol>${(c.手順||[]).map(s=>`<li>${esc(s)}</li>`).join("")}</ol><p><strong>確かめ方:</strong> ${esc(c.確かめ方||"")}</p><p><strong>まだ分からない点:</strong> ${esc(c.まだ分からない点||"")}</p>${c.先生の確かめ?`<p><strong>先生の確かめ:</strong> ${esc(c.先生の確かめ)}</p>`:""}<div class="work-row"><span class="made">${esc(p.状態)}${p.不要の理由?" ・ "+esc(p.不要の理由):""}</span><span class="sp"></span>${p.状態==="提案中"?`<button class="btn go" data-teian-try="${i}" type="button">試す</button><button class="btn" data-teian-later="${i}" type="button">後で</button><select data-teian-reason="${i}" aria-label="不要の理由"><option value="">不要にする理由</option><option>用件に合わない</option><option>もうできる</option><option>手順が違う</option></select><button class="btn bad" data-teian-no="${i}" type="button">不要</button>`:""}</div></article>`}).join("")||'<p class="work-note">まだ提案はありません。</p>'}</div></div>
+    <div class="work-card"><h2>活用の提案</h2><div id="learn-teian" class="skill-list">${(g.活用提案||[]).map((p,i)=>{const c=p.中身||{};return `<article class="skill-card"><h2>${esc(p.題)}</h2><p><strong>目的:</strong> ${esc(c.目的||"")}</p><p><strong>適用条件:</strong> ${esc(c.適用条件||"")}</p><p><strong>根拠:</strong> ${(c.根拠||[]).map(x=>`${esc(x.記事||"")}（事実: ${esc(x.事実||x.一文||"")}／考え: ${esc(x.考え||"")}）`).join("; ")}</p><ol>${(c.手順||[]).map(s=>`<li>${esc(s)}</li>`).join("")}</ol><p><strong>確かめ方:</strong> ${esc(c.確かめ方||"")}</p><p><strong>まだ分からない点:</strong> ${esc(c.まだ分からない点||"")}</p>${c.先生の確かめ?`<p><strong>先生の確かめ:</strong> ${esc(c.先生の確かめ)}</p>`:""}<div class="work-row"><span class="made">${esc(p.状態)}${p.不要の理由?" ・ "+esc(p.不要の理由):""}</span><span class="sp"></span>${["提案中","試す","後で"].includes(p.状態)?`${p.状態!=="試す"?`<button class="btn" data-teian-try="${i}" type="button">試す</button>`:""}<button class="btn go" data-teian-yes="${i}" type="button" title="技として残し、次から頭脳が使えるようにする">採用</button>${p.状態==="提案中"?`<button class="btn" data-teian-later="${i}" type="button">後で</button>`:""}<select data-teian-reason="${i}" data-teian-id="${esc(p.id)}" aria-label="不要の理由"><option value="">不要にする理由</option><option>用件に合わない</option><option>もうできる</option><option>手順が違う</option></select><button class="btn bad" data-teian-no="${i}" type="button">不要</button>`:""}</div></article>`}).join("")||'<p class="work-note">まだ提案はありません。</p>'}</div></div>
     <div class="work-card"><h2>最近の活動（20件）</h2><ol class="work-log">${(g.活動||[]).map(x=>`<li><time>${esc(x.時刻||"")}</time> ・ <strong>${esc(x.種類||"")}</strong> ・ ${esc(x.中身||"")}</li>`).join("")||"<li>まだありません</li>"}</ol></div>
     <div class="work-card"><div class="work-row"><h2>技の提案</h2><span class="sp"></span><button class="btn" id="learn-skills" type="button">すべてのスキルを見る</button></div><div id="learn-proposals" class="skill-list"></div></div>`;
   scroller.scrollTop=keep;
@@ -1149,18 +1165,29 @@ function drawLearning(){
   workview.querySelector("#learn-skills").onclick=()=>setView("skills");
   workview.querySelectorAll("[data-memory-delete]").forEach(b=>b.onclick=()=>api("/gakushuu/oboe",{method:"POST",body:JSON.stringify({id:Number(b.dataset.memoryDelete)})}).then(loadLearning));
   const teian=g.活用提案||[];
-  const saveTeian=(i,status,reason="")=>api("/gakushuu/teian",{method:"POST",body:JSON.stringify({id:teian[i].id,状態:status,不要の理由:reason})}).then(loadLearning).catch(e=>shiraseru("活用カードを変更できませんでした: "+e.message));
+  workview.querySelectorAll("[data-teian-reason]").forEach(x=>{const v=keepReasons[x.dataset.teianId];if(v)x.value=v;});
+  const saveTeian=(i,status,reason="")=>{LEARN_BUSY=true;return api("/gakushuu/teian",{method:"POST",body:JSON.stringify({id:teian[i].id,状態:status,不要の理由:reason})})
+    .then(r=>{if(r&&r.error)throw Error(r.error);if(status==="採用"){LEARN_PROPOSALS=null;shiraseru("技として残しました（スキルの一覧で見られます）");}})
+    .catch(e=>shiraseru("活用カードを変更できませんでした: "+e.message)).finally(()=>{LEARN_BUSY=false;loadLearning(true);});};
   workview.querySelectorAll("[data-teian-try]").forEach(b=>b.onclick=()=>{const p=teian[+b.dataset.teianTry];saveTeian(+b.dataset.teianTry,"試す").then(()=>{setView("kernel");const input=document.querySelector("#in");if(input)input.value=(p.中身?.手順||[]).map((s,i)=>`${i+1}. ${s}`).join("\n");});});
   workview.querySelectorAll("[data-teian-later]").forEach(b=>b.onclick=()=>saveTeian(+b.dataset.teianLater,"後で"));
+  workview.querySelectorAll("[data-teian-yes]").forEach(b=>b.onclick=()=>saveTeian(+b.dataset.teianYes,"採用"));
   workview.querySelectorAll("[data-teian-no]").forEach(b=>b.onclick=()=>{const i=+b.dataset.teianNo,reason=workview.querySelector(`[data-teian-reason="${i}"]`).value;if(!reason){shiraseru("不要にする理由を選んでください");return;}saveTeian(i,"不要",reason);});
+  const drawProposals=proposals=>{
+    const box=workview.querySelector("#learn-proposals");
+    if(!box)return;
+    box.innerHTML=proposals.map((s,i)=>`<article class="skill-card"><h2>${esc(s.name)}</h2><p>${esc(s.description||"")}</p><div class="work-row"><span class="made">カーネルの提案</span><span class="sp"></span><button class="btn go" data-proposal="${i}" type="button">採用</button>${s.場所==="本人"?`<button class="btn bad" data-reject="${i}" type="button">見送り</button>`:""}</div></article>`).join("")||'<p class="work-note">まだ提案はありません。</p>';
+    const done=()=>{LEARN_PROPOSALS=null;loadLearning(true);};
+    box.querySelectorAll("[data-proposal]").forEach(b=>b.onclick=()=>skillAction({動き:"切替",name:proposals[+b.dataset.proposal].name,on:true}).then(done));
+    box.querySelectorAll("[data-reject]").forEach(b=>b.onclick=()=>skillAction({動き:"ゴミ箱",name:proposals[+b.dataset.reject].name}).then(done));
+  };
+  if(LEARN_PROPOSALS)drawProposals(LEARN_PROPOSALS);
   api("/skills").then(r=>{
     if(VIEW!=="gakushuu"||!workview.querySelector("#learn-proposals"))return;
     const proposals=(r.スキル||[]).filter(s=>s.made_by==="カーネル"&&!s.on);
-    const box=workview.querySelector("#learn-proposals");
-    box.innerHTML=proposals.map((s,i)=>`<article class="skill-card"><h2>${esc(s.name)}</h2><p>${esc(s.description||"")}</p><div class="work-row"><span class="made">カーネルの提案</span><span class="sp"></span><button class="btn go" data-proposal="${i}" type="button">採用</button>${s.場所==="本人"?`<button class="btn bad" data-reject="${i}" type="button">見送り</button>`:""}</div></article>`).join("")||'<p class="work-note">まだ提案はありません。</p>';
+    if(LEARN_PROPOSALS&&JSON.stringify(proposals)===JSON.stringify(LEARN_PROPOSALS))return;
+    LEARN_PROPOSALS=proposals;drawProposals(proposals);
     scroller.scrollTop=keep;   // 提案が入って高さが変わった後にも戻す
-    box.querySelectorAll("[data-proposal]").forEach(b=>b.onclick=()=>skillAction({動き:"切替",name:proposals[+b.dataset.proposal].name,on:true}).then(loadLearning));
-    box.querySelectorAll("[data-reject]").forEach(b=>b.onclick=()=>skillAction({動き:"ゴミ箱",name:proposals[+b.dataset.reject].name}).then(loadLearning));
   }).catch(()=>{});
 }
 setInterval(()=>{if(VIEW==="gakushuu"&&!document.hidden&&document.activeElement?.id!=="learn-limit")loadLearning();},5000);
@@ -1171,6 +1198,9 @@ function drawChats(){
     .filter(c => TRASH || (ARCH ? c.しまった : !c.しまった));
   document.getElementById("c-arch").textContent = ARCH ? "会話に戻る" : "しまったもの";
   if (!list.length){
+    // 10/2 本人: 選ぶ状態のまま一覧が空になると、帯が描き直されずに残り、抜けられなかった
+    if (SEL){ SEL = false; ERANDA.clear(); }
+    const bar = document.getElementById("seibar"); if (bar) bar.hidden = true;
     chatlist.innerHTML = `<div style="padding:10px 10px;color:var(--faint);font-size:11.5px">${TRASH ? "ゴミ箱は空です" : "まだありません"}</div>`;
     return;
   }
@@ -1185,7 +1215,7 @@ function drawChats(){
     const kumi = new Map(jun.map(k => [k, []]));
     list.forEach(c => kumi.get(tag(c)).push(c));
     const furui = kumi.get("30日より前").length;
-    chatlist.innerHTML = `<div id="seibar" style="display:flex">
+    chatlist.innerHTML = `<div id="trashbar" style="display:flex">
         <span>ゴミ箱 ${list.length}件</span><span class="sp"></span>
         ${furui ? `<button class="btn" id="t-old">30日より前の ${furui}件を消す</button>` : ""}
         <button class="btn bad" id="t-empty">空にする</button>
@@ -1229,18 +1259,18 @@ function drawChats(){
     // ★ 整理モード: 行に☑が出る。えらんだものを まとめて 組に入れる／しまう／ゴミ箱へ
     const n = ERANDA.size;
     seibar.hidden = false;
-    seibar.innerHTML = `<span>${n}件 えらんだ</span><span class="sp"></span>
+    seibar.innerHTML = `<button class="btn" id="s-off" title="えらぶのをやめて、会話を開けるように戻す（Esc）">✕ やめる</button>
+      <span>${n}件 えらんだ</span><span class="sp"></span>
       <button class="btn" id="s-all">全部</button>
       <button class="btn" id="s-group" ${n?"":"disabled"}>組に入れる</button>
       <button class="btn" id="s-arch" ${n?"":"disabled"}>しまう</button>
-      <button class="btn bad" id="s-del" ${n?"":"disabled"}>ゴミ箱へ</button>
-      <button class="btn" id="s-off">おわり</button>`;
+      <button class="btn bad" id="s-del" ${n?"":"disabled"}>ゴミ箱へ</button>`;
     seibar.querySelector("#s-off").onclick = () => { SEL = false; ERANDA.clear(); seibar.hidden = true; drawChats(); };
     seibar.querySelector("#s-all").onclick = () => { if (ERANDA.size === list.length) ERANDA.clear(); else list.forEach(c => ERANDA.add(c.id)); drawChats(); };
     const matomete = async (nani, kumi = "") => {
       const ids = [...ERANDA];
       await api("/chat/matomete", {method:"POST", body:JSON.stringify({ids, 何: nani, 組: kumi})});
-      ERANDA.clear(); refresh();
+      SEL = false; ERANDA.clear(); seibar.hidden = true; refresh(); drawChats();   // 10/2 本人: まとめたら選ぶ状態を抜ける
     };
     seibar.querySelector("#s-del").onclick = async () => {
       if (!await tashikame(`えらんだ ${n}件 をごみ箱へ移します。`, "ごみ箱へ", true, "ゴミ箱から戻せます。")) return;
@@ -1284,6 +1314,10 @@ function drawChats(){
 
 async function openChat(id){
   if(VIEW!=="kernel")setView("kernel");
+  if(busy){   // 10/2 本人: 頼みの途中で会話を開き直すと、途中の表示が消え、止める札も効かなくなった
+    if(id!==ST.いま)shiraseru("いまの頼みが終わってから開けます（止めるなら ■ か Esc）");
+    return;
+  }
   const r = await api("/chat/open", {method:"POST", body:JSON.stringify({id})});
   if (r.error) return;
   log.innerHTML = "";
@@ -2331,6 +2365,9 @@ ta.addEventListener("keydown", e => {
 });
 sendBtn.onclick = () => { if (busy && ABORT) ABORT.abort(); else send(); };
 document.addEventListener("keydown", e => { if (e.key === "Escape" && ABORT){ e.preventDefault(); ABORT.abort(); } });
+document.addEventListener("keydown", e => {   // 10/2 本人: 選ぶ状態から Esc でも抜けられるように
+  if (e.key === "Escape" && !ABORT && SEL){ e.preventDefault(); SEL = false; ERANDA.clear(); drawChats(); }
+});
 
 document.addEventListener("click", e => {
   const copyCode = e.target.closest("[data-copy-code]");

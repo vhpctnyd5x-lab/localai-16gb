@@ -716,14 +716,31 @@ def teian_list():
     return result
 
 
+def _teian_to_skill(title, card):
+    """10/2 本人: 活用カードを試した後に採用したら、技（スキル）として残し、次から頭脳が使えるようにする。"""
+    name = re.sub(r"[/\\\x00-\x1f]|\.\.", "", str(title or "")).strip()[:40] or "活用の技"
+    steps = "\n".join(f"{i}. {step}" for i, step in enumerate(card.get("手順") or [], 1))
+    grounds = "；".join(f"{g.get('記事', '')}（{g.get('事実') or g.get('一文', '')}）" for g in card.get("根拠") or [] if isinstance(g, dict))
+    body = (f"目的: {card.get('目的', '')}\n適用条件: {card.get('適用条件', '')}\n手順:\n{steps}\n確かめ方: {card.get('確かめ方', '')}\n"
+            f"根拠: {grounds}\n出どころ: 活かす役（Qwen3.6）の提案を本人が採用\n")
+    return change_skill({"動き": "保存", "name": name, "description": str(card.get("目的", "") or "活用の提案から")[:60],
+                         "body": body, "on": True})
+
+
 def teian_action(body):
     ident, status, reason = body.get("id"), body.get("状態"), body.get("不要の理由", "")
-    if isinstance(ident, bool) or not isinstance(ident, int) or status not in ("試す", "後で", "不要"):
+    if isinstance(ident, bool) or not isinstance(ident, int) or status not in ("試す", "後で", "不要", "採用"):
         raise ValueError("活用カードの選択が違います")
     if status == "不要" and reason not in ("用件に合わない", "もうできる", "手順が違う"):
         raise ValueError("不要の理由を選んでください")
     if status != "不要":
         reason = ""
+    if status == "採用":
+        with _teian_db() as db:
+            row = db.execute("SELECT 題,中身 FROM teian WHERE id=?", (ident,)).fetchone()
+        if not row:
+            raise ValueError("活用カードが見つかりません")
+        _teian_to_skill(row[0], json.loads(row[1]))
     with _teian_db() as db:
         cur = db.execute("UPDATE teian SET 状態=?,不要の理由=?,選んだ日時=? WHERE id=?",
                          (status, reason, time.strftime("%Y-%m-%d %H:%M:%S"), ident))
