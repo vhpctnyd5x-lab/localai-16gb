@@ -171,6 +171,8 @@ def kiku(args):
             answer = event["完了"].get("出力", "")
     print(f"{round(time.time() - start)}秒｜モデル {loaded_model()}｜道具 {tools}")
     print("答え", answer[:300])
+    # 10/1 本人: 試験で作った会話が一覧に溜まって紛らわしい。終わったらゴミ箱へ（戻せる）。
+    call(line, "/chat/delete", {"id": chat.get("id") if isinstance(chat, dict) else chat})
 
 
 def gakushuu(args):
