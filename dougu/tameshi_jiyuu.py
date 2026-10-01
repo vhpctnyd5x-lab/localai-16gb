@@ -449,6 +449,15 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert got["結果"].splitlines() == ["ファイル名,残数,色", "赤.txt,0,", "青.txt,0,"] and len(got["足りない"]) == 2, got
     assert jiyuu._risk("hyou", {"paths": ["~/.ssh/id_rsa"], "columns": ["a"]}) == "禁止"
     assert not jiyuu._run("hyou", {"paths": [str(shelf / "無い.txt")], "columns": ["品名"]}, "見る", "test")["ok"]
+    big = shelf / "大きい.txt"
+    big.write_text("品名: 大\n" + "あ" * (jiyuu.gate.READ_ALL_IF_UNDER_CHARS + 10) + "\n")
+    assert "全部は読めない" in jiyuu._run("hyou", {"paths": [str(big)], "columns": ["品名"]}, "見る", "test")["結果"]
+    linked = home / "Documents" / "リンク入り"
+    linked.mkdir()
+    (linked / "本体.txt").write_text("本体")
+    (linked / "近道").symlink_to(linked / "本体.txt")
+    got = jiyuu._run("copy", {"src": str(linked) + "/.", "dst": str(home / "Desktop" / "リンク先")}, "戻せる", "test")
+    assert not got["ok"] and "リンク" in got["結果"] and not (home / "Desktop" / "リンク先").exists()
     assert jiyuu._rewrite_sh("sh", {"command": f'cp -R "{folder}" "{home}/Desktop/tree-copy"'})[0] == "copy"
     for command in (f"cp -n {src} {copied}", f"cp {src} {copied} && echo done",
                     f"cp {src} {home}/../elsewhere.txt", f"cp -r {folder} {home}/Desktop/tree-copy; ls"):

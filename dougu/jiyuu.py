@@ -1318,6 +1318,8 @@ def _hyou(paths, columns, session):
             return {"ok": False, "結果": str(result.get("結果", ""))}
         if isinstance(result.get("名前"), list):
             return {"ok": False, "結果": f"フォルダの中のフォルダは読みません: {_show_path(path)}"}
+        if not str(result["結果"]).endswith("（全体を返しました）"):   # 大きいファイルは抜粋しか返らない（10/2 Luna の審査）
+            return {"ok": False, "結果": f"大きくて全部は読めないので表にしません: {_show_path(path)}"}
         fields = {}
         for line in str(result["結果"]).removesuffix("（全体を返しました）").splitlines():
             found = re.match(r"\s*([^:]+?)\s*:\s*(.*?)\s*$", unicodedata.normalize("NFKC", line))   # 全角の ：・０ も直す
@@ -1351,6 +1353,9 @@ def _copy_contents(src, dst):
     if _unmovable(src) or _unmovable(dst, big=False):
         return {"ok": False, "結果": "保護された場所から、または保護された場所へはコピーできません"}
     children = sorted(src.iterdir())
+    odd = [child.name for child in children if child.is_symlink() or not (child.is_file() or child.is_dir())]
+    if odd:   # 途中で止まって一部だけ写ることのないよう、写す前に断る（10/2 Luna の審査）
+        return {"ok": False, "結果": "リンクや特殊なファイルがあるので写しません: " + "、".join(odd[:5])}
     clashes = [str(dst / child.name) for child in children if os.path.lexists(dst / child.name)]
     if clashes:
         return {"ok": False, "結果": "コピー先に同じ名前があります（上書きしません）: " + "、".join(clashes[:5])}
