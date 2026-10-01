@@ -756,7 +756,7 @@ def _rewrite_sh(name, args):
         return "move", {"src": first[1], "dst": first[2]}, ""
     if len(parts) == 1 and first and first[0] == "cp":
         words = first[1:]
-        while words and words[0] in ("-p", "-R", "-r"):
+        while words and re.fullmatch(r"-[pRra]+", words[0]):   # 10/2 J29: cp -rp も（-n は上書きの意味が違うので sh のまま）
             words = words[1:]
         if len(words) == 2 and all(_plain_path(path) for path in words):
             return "copy", {"src": words[0], "dst": words[1]}, ""
@@ -839,6 +839,9 @@ def _risk(name, args):
         # 中で動く命令と、連結の中の変数は読めない（9/30 NVIDIA の審査: echo $(reboot) が「見る」だった）。
         # $? と $HOME などは無害（9/30 MiMo の J08: echo "exit=$?" で承認待ちになった）。
         plain = re.sub(r"\$(?:\?|\{?(?:HOME|PWD|USER)\}?(?!\w))", "", command)
+        # 10/2 本番: シングルクォートの中はシェルが展開しない。awk '{print $NF}' の $ で承認待ちになっていた
+        # （awk・sed・perl の system・書き出し・getline は、この下の決まりで今までどおり止まる）。
+        plain = re.sub(r"'[^']*'", "''", plain)
         inner = _substitutions(command)
         if inner is None:   # 入れ子・閉じ忘れなど、読めない形
             return "戻せない"
@@ -1539,7 +1542,7 @@ def _request_guard(name, args, request, found, risk):
                     sources = [words[1]]
                 elif Path(words[0]).name == "cp":
                     operands = words[1:]
-                    while operands and operands[0] in ("-p", "-R", "-r"):
+                    while operands and re.fullmatch(r"-[pRra]+", operands[0]):
                         operands = operands[1:]
                     if len(operands) == 2:
                         sources = [operands[0]]
@@ -1778,6 +1781,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     used = 0
     seen: set[str] = set()
     read_seen: set[str] = set()    # 変更が成功したら再確認を許す。変更操作の重複は禁止のまま。
+    failed_seen: set[str] = set()  # 10/2 J29: 失敗した手は、別の変更が成功した後ならやり直せる（mkdir の後の cp）
     found: list[str] = []          # この頼みで find・read の一覧・sh の find/ls が見つけた場所
     timed_out: set[str] = set()    # 時間切れになった命令の頭の2語
     force = False
@@ -1973,9 +1977,11 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     if result.get("ok"):
                         succeeded += 1
                         if name in ("write", "edit", "move", "copy", "trash") or name == "sh" and args.get("command") and base_risk != "見る":
-                            seen.difference_update(read_seen)
+                            seen.difference_update(read_seen | failed_seen)
                             read_seen.clear()
-                    elif risk != "同じ手":   # 同じ手の注意は 30B への指示なので、本人には見せない
+                            failed_seen.clear()
+                    elif risk != "同じ手":
+                        failed_seen.add(signature)   # 同じ手の注意は 30B への指示なので、本人には見せない
                         last_problem = str(result.get("結果", ""))[:120]
                     if name != "sensei" and not result.get("ok"):
                         failures += 1

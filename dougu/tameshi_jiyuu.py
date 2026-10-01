@@ -445,6 +445,14 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert jiyuu._exit_one_meaning("/usr/bin/grep -c x a.txt") and jiyuu._exit_one_meaning("[ -f a ]")
     assert jiyuu._exit_one_meaning("grep x a | head -3") == "" and jiyuu._exit_one_meaning("grep x a && echo ok") == ""
     assert jiyuu._exit_one_meaning("ls nothing") == ""
+    # 10/2 本番: シングルクォートの中の $（awk の $NF）では承認待ちにしない。危ない形は今までどおり。
+    assert jiyuu._risk("sh", {"command": "find ~/Documents -type f | awk -F. '{print $NF}' | sort | uniq -c"}) == "見る"
+    for risky in ("ls | awk '{print $1; system(\"x\")}'", "ls | awk '{print $1 > \"/tmp/o\"}'", "echo \"$SECRET\" | cat",
+                  "X=rm; ls | $X", "ls | awk '{print $1}' 'unclosed"):
+        assert jiyuu._risk("sh", {"command": risky}) != "見る", risky
+    # 10/2 J29: cp -rp・-a もコピーの道具へ（-n は sh のまま）。
+    assert jiyuu._rewrite_sh("sh", {"command": f'cp -rp "{folder}" "{home}/Desktop/tree-copy2"'})[0] == "copy"
+    assert jiyuu._rewrite_sh("sh", {"command": f"cp -a {folder} {home}/Desktop/tree-copy3"})[0] == "copy"
     # 10/2 J40: 頼みの場所に無かった時は、そのことも言ってから聞く。
     weekly = [home / "Documents" / "週報.txt", home / "Desktop" / "提出用" / "週報.txt"]
     guard = jiyuu._request_guard("copy", {"src": str(weekly[0]), "dst": str(weekly[1])},
@@ -942,6 +950,18 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         approval.assert_not_called()
         assert east.read_text() == "東" and west.read_text() == "西" and not destination.exists()
         checks += 1
+
+    # 10/2 J29: 失敗した手は、別の変更が成功した後ならやり直せる。成功した手の繰り返しは今までどおり止める。
+    retry_src, retry_dst = home / "Documents" / "やり直し.txt", home / "Desktop" / "やり直し先" / "やり直し.txt"
+    retry_move = call("move", src=str(retry_src), dst=str(retry_dst))
+    replies = iter([{"content": "", "tool_calls": [retry_move, call("write", path=str(retry_src), content="中身"), retry_move, retry_move]},
+                    {"content": "移しました。"}])
+    with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)), \
+         mock.patch.object(jiyuu, "_run", wraps=jiyuu._run) as run, mock.patch.object(jiyuu, "_kiku", return_value=True):
+        jiyuu.kotaeru(f"{retry_src} を書いてから {retry_dst} へ移して", mode="バイパス")
+    assert retry_dst.read_text() == "中身" and not retry_src.exists()
+    assert [entry.args[0] for entry in run.call_args_list].count("move") == 2   # 失敗1回＋やり直し1回。3回目は同じ手
+    checks += 1
 
     # 全部/両方/すべて、本人の明示した元パス、候補1件は通す。同名の再検索は2件にしない。
     found21 = [str(east), str(west), str(east)]
