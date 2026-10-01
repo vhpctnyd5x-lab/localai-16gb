@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert captured[0]["cache_prompt"] is True
     assert captured[0]["tools"] == jiyuu.TOOLS
     assert captured[0]["chat_template_kwargs"]["enable_thinking"] is True
-    assert len(captured[0]["tools"]) == 13 and captured[0]["max_tokens"] == 128
+    assert len(captured[0]["tools"]) == 14 and captured[0]["max_tokens"] == 128
     checks += 1
     preview = jiyuu._short({"ok": True, "結果": "A" * 6000}, "long", 1)
     archive = Path(preview.split("全文: ", 1)[1].split(" …", 1)[0])
@@ -274,6 +274,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         assert jiyuu._risk("edit", {"path": path, "old": "x", "new": "y"}) == "禁止", path
         assert jiyuu._risk("find", {"dir": path, "text": "x"}) == "禁止", path
         assert jiyuu._risk("move", {"src": path, "dst": "~/safe"}) == "禁止", path
+        assert jiyuu._risk("copy", {"src": path, "dst": "~/safe"}) == "禁止", path
         assert jiyuu._risk("trash", {"paths": [path]}) == "禁止", path
         assert jiyuu._risk("sh", {"command": f"cat '{path}'"}) == "禁止", path
     assert jiyuu._risk("sh", {"command": "security find-generic-password -s test"}) == "禁止"
@@ -392,6 +393,33 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert not jiyuu._run(name, args, "戻せる", "test")["ok"] and src.read_text() == "second"
     assert jiyuu._rewrite_sh("sh", {"command": f"mv {src} {dst} && echo done"})[0] == "sh"
     assert jiyuu._rewrite_sh("sh", {"command": f"mv {src} {home}/../elsewhere.txt"})[0] == "sh"
+    # copy道具と cp の言い換え。元を残し、フォルダは再帰し、既存先は上書きしない。
+    copied = home / "Desktop" / "退避" / "深い" / "meeting.txt"
+    name, args, note = jiyuu._rewrite_sh("sh", {"command": f'cp -p "{src}" "{copied}"'})
+    assert name == "copy" and args == {"src": str(src), "dst": str(copied)} and not note
+    assert jiyuu._valid(call("copy", **args)) == ("copy", args)
+    assert jiyuu._label("copy", args).startswith("コピー: ")
+    assert jiyuu._risk(name, args) == "戻せる"
+    result = jiyuu._run(name, args, "戻せる", "test")
+    assert result["ok"] and copied.read_text() == "second" and src.read_text() == "second"
+    copied.write_text("保護")
+    result = jiyuu._run(name, args, "戻せる", "test")
+    assert not result["ok"] and copied.read_text() == "保護" and src.read_text() == "second"
+    folder = home / "Documents" / "copy-source"
+    folder.mkdir()
+    (folder / "nested.txt").write_text("nested")
+    folder_copy = home / "Desktop" / "folder-copy"
+    result = jiyuu._run("copy", {"src": str(folder), "dst": str(folder_copy)}, "戻せる", "test")
+    assert result["ok"] and (folder_copy / "nested.txt").read_text() == "nested" and folder.exists()
+    existing_dir = home / "Desktop" / "既存フォルダ"
+    existing_dir.mkdir()
+    result = jiyuu._run("copy", {"src": str(src), "dst": str(existing_dir)}, "戻せる", "test")
+    assert result["ok"] and (existing_dir / src.name).read_text() == "second"
+    assert jiyuu._rewrite_sh("sh", {"command": f'cp -R "{folder}" "{home}/Desktop/tree-copy"'})[0] == "copy"
+    for command in (f"cp -n {src} {copied}", f"cp {src} {copied} && echo done",
+                    f"cp {src} {home}/../elsewhere.txt", f"cp -r {folder} {home}/Desktop/tree-copy; ls"):
+        assert jiyuu._rewrite_sh("sh", {"command": command})[0] == "sh", command
+    assert jiyuu._risk("copy", {"src": str(Path(os.environ["KERNEL_PROJECT_DIR"])), "dst": str(home / "safe")}) == "禁止"
     missing_dst = home / "Desktop" / "別" / "meeting.txt"
     hint = jiyuu._missing_hint("sh", {"command": f"mv {src} {missing_dst}"},
                                {"ok": False, "結果": "mv: No such file or directory"})
@@ -945,7 +973,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     with mock.patch.object(jiyuu, "_ask", side_effect=replies19) as ask, \
          mock.patch.object(jiyuu, "_run", side_effect=run19) as run:
         assert jiyuu.kotaeru("~/Documents/今回/報告.txt の写しを上書きせず報告_新.txtにし、索引.csvを作って") == "完了"
-    assert [entry.args[0] for entry in run.call_args_list] == ["sh", "sh", "sh", "write"]
+    assert [entry.args[0] for entry in run.call_args_list] == ["sh", "copy", "sh", "write"]
     assert not any(entry.kwargs.get("final") for entry in ask.call_args_list)
     assert source19.read_text() == new19.read_text() == "今回の報告: ORBIT-643\n"
     assert previous19.read_text() == "前回の報告: ORBIT-319\n" and index19.read_text() == csv19
@@ -954,7 +982,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     # 変更なし・失敗した変更の後は同じ読取を止める。変更操作の重複も従来どおり止める。
     for middle in ([], [call("sh", command="cp ~/ない.txt ~/写し.txt")]):
         with mock.patch.object(jiyuu, "_ask", side_effect=[{"tool_calls": [ls19] + middle + [ls19]}, {"content": "完了"}]), \
-             mock.patch.object(jiyuu, "_run", side_effect=lambda name, args, *a, **kw: {"ok": not args.get("command", "").startswith("cp ")}) as run:
+             mock.patch.object(jiyuu, "_run", side_effect=lambda name, args, *a, **kw: {"ok": name != "copy"}) as run:
             assert jiyuu.kotaeru("確認して") == "完了"
         assert len(run.call_args_list) == 1 + len(middle)
     same_write = call("write", path=str(index19), content=csv19)

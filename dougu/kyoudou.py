@@ -1281,6 +1281,40 @@ def _write_atomic(path: str, content: bytes) -> None:
             pass
 
 
+def _copy_path(src: str | Path, dst: str | Path) -> None:
+    """既存の行き先を上書きせず、ファイルまたはフォルダをコピーする。"""
+    source, destination = Path(src), Path(dst)
+    if not os.path.lexists(source):
+        raise FileNotFoundError(source)
+    if source.is_symlink():
+        raise OSError("シンボリックリンクはコピーできません")
+    if os.path.lexists(destination):
+        raise FileExistsError(destination)
+    if source.is_dir():
+        source_real = os.path.realpath(source)
+        destination_real = os.path.realpath(destination)
+        if os.path.commonpath((source_real, destination_real)) == source_real:
+            raise OSError("元フォルダの中へはコピーできません")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True)
+        return
+    if not source.is_file():
+        raise OSError("通常ファイルとフォルダだけコピーできます")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(source.stat().st_mode)
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output)
+        shutil.copystat(source, destination, follow_symlinks=False)
+    except Exception:
+        try:
+            os.unlink(destination)
+        except OSError:
+            pass
+        raise
+
+
 def _archive_text(
     text: str,
     label: str,
@@ -3627,6 +3661,20 @@ def _self_test() -> None:
         root = Path(os.path.realpath(temporary))
         source = root / "input.txt"
         source.write_text("safe input\n", encoding="utf-8")
+        copied = root / "new" / "input.txt"
+        _copy_path(source, copied)
+        assert copied.read_text(encoding="utf-8") == "safe input\n" and source.exists()
+        tree = root / "tree"
+        tree.mkdir()
+        (tree / "child.txt").write_text("child", encoding="utf-8")
+        _copy_path(tree, root / "tree-copy")
+        assert (root / "tree-copy" / "child.txt").read_text(encoding="utf-8") == "child"
+        try:
+            _copy_path(source, copied)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("コピーが既存ファイルを上書きしました")
         assert _read_added_input(str(source)) == b"safe input\n"
         link = root / "link.txt"
         link.symlink_to(source)

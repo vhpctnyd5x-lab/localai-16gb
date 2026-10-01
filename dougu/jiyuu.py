@@ -30,7 +30,7 @@ import web
 
 SYSTEM = ("あなたはMacの作業係。計画し、結果を見て日本語で答える。複数手は達成条件を決める。"
           "ファイルを作るのはwrite。"
-          "移動はmove、削除はtrash。shで消す・移すな。指定されたフォルダを使い、パス途中に~を書かない。"
+          "コピーはcopy、移動はmove、削除はtrash。shで消す・移すな。指定されたフォルダを使い、パス途中に~を書かない。"
           "見つからなければfindでホーム以下を探す。変更後はfindかreadで確認。"
           "Macの状態はmac、指定ファイルはread、アプリはshのopen -a、設定はshのdefaults read。"
           "同じ手を繰り返さず、拒否を迂回しない。未知はshiru→web。"
@@ -138,6 +138,7 @@ TOOLS = [
     _tool("trash", "対象をゴミ箱に移す。", {"paths": {"type": "array", "items": _s("場所")}}, ["paths"]),
     _tool("mac", "Macを見る。what: 音量/volume、電池/battery、メモリ/memory、時刻/time、ネット/network、版/version、ディスク/disk、CPU・アプリ/cpu・app、稼働/uptime、外付け/external。", {"what": _s("見たいこと")}, ["what"]),
     _tool("move", "移動・改名。上書き不可。dstがフォルダなら中へ。", {"src": _s("元"), "dst": _s("先")}, ["src", "dst"]),
+    _tool("copy", "コピー。上書き不可。dstがフォルダなら中へ。", {"src": _s("元"), "dst": _s("先")}, ["src", "dst"]),
     _tool("web", "検索か公開ページの読取。", {"query": _s("検索語"), "url": _s("URL")}, []),
     _tool("skill", "手順を読む。", {"name": _s("スキル名")}, ["name"]),
     _tool("shiru", "学んだ知識を探す。", {"query": _s("知りたいこと")}, ["query"]),
@@ -519,7 +520,7 @@ def _valid(call):
         if name == "chrome" and (args["action"] not in ("open", "read", "tabs") or
                                  (args["action"] != "tabs" and not args.get("url"))):
             raise ValueError("chromeのactionかurlを確かめてください")
-        if name == "move" and any(re.search(r"[/ ]\s*~/", args[key]) for key in ("src", "dst")):
+        if name in ("move", "copy") and any(re.search(r"[/ ]\s*~/", args[key]) for key in ("src", "dst")):
             raise ValueError("パスの途中に~があります。例: dstは~/Desktop/整理だけを指定")
         return name, args
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
@@ -564,7 +565,7 @@ def _plain_path(value):
 
 
 def _rewrite_sh(name, args):
-    """明示された1件の移動・ゴミ箱行きを、既存の道具へ渡す。"""
+    """明示された1件のコピー・移動・ゴミ箱行きを、既存の道具へ渡す。"""
     if name != "sh" or "command" not in args or args.get("background"):
         return name, args, ""
     parsed = _shell_parts(args["command"])
@@ -575,6 +576,12 @@ def _rewrite_sh(name, args):
     if (len(parts) == 1 and len(first) == 3 and first[0] == "mv"
             and all(_plain_path(path) for path in first[1:])):
         return "move", {"src": first[1], "dst": first[2]}, ""
+    if len(parts) == 1 and first and first[0] == "cp":
+        words = first[1:]
+        while words and words[0] in ("-p", "-R", "-r"):
+            words = words[1:]
+        if len(words) == 2 and all(_plain_path(path) for path in words):
+            return "copy", {"src": words[0], "dst": words[1]}, ""
     request = _outbound().request
     requested = (bool(re.search(r"ゴミ箱[へに]|削除して|削除しといて|消して|消しといて|捨てて", request))
                  and not re.search(r"(?:ゴミ箱|削除|消し|捨て).{0,12}(?:ない|ずに|禁止)", request))
@@ -615,7 +622,7 @@ def _risk(name, args):
         return "禁止"
     if name == "find" and (_secret_path(args["dir"]) or _secret_path(args.get("glob", ""))):
         return "禁止"
-    if name == "move" and (_secret_path(args["src"]) or _secret_path(args["dst"])):
+    if name in ("move", "copy") and (_secret_path(args["src"]) or _secret_path(args["dst"])):
         return "禁止"
     if name == "trash" and any(_secret_path(p) for p in args["paths"]):
         return "禁止"
@@ -703,7 +710,7 @@ def _risk(name, args):
         if not paths or any(_unmovable(p) for p in paths):
             return "禁止"
         return "戻せる"
-    if name == "move":
+    if name in ("move", "copy"):
         if _unmovable(args["src"]) or _unmovable(args["dst"].rstrip("/") or "/", big=False):
             return "禁止"
         return "戻せる"
@@ -1070,6 +1077,27 @@ def _run(name, args, risk, session, approved=False, settei=None):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
         return {"ok": True, "結果": "移しました", "元": str(src), "先": str(dst)}
+    if name == "copy":
+        src, dst = _home_resolve(args["src"]), _home_resolve(args["dst"])
+        if not os.path.lexists(src):
+            return {"ok": False, "結果": f"見つかりません: {args['src']}"}
+        as_folder = (dst.is_dir() or args["dst"].endswith("/")
+                     or (not os.path.lexists(dst) and not dst.suffix and src.suffix))
+        if as_folder:
+            dst = dst / src.name
+        if os.path.lexists(dst):
+            return {"ok": False, "結果": f"コピー先に同じ名前があります（上書きしません）: {dst}"}
+        if _unmovable(src) or _unmovable(dst, big=False):
+            return {"ok": False, "結果": "保護された場所から、または保護された場所へはコピーできません"}
+        try:
+            gate._copy_path(src, dst)
+        except FileNotFoundError:
+            return {"ok": False, "結果": f"見つかりません: {args['src']}"}
+        except FileExistsError:
+            return {"ok": False, "結果": f"コピー先に同じ名前があります（上書きしません）: {dst}"}
+        except OSError as error:
+            return {"ok": False, "結果": str(error)}
+        return {"ok": True, "結果": "コピーしました", "元": str(src), "先": str(dst)}
     if "query" in args:
         return {"ok": True, "結果": web.sagasu(args["query"])}
     result = web.yomu(args["url"])
@@ -1112,6 +1140,8 @@ def _label(name, args):
         return _display("Chrome " + args["action"] + ": " + args.get("url", ""))
     if name == "move":
         return _display(f"移す: {_show_path(args['src'])} → {_show_path(args['dst'])}")
+    if name == "copy":
+        return _display(f"コピー: {_show_path(args['src'])} → {_show_path(args['dst'])}")
     if name == "trash":
         paths = args["paths"]
         return _display("ゴミ箱へ: " + (_show_path(paths[0]) if paths else "対象なし") + (f" ほか{len(paths)-1}つ" if len(paths) > 1 else ""))
@@ -1144,13 +1174,13 @@ def _command_key(args):
 
 def _request_guard(name, args, request, found, risk):
     """依頼の未確定部分はモデルの選択・承認モードで補わせない。読むだけは通す。"""
-    mutation = (name in ("move", "trash", "write", "edit")
+    mutation = (name in ("move", "copy", "trash", "write", "edit")
                 or name == "sh" and bool(args.get("command")) and risk != "見る")
     if not mutation:
         return ""
     # 完全削除の頼みでは、どの変更も止める（write・edit で中身を空にする抜け道も塞ぐ）。
     # 9/30 Claude: あいまいな頼みの方は、ファイルを選んで動かす・消す時だけ（「適当に名前をつけて保存して」は止めない）。
-    selecting = name in ("move", "trash") or name == "sh"
+    selecting = name in ("move", "copy", "trash") or name == "sh"
     if re.search(r"ゴミ箱(?:ではなく|じゃなく|でなく|を使わず)|復元(?:できない|不能|不可能)"
                                r"|完全(?:に)?(?:削除|消[すしして])|永久(?:に)?(?:削除|消[すしして])", request):
         return "完全削除はできません（復元できない消し方は止めています）。ゴミ箱へ移すのでよければ、そう言ってください。"
@@ -1170,7 +1200,7 @@ def _request_guard(name, args, request, found, risk):
         if len(candidates) < 2 or filename not in request and filename not in arguments:
             continue
         # 元パスを明示していても、モデルが別の候補を選んだ場合は通さない。
-        sources = ([args["src"]] if name == "move" else args["paths"] if name == "trash"
+        sources = ([args["src"]] if name in ("move", "copy") else args["paths"] if name == "trash"
                    else [args["path"]] if name in ("write", "edit") and args.get("path") else [])
         if name in ("write", "edit") and not any(Path(str(src)).name == filename for src in sources):
             continue   # 別の名前のファイルを書く（J19 の 索引.csv）なら、紛らわしい候補とは関係ない
@@ -1178,8 +1208,14 @@ def _request_guard(name, args, request, found, risk):
             parsed = _shell_parts(args["command"])
             if parsed and len(parsed[0]) == 1:
                 words = parsed[0][0]
-                if len(words) == 3 and Path(words[0]).name in ("cp", "mv"):
+                if Path(words[0]).name == "mv" and len(words) == 3:
                     sources = [words[1]]
+                elif Path(words[0]).name == "cp":
+                    operands = words[1:]
+                    while operands and operands[0] in ("-p", "-R", "-r"):
+                        operands = operands[1:]
+                    if len(operands) == 2:
+                        sources = [operands[0]]
         selected = [path for path in candidates.values()
                     if str(path) in request or _show_path(path) in request]
         if sources and all(_home_resolve(src) in selected for src in sources):
@@ -1306,7 +1342,7 @@ def _missing_hint(name, args, result, found=(), request=""):
             if _plain_path(src) and _plain_path(dst) and os.path.lexists(_home_resolve(src)) and not _home_resolve(dst).parent.is_dir():
                 result["次"] = f"移動先のフォルダがありません。先に mkdir -p {shlex.quote(str(_home_resolve(dst).parent))} を実行してください。"
         return result
-    if name not in ("read", "edit", "move", "trash", "find"):   # write は親のフォルダを作るので場所が無くならない
+    if name not in ("read", "edit", "move", "copy", "trash", "find"):   # write は親のフォルダを作るので場所が無くならない
         return result
     if not _missing_result(result):
         return result
@@ -1584,7 +1620,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             result["次"] = rewrite_note
                     if result.get("ok"):
                         succeeded += 1
-                        if name in ("write", "edit", "move", "trash") or name == "sh" and args.get("command") and base_risk != "見る":
+                        if name in ("write", "edit", "move", "copy", "trash") or name == "sh" and args.get("command") and base_risk != "見る":
                             seen.difference_update(read_seen)
                             read_seen.clear()
                     elif risk != "同じ手":   # 同じ手の注意は 30B への指示なので、本人には見せない
