@@ -31,6 +31,58 @@ import feedback
 
 TOKEN = secrets.token_urlsafe(24)
 
+
+def _make_title(cid):
+    """返答を待たせず、最初のやりとりの後に短い題名を作る（10/1 本人: 音声入力の長い発言がそのまま題名になる）。
+    まず規則で付け、頭脳が空いていれば付け直す。頭脳は読む 15〜30 トークン/秒なので、他の頼みを書いている間は割り込まない。"""
+    if not chats.needs_generated_title(cid):
+        return
+    conversation = chats.load(cid)
+    first = next((t.get("文", "") for t in (conversation or {}).get("やりとり", []) if t.get("役") == "user"), "")
+    if not first:
+        return
+    chats.set_generated_title(cid, chats.fallback_title(first))
+    import urllib.request
+    for _ in range(3):
+        time.sleep(20)
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8080/slots", timeout=2) as response:
+                busy = any(slot.get("is_processing") for slot in json.loads(response.read().decode("utf-8")))
+        except Exception:
+            return   # 頭脳が載っていない時は規則の題名のまま（読み込み・切替はしない）
+        if busy:
+            continue
+        try:
+            request = urllib.request.Request(
+                "http://127.0.0.1:8080/v1/chat/completions",
+                data=json.dumps({
+                    "messages": [
+                        {"role": "system", "content": "ユーザーの最初の発言に、内容がすぐ分かる日本語の短い題名を付ける。20字以内。説明や引用符は出さず、題名だけ。"},
+                        *[message for x in chats.title_examples(3) for message in (
+                            {"role": "user", "content": "発言: " + x["発言"][:300]},
+                            {"role": "assistant", "content": x["題"]},
+                        )],
+                        {"role": "user", "content": "題名を付ける発言: " + first[:600]},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 24,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                }, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            title = data["choices"][0]["message"]["content"].strip().strip("\"'「」『』` ")
+            if title:
+                chats.set_generated_title(cid, title if len(title) <= 20 else chats.fallback_title(title))
+        except Exception:
+            pass
+        return
+
+
+def _queue_title(cid):
+    threading.Thread(target=_make_title, args=(cid,), name="chat-title", daemon=True).start()
+
 # 画面が生きている合図。窓を閉じたら来なくなるので、自分から終わる。
 # 出しっぱなしのサーバーが残らないようにするため
 LAST_PING = [time.time()]
@@ -1190,6 +1242,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try:
                     if cid:
                         chats.add_turn(cid, "bot", res["出力"], res.get("経過", ""), res.get("ミリ秒", 0))
+                        _queue_title(cid)
                 except Exception:
                     pass
                 q.put({"完了": res})
@@ -1250,6 +1303,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 chats.add_turn(cid, "user", text)
                 chats.add_turn(cid, "bot", res["出力"], res.get("経過", ""),
                                res.get("ミリ秒", 0))
+                _queue_title(cid)
                 res["会話"] = cid
             except Exception:
                 pass
@@ -1330,6 +1384,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 CTX["会話id"] = cid
                 chats.add_turn(cid, "user", text)
                 chats.add_turn(cid, "bot", res["出力"], res["経過"], res["ミリ秒"])
+                _queue_title(cid)
                 res["会話"] = cid
             except Exception:
                 pass
@@ -1378,6 +1433,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 CTX["会話id"] = cid
                 chats.add_turn(cid, "user", text)
                 chats.add_turn(cid, "bot", res["出力"], res["経過"], res["ミリ秒"])
+                _queue_title(cid)
                 res["会話"] = cid
             except Exception:
                 pass
@@ -1437,6 +1493,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 CTX["会話id"] = cid
                 chats.add_turn(cid, "user", text)
                 chats.add_turn(cid, "bot", res["出力"], res["経過"], res["ミリ秒"])
+                _queue_title(cid)
                 res["会話"] = cid
             except Exception:
                 pass
@@ -1494,6 +1551,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 CTX["会話id"] = cid
                 chats.add_turn(cid, "user", text)
                 chats.add_turn(cid, "bot", res["出力"], res["経過"], res["ミリ秒"])
+                _queue_title(cid)
                 res["会話"] = cid
             except Exception:
                 pass
@@ -1501,10 +1559,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # ---- 会話 ----
         if path == "/chat/new":
-            c = chats.create(body.get("題") or "新しい会話")
-            CTX["会話id"] = c["id"]
+            chats.purge_empty()
+            c = None if body.get("画面だけ") else chats.create(body.get("題") or "新しい会話")
+            CTX["会話id"] = c["id"] if c else None
             CTX["会話"] = []
-            return self._json({"ok": True, "会話": c["id"]})
+            return self._json({"ok": True, "会話": c["id"] if c else None})
         if path == "/chat/open":
             c = chats.load(body.get("id"))
             if not c:

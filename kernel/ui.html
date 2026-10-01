@@ -1348,7 +1348,7 @@ function chatMenu(id){
 }
 
 document.getElementById("c-new").onclick = async () => {
-  await api("/chat/new",{method:"POST",body:JSON.stringify({})});
+  await api("/chat/new",{method:"POST",body:JSON.stringify({画面だけ:true})});
   setView("kernel");
   showHome(); refresh();
 };

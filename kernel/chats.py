@@ -16,12 +16,14 @@ import sqlite3
 import threading
 import time
 import uuid
+import re
 
 
 ROOT = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "kernel-ai")
 # 旧版の JSON は移行元兼バックアップ。新規保存には使わない。
 DIR = os.path.join(ROOT, "chats")
 DB = os.path.join(ROOT, "chats.sqlite3")
+TITLE_EXAMPLES = os.path.join(ROOT, "title_examples.json")
 
 _INIT_LOCK = threading.RLock()
 _READY = False
@@ -87,7 +89,8 @@ def _create_schema(conn):
             updated     REAL NOT NULL,
             archived    INTEGER NOT NULL DEFAULT 0,
             group_name  TEXT NOT NULL DEFAULT '',
-            deleted_at  REAL
+            deleted_at  REAL,
+            title_manual INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS turns (
@@ -108,6 +111,9 @@ def _create_schema(conn):
             ON turns(conversation_id, position);
         """
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)")}
+    if "title_manual" not in columns:
+        conn.execute("ALTER TABLE conversations ADD COLUMN title_manual INTEGER NOT NULL DEFAULT 0")
 
 
 def _replace_turns(conn, cid, turns):
@@ -254,9 +260,9 @@ def create(title="新しい会話"):
     cid, now = uuid.uuid4().hex[:12], _now()
     with _db() as conn:
         conn.execute(
-            """INSERT INTO conversations (id, title, created, updated, archived, group_name)
-               VALUES (?, ?, ?, ?, 0, '')""",
-            (cid, _title(title), now, now),
+            """INSERT INTO conversations (id, title, created, updated, archived, group_name, title_manual)
+               VALUES (?, ?, ?, ?, 0, '', ?)""",
+            (cid, _title(title), now, now, int(_title(title) != "新しい会話")),
         )
         return _load(conn, cid)
 
@@ -307,8 +313,9 @@ def load(cid, include_deleted=False):
 
 
 def listing(include_archived=False, include_deleted=False):
-    """新しい順に、会話一覧の見出しだけを返す。"""
-    clauses = []
+    """新しい順に、会話一覧の見出しだけを返す。何も話していない会話は出さない（10/1 本人）。"""
+    purge_empty()
+    clauses = ["EXISTS (SELECT 1 FROM turns t0 WHERE t0.conversation_id = c.id)"]
     if not include_deleted:
         clauses.append("c.deleted_at IS NULL")
     if not include_archived:
@@ -348,21 +355,111 @@ def add_turn(cid, role, text, trace="", ms=0):
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (cid, position, str(role), str(text), str(trace), _int(ms), now),
         )
-        title = conversation["title"]
-        if title in ("", "新しい会話") and role == "user":
-            title = _title(str(text)[:28])
-        conn.execute("UPDATE conversations SET title = ?, updated = ? WHERE id = ?", (title, now, cid))
+        conn.execute("UPDATE conversations SET updated = ? WHERE id = ?", (now, cid))
         return _load(conn, cid)
 
 
 def rename(cid, title):
     cid = _safe_id(cid)
     with _db() as conn:
+        row = conn.execute(
+            "SELECT title FROM conversations WHERE id = ? AND deleted_at IS NULL", (cid,)
+        ).fetchone()
+        if not row:
+            return None
+        first = conn.execute(
+            "SELECT text FROM turns WHERE conversation_id = ? AND role = 'user' ORDER BY position LIMIT 1",
+            (cid,),
+        ).fetchone()
         conn.execute(
-            "UPDATE conversations SET title = ?, updated = ? WHERE id = ? AND deleted_at IS NULL",
+            "UPDATE conversations SET title = ?, title_manual = 1, updated = ? WHERE id = ? AND deleted_at IS NULL",
             (_title(title), _now(), cid),
         )
-        return _load(conn, cid)
+        result = _load(conn, cid)
+    if first and str(first["text"]).strip():
+        remember_title(first["text"], title)
+    return result
+
+
+def remember_title(first_message, title):
+    """手動で直した題名を最新10件の例として保存する。"""
+    example = {"発言": str(first_message).strip()[:2000], "題": _title(title)}
+    if not example["発言"] or example["題"] == "（無題）":
+        return
+    try:
+        with open(TITLE_EXAMPLES, encoding="utf-8") as handle:
+            examples = json.load(handle)
+        if not isinstance(examples, list):
+            examples = []
+    except (OSError, ValueError, json.JSONDecodeError):
+        examples = []
+    examples.append(example)
+    os.makedirs(os.path.dirname(TITLE_EXAMPLES), exist_ok=True)
+    temp = TITLE_EXAMPLES + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(examples[-10:], handle, ensure_ascii=False, indent=2)
+    os.replace(temp, TITLE_EXAMPLES)
+
+
+def title_examples(limit=3):
+    try:
+        with open(TITLE_EXAMPLES, encoding="utf-8") as handle:
+            examples = json.load(handle)
+        return [x for x in examples if isinstance(x, dict) and x.get("発言") and x.get("題")][-limit:]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
+_FILLERS = r"(?:えっと|えーと|ええと|えー|あのー|あのさ|なんだっけ|なんて言うんだろう(?:な)?|なんていうか)"
+_LEADING = r"(?:あの|まあ|なんか|その|ちょっと|はい|で|あと)"
+
+
+def _short_title(value):
+    return str(value or "").strip().replace("\n", " ")[:20] or "（無題）"
+
+
+def fallback_title(first_message):
+    """言いよどみ（音声入力の「えっと・なんだっけ」は途中からも、「あの・まあ」は頭だけ）を除き、最初の文の20字を題名にする。"""
+    text = re.sub(_FILLERS + r"[\s、。,.!?！？ー〜…]*", "", str(first_message or ""))
+    text = re.sub(r"^(?:[\s、。,.!?！？]*" + _LEADING + r"(?=[\s、。,.!?！？]))+[\s、。,.!?！？]*", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" 、。,.!?！？")
+    first = re.split(r"[。！？!?\n]", text, maxsplit=1)[0].strip(" 、")
+    return _short_title(first or text)
+
+
+def set_generated_title(cid, title):
+    """本人が付けた題名は決して上書きしない（規則の題名を頭脳の題名で付け直すのは良い）。"""
+    cid = _safe_id(cid)
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT title, title_manual, COUNT(t.id) AS count FROM conversations c LEFT JOIN turns t ON t.conversation_id=c.id WHERE c.id=? AND c.deleted_at IS NULL GROUP BY c.id",
+            (cid,),
+        ).fetchone()
+        if not row or row["title_manual"] or row["count"] < 2:
+            return False
+        conn.execute("UPDATE conversations SET title=?, updated=? WHERE id=?", (_short_title(title), _now(), cid))
+        return True
+
+
+def needs_generated_title(cid):
+    cid = _safe_id(cid)
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT title, title_manual, COUNT(t.id) AS count FROM conversations c LEFT JOIN turns t ON t.conversation_id=c.id WHERE c.id=? AND c.deleted_at IS NULL GROUP BY c.id",
+            (cid,),
+        ).fetchone()
+        return bool(row and not row["title_manual"] and row["title"] == "新しい会話" and row["count"] >= 2)
+
+
+def purge_empty(older_than=600):
+    """発言0件のまま older_than 秒たった会話を消す（中身が無いので戻す物もない）。
+    作った直後は残す: 作ってから最初の発言を足すまでの間に一覧が呼ばれても消えないように。"""
+    with _db() as conn:
+        return conn.execute(
+            "DELETE FROM conversations WHERE deleted_at IS NULL AND created < ?"
+            " AND NOT EXISTS (SELECT 1 FROM turns WHERE turns.conversation_id=conversations.id)",
+            (_now() - older_than,),
+        ).rowcount
 
 
 def archive(cid, on=True):

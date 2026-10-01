@@ -25,11 +25,14 @@ class ServerApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.old_dir, self.old_db, self.old_ready = (
-            server.chats.DIR, server.chats.DB, server.chats._READY,
+        self.old_dir, self.old_db, self.old_examples, self.old_ready = (
+            server.chats.DIR, server.chats.DB, server.chats.TITLE_EXAMPLES, server.chats._READY,
         )
+        self.old_settings = server.CTX.get("設定")
+        server.CTX["設定"] = {"モード": "試験", "会話の長さ": 8}
         server.chats.DIR = str(root / "legacy")
         server.chats.DB = str(root / "chats.sqlite3")
+        server.chats.TITLE_EXAMPLES = str(root / "title_examples.json")
         server.chats._READY = False
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler)
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
@@ -40,9 +43,10 @@ class ServerApiTests(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=2)
-        server.chats.DIR, server.chats.DB, server.chats._READY = (
-            self.old_dir, self.old_db, self.old_ready,
+        server.chats.DIR, server.chats.DB, server.chats.TITLE_EXAMPLES, server.chats._READY = (
+            self.old_dir, self.old_db, self.old_examples, self.old_ready,
         )
+        server.CTX["設定"] = self.old_settings
         self.tmp.cleanup()
 
     def post(self, path, body):
@@ -64,6 +68,15 @@ class ServerApiTests(unittest.TestCase):
         self.assertTrue(self.post("/chat/restore", {"id": cid})["ok"])
         self.assertIsNotNone(server.chats.load(cid))
 
+    def test_screen_only_new_chat_creates_no_database_row(self):
+        empty = server.chats.create()
+        with server.chats._db() as conn:   # 10分より前に作られた空の会話にする（作った直後は消さない）
+            conn.execute("UPDATE conversations SET created = created - 900 WHERE id = ?", (empty["id"],))
+        result = self.post("/chat/new", {"画面だけ": True})
+        self.assertEqual(result, {"ok": True, "会話": None})
+        self.assertIsNone(server.chats.load(empty["id"]))
+        self.assertEqual(server.chats.listing(), [])
+
     def test_pick_file_returns_the_native_choice(self):
         selected = Path(self.tmp.name) / "選んだ.txt"
         selected.write_text("ok", encoding="utf-8")
@@ -80,8 +93,10 @@ class ServerApiTests(unittest.TestCase):
 
     def test_client_disconnect_marks_the_streamed_answer_stopped_and_saves_it(self):
         old_handler = server.handle_text_nagashi
+        old_queue_title = server._queue_title
+        server._queue_title = lambda _cid: None
 
-        def fake_handler(text, queue, stop):
+        def fake_handler(text, queue, stop, michi=None, rireki=None):
             # 切断を検知するまで何度か書く。Handler が BrokenPipe を受け取ると
             # stop が立ち、下の回答が履歴へ保存される。
             import teachers
@@ -126,6 +141,7 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(saved["やりとり"][1]["文"], "（ここで止めた）")
         finally:
             server.handle_text_nagashi = old_handler
+            server._queue_title = old_queue_title
 
 
 if __name__ == "__main__":
