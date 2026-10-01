@@ -124,6 +124,23 @@ class ServerApiTests(unittest.TestCase):
         reused = [x for x in self.post("/chat/seiri/an", {})["案"] if x["区分"] == "組" and x["id"] in {c["id"], d["id"]}]
         self.assertEqual({x["組"] for x in reused}, {selected_name})
 
+    def test_model_title_strips_empty_think_block(self):
+        """10/1 本番: --reasoning-format none で「<think> </think> デスク」が題名になった。"""
+        import io, json as _json, unittest.mock as um
+        chat = server.chats.create()
+        server.chats.add_turn(chat["id"], "user", "えっと、デスクトップにあるフォルダの数を教えて")
+        server.chats.add_turn(chat["id"], "bot", "3つです")
+        replies = [io.BytesIO(_json.dumps([{"is_processing": False}]).encode()),
+                   io.BytesIO(_json.dumps({"choices": [{"message": {"content": "<think>\n\n</think>\n\nデスクトップのフォルダ数"}}]}).encode())]
+        def fake_urlopen(*_a, **_k):
+            body = replies.pop(0)
+            body.__enter__ = lambda self=body: self
+            body.__exit__ = lambda *a: False
+            return body
+        with um.patch("time.sleep"), um.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            server._make_title(chat["id"])
+        self.assertEqual(server.chats.load(chat["id"])["題"], "デスクトップのフォルダ数")
+
     def test_screen_only_new_chat_creates_no_database_row(self):
         empty = server.chats.create()
         with server.chats._db() as conn:   # 10分より前に作られた空の会話にする（作った直後は消さない）

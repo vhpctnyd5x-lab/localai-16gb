@@ -42,6 +42,7 @@ def _make_title(cid):
     if not first:
         return
     chats.set_generated_title(cid, chats.fallback_title(first))
+    import re
     import urllib.request
     for _ in range(3):
         time.sleep(20)
@@ -72,7 +73,9 @@ def _make_title(cid):
             )
             with urllib.request.urlopen(request, timeout=90) as response:
                 data = json.loads(response.read().decode("utf-8"))
-            title = data["choices"][0]["message"]["content"].strip().strip("\"'「」『』` ")
+            # --reasoning-format none なので、思考なしでも空の <think></think> が付いて来る（10/1 本番で「<think> </think> デスク」）
+            title = re.sub(r"<think>.*?</think>", "", data["choices"][0]["message"]["content"], flags=re.S)
+            title = title.strip().strip("\"'「」『』` ").strip()
             if title:
                 chats.set_generated_title(cid, title if len(title) <= 20 else chats.fallback_title(title))
         except Exception:
