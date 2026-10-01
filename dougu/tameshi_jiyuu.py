@@ -1024,6 +1024,9 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert jiyuu._unfinished_plan("前の結果に基づき、3つ残っていると判断します。次に、コピー先のファイルを確認し、各ファイルの本文の件数を数えます。")
     assert not jiyuu._unfinished_plan("3つのファイルをコピーし、一覧.csv を作りました。")
     assert not jiyuu._unfinished_plan("完了しました。次に何かあれば言ってください。")
+    assert jiyuu._unfinished_plan("月曜.txtの内容を確認します。")   # 10/1 J14
+    assert not jiyuu._unfinished_plan("フォルダは3つあります。")
+    assert not jiyuu._unfinished_plan("コピーし、一覧.csv に3行を書きました。原本は残しています。")
     tickets = home / "Documents" / "作業票"
     tickets.mkdir(parents=True)
     ticket = tickets / "あ.txt"

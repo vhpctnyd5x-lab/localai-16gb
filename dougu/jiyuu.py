@@ -179,8 +179,13 @@ def _japanese_plan(text: str) -> bool:
 def _unfinished_plan(text: str) -> bool:
     """9/30 Qwen3.6 の J14: 道具を使った後に「次に、…を数えます。」と予定だけ書いて止まり、それが答えになった。"""
     sentences = [s.strip() for s in re.split(r"(?<=[。！？!?])|\n+", text.strip()) if s.strip()]
-    return bool(sentences) and bool(re.search(r"次に|これから|続いて|引き続き", sentences[-1])
-                                    and re.search(r"ます[。.]?$", sentences[-1]))
+    if not sentences or not re.search(r"ます[。.]?$", sentences[-1]):
+        return False
+    if re.search(r"次に|これから|続いて|引き続き", sentences[-1]):
+        return True
+    # 10/1 J14: 「月曜.txtの内容を確認します。」だけで止まった。短く、過去形が無く、状態の「あります・います」でもない時も予定とみる
+    return (len(text) <= 60 and "ました" not in text
+            and not re.search(r"(?:あり|い|でき|なり|わかり|分かり|ござい)ます[。.]?$", sentences[-1]))
 
 
 def _raw_tool_call(text: str) -> bool:
