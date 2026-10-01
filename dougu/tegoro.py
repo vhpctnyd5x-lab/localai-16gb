@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import itertools
 import json
 import os
 import platform
@@ -84,6 +85,18 @@ def _prepare_jiyuu(home: Path, row: dict) -> dict:
             for relative in row["check"].get("unchanged", [])}
 
 
+def _csv_rows_match(actual: list, wanted: list) -> bool:
+    """行の順は問わず1対1で対応させる。期待のセルが re: で始まれば、その正規表現を含めば良い
+    （10/2 J19: 区分の言葉は頼みで決めていないので「前回分・新写し」も「前回・今回」と同じに扱う）。"""
+    def same(got, want):
+        return len(got) == len(want) and all(re.search(w[3:], g) if w.startswith("re:") else g == w for g, w in zip(got, want))
+    if len(actual) != len(wanted):
+        return False
+    if len(actual) > 7 or not any(cell.startswith("re:") for row in wanted for cell in row):
+        return sorted(actual) == sorted(wanted)
+    return any(all(same(g, w) for g, w in zip(order, wanted)) for order in itertools.permutations(actual))
+
+
 def _check_jiyuu_suite(home: Path, rule: dict, answer: str, approvals: list,
                        baseline: dict) -> bool:
     """成果物・原本保持・確認の意図を採点。文体、CSVの行順には依存しない。"""
@@ -105,7 +118,7 @@ def _check_jiyuu_suite(home: Path, rule: dict, answer: str, approvals: list,
             with path.open(encoding="utf-8-sig", newline="") as stream:
                 actual = [[plain(cell) for cell in cells] for cells in csv.reader(stream)]
             wanted = [[plain(cell) for cell in cells] for cells in expected]
-            if not actual or actual[0] != wanted[0] or sorted(actual[1:]) != sorted(wanted[1:]):
+            if not actual or actual[0] != wanted[0] or not _csv_rows_match(actual[1:], wanted[1:]):
                 return False
         for relative, expected in rule.get("trees", {}).items():
             folder = home / relative
