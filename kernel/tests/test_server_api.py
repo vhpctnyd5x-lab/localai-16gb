@@ -36,6 +36,10 @@ class ServerApiTests(unittest.TestCase):
         server.chats.TITLE_EXAMPLES = str(root / "title_examples.json")
         server.chats.SEIRI_OBOE = str(root / "seiri_oboe.json")
         server.chats._READY = False
+        # 10/2: 整理は頭脳を起こして Qwen3.6 に聞くようになった。試験では本物の頭脳に触れない（規則の案だけ）。
+        self.old_youi, self.old_ask_seiri = server.moderu_youi, server.chats._ask_seiri_qwen
+        server.moderu_youi = lambda key: (True, "試験")
+        server.chats._ask_seiri_qwen = lambda entries: None
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler)
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -49,6 +53,7 @@ class ServerApiTests(unittest.TestCase):
             self.old_dir, self.old_db, self.old_examples, self.old_ready,
         )
         server.chats.SEIRI_OBOE = self.old_seiri_oboe
+        server.moderu_youi, server.chats._ask_seiri_qwen = self.old_youi, self.old_ask_seiri
         server.CTX["設定"] = self.old_settings
         self.tmp.cleanup()
 
