@@ -446,9 +446,18 @@ _KUWASHII = re.compile(
     r"|整理|移し|移動|消し|削除|作っ|作成|書い|書き|開い|開け|変え|変更|直し")
 
 
+_MAC_TOPICS = (r"音量|ボリューム", r"電池|バッテリー|充電", r"メモリ", r"時刻|何時|日付|曜日", r"ネット|Wi-?Fi",
+               r"バージョン|macOS", r"ディスク|ストレージ|空き容量", r"CPU|重いアプリ", r"稼働|起動してから", r"外付け|USB|SSD")
+
+
 def chikamichi_ok(text) -> bool:
-    """近道に回してよい問いか。Mac の様子や、場所の一覧・数だけを聞く問いに限る。"""
-    return not _KUWASHII.search(str(text or ""))
+    """近道に回してよい問いか。Mac の様子や、場所の一覧・数だけを聞く問いに限る。
+    10/2 本番: 近道は1つしか答えない（「時刻と電池」に時刻だけ、「電池とメモリ」に電池だけ）。2つ以上を聞く頼みは輪へ。"""
+    text = str(text or "")
+    if _KUWASHII.search(text):
+        return False
+    topics = sum(1 for pattern in _MAC_TOPICS if re.search(pattern, text, re.I))
+    return topics < 2 and not re.search(r"それと|あと、|それから|および|あわせて|も教えて|も見て", text)
 
 
 def _normalize(args: dict) -> dict:
