@@ -1522,21 +1522,42 @@ def _csv_problems(content, request, read_contents, found, fixed=None):
     for text in read_contents:
         for key, value in _fields(text).items():
             seen.setdefault(key, set()).add(value)
-    files = {}
+    files, stems = {}, {}
     for raw in found:
         files.setdefault(Path(str(raw)).name, []).append(str(raw))
+        stems.setdefault(Path(str(raw)).stem, []).append(str(raw))
+    records = []   # 読んだファイルごとの「項目: 値」（同じファイルを2度読んでも1つ）
+    for text in read_contents:
+        record = _fields(text)
+        if record and record not in records:
+            records.append(record)
+
+    def own_fields(paths):
+        kinds = []
+        for raw_path in paths:
+            if _secret_path(raw_path):
+                continue
+            try:
+                path = _home_resolve(raw_path)
+                if path.is_file() and path.stat().st_size <= 65536:
+                    record = _fields(path.read_text(encoding="utf-8", errors="replace"))
+                    if record and record not in kinds:
+                        kinds.append(record)
+            except OSError:
+                pass
+        return kinds[0] if len(kinds) == 1 else {}
     start = 1 if rows[0] == header else 0
     for index, row in enumerate(rows[start:], start):
         own = {}
         for cell in row:
             paths = files.get(cell, [])
-            if len(paths) == 1 and not _secret_path(paths[0]):
-                try:
-                    path = _home_resolve(paths[0])
-                    if path.is_file() and path.stat().st_size <= 65536:
-                        own = _fields(path.read_text(encoding="utf-8", errors="replace"))
-                except OSError:
-                    pass
+            if len(paths) == 1:
+                own = own_fields(paths)
+        if not own and row:
+            # 10/2 J25: 行がどのファイルかを1列目で結ぶ（品名「赤ペン」、またはファイル名の「赤」）。
+            #   結べないと「必要数 0」が別のファイル（黒）の値と合ってしまい、見逃していた。
+            same = [r for r in records if header and header[0] in r and _same_value(row[0], r[header[0]])]
+            own = same[0] if len(same) == 1 else own_fields(stems.get(row[0], []))
         for place, (column, cell) in enumerate(zip(header, row)):
             if column in own and not _same_value(cell, own[column]):
                 problems.append(f"{row[0]} の {column}「{cell}」（ファイルでは {own[column]}）")

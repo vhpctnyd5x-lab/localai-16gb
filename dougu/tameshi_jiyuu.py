@@ -523,6 +523,14 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     fixed = []
     assert jiyuu._csv_problems("ファイル名,件数\n月曜.txt,1", "一覧.csv に ファイル名,件数 の列で", [], [str(tana / "月曜.txt")], fixed)
     assert fixed == ["ファイル名,件数\n月曜.txt,4"], fixed
+    # 10/2 J25: 行を1列目（品名・ファイル名の幹）で元のファイルに結ぶ。別のファイル（黒）の 0 と合っても見逃さない。
+    (tana / "赤.txt").write_text("品名: 赤ペン\n必要数: 12\n")
+    (tana / "黒.txt").write_text("品名: 黒ペン\n必要数: 0\n")
+    yonda = ["品名: 赤ペン\n必要数: 12\n", "品名: 黒ペン\n必要数: 0\n"]
+    for kaita in ("品名,必要数\n赤ペン,0", "品名,必要数\n赤,10"):
+        fixed = []
+        assert jiyuu._csv_problems(kaita, "補充.csv に 品名,必要数 の列で", yonda, [str(tana / "赤.txt"), str(tana / "黒.txt")], fixed)
+        assert fixed == ["品名,必要数\n赤ペン,12"], (kaita, fixed)
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 
