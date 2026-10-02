@@ -271,6 +271,7 @@ MODERU = {
         # ★ 2026-09-24 -c 8192 → 32768（dougu/hakaru_nagasa.py: 16GB で足りる・スワップ +0.5GB。浅い頼みの速さは同じ。
         #   深さ 2.3万で 読み 10.5・書き 1.8 t/s なので、協働の輪は 1.2万で要約する）
         "opts": ["-t", "6", "-ngl", "0", "-dev", "none", "-c", "32768", "-np", "2", "-kvu", "--no-cache-idle-slots", "-cb", "-ub", "256",
+                 "-cram", "512",   # 10/2: 既定の頼みの控え 8GB で、続けて使うと自前の分が 4〜6GB に。512 で最大 2.0GB（全41問）
                  "--cache-reuse", "16", "-fa", "off", "--reasoning-format", "none"],
         # 先読みは _SPEC_OPTS（ngram-simple）。9/30 dougu/hayasa.py: MTP の先読みはこの Mac では逆に遅い（Qwen3.6 8.0→6.4 t/s）。
     },
@@ -284,8 +285,10 @@ MODERU["local:main"].update({"llama": _KOUKAI_LSRV,
                              "env": {"KOUKAI_VOCAB_KEEP": os.path.join(_KOUKAI_JIKKEN, "vocab_keep_9999_ids.txt")}})
 # 2026-09-30: 道具の11問 11/11（30B 10/11・MiMo 9/11・Ornith-1.5 8/11）。Qwen3.5 系なので呼び出しは XML（raw_template）。
 MODERU["local:q36"] = {
-    "名": "手元 Qwen3.6-35B-A3B（11.7GB）",
-    "file": os.path.join(_MODELS, "Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf"),
+    "名": "手元 Qwen3.6-35B-A3B（専門家160人・7.7GB）",
+    # 10/2: 専門家を層ごとに使われる順で160人だけ残し MTP も外した（dougu/kezuru_tejun.py）。11.7→7.7GiB、
+    #   知識 24→23/25、全41問 37→37・39/41。元のファイルは同じ置き場に残してある。
+    "file": os.path.join(_MODELS, "Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf"),
     "opts": MODERU["local:main"]["opts"].copy(),
     "輪の選び方": {"raw_template": True},
     # 語彙を 99.99% に削る（dougu/hayasa.py: 書く 7.9→8.9・読む 13.6→21.0 t/s、11問 11/11）。専門家の top-p は得なし。

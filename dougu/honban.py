@@ -36,7 +36,7 @@ SUP = HOME / "Library" / "Application Support" / "kernel-ai"
 KOUKAI = Path(__file__).resolve().parent.parent
 KERNEL = HOME / "LocalAI_mirror" / "kernel"
 LLAMA = HOME / "LocalAI_mirror" / "llama-latest" / "build" / "bin" / "llama-server"
-MODEL_MAIN = HOME / "LocalAI_mirror" / "models" / "Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf"   # 10/1: 30B は片付けた
+MODEL_MAIN = HOME / "LocalAI_mirror" / "models" / "Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf"   # 10/1: 30B は片付けた
 KEKKA = KOUKAI / "dougu" / "kekka"
 # koukai の写しの場所 → 本番の名前（dougu が正のもの）
 DOUGU_TO_KERNEL = {"jiyuu.py", "kyoudou.py", "hako.py"}

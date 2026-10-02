@@ -26,7 +26,7 @@ import chishiki_kouka   # noqa: E402  採点（atari）を同じにする
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--toi", required=True)
-    parser.add_argument("--model", default="~/LocalAI_mirror/models/Qwen3.6-35B-A3B-MTP-UD-Q2_K_XL.gguf")
+    parser.add_argument("--model", default="~/LocalAI_mirror/models/Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf")
     parser.add_argument("--llama", default="~/LocalAI_mirror/llama-koukai/llama-server")
     parser.add_argument("--out", default=str(honban.KEKKA / "chishiki_wa.jsonl"))
     args = parser.parse_args()
