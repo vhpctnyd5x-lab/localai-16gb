@@ -307,7 +307,11 @@ def _recent_topics():
     if dbpath.exists():
         try:
             with sqlite3.connect(f"file:{dbpath}?mode=ro", uri=True, timeout=2) as db:
-                out += [r[0] for r in db.execute("SELECT text FROM turns WHERE role='user' ORDER BY id DESC LIMIT 30")]
+                # 10/2: ゴミ箱の会話・「試験: 」の会話の言葉では学ばない（停止の試しの「秋の京都」で京都・舞鶴市を読み始めた）
+                out += [r[0] for r in db.execute(
+                    "SELECT t.text FROM turns t JOIN conversations c ON c.id=t.conversation_id"
+                    " WHERE t.role='user' AND c.deleted_at IS NULL AND c.title NOT LIKE '試験: %'"
+                    " ORDER BY t.id DESC LIMIT 30")]
         except (OSError, sqlite3.Error):
             pass
     out += [x["題"] for x in _records()[:20] if x.get("題")]

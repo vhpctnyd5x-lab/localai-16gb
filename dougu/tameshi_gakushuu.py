@@ -597,5 +597,17 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
     adopted = next((x for x in gakushuu.skills() if x["name"] == "保存先を確かめる技"), None)
     check(adopted and adopted["on"] and "1. 場所を確かめる" in adopted["body"] and "活かす役" in adopted["body"], "採用したカードを技として残す")
     check(next(x for x in gakushuu.teian_list() if x["id"] == adopt_id)["状態"] == "採用", "カードの状態は採用")
+    # 10/2: 会話の言葉から題を選ぶ時、ゴミ箱の会話と「試験: 」の会話は使わない。
+    with sqlite3.connect(os.environ["KERNEL_CHATS_DB"]) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT, created REAL, updated REAL,"
+                   " archived INTEGER DEFAULT 0, group_name TEXT DEFAULT '', deleted_at REAL, title_manual INTEGER DEFAULT 0)")
+        db.execute("CREATE TABLE IF NOT EXISTS turns (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, position INTEGER,"
+                   " role TEXT, text TEXT, trace TEXT, ms INTEGER, created REAL)")
+        db.executemany("INSERT INTO conversations(id,title,created,updated,deleted_at) VALUES(?,?,?,?,?)",
+                       [("live", "天体観測", 1, 1, None), ("gone", "捨てた会話", 1, 1, 5), ("test", "試験: 停止", 1, 1, None)])
+        db.executemany("INSERT INTO turns(conversation_id,position,role,text,created) VALUES(?,?,?,?,?)",
+                       [("live", 0, "user", "天体観測の始め方", 1), ("gone", 0, "user", "紅葉の名所", 1), ("test", 0, "user", "舞鶴の港", 1)])
+    topics = gakushuu._recent_topics()
+    check("天体観測" in topics and not any(w in topics for w in ("紅葉", "名所", "舞鶴")), "ゴミ箱・試験の会話の言葉では学ばない")
 
 print("OK: 本文取得・本文取り直し・活動数・FTS5・振り返り・外の先生・busy・10分・API")
