@@ -560,6 +560,26 @@ def _parse_raw(raw):
     return {"content": re.sub(r"<tool_call>.*?</tool_call>", "", raw, flags=re.S).strip(), "tool_calls": calls}
 
 
+def _main_slot():
+    """10/2: アプリの頭脳が枠2つ（KERNEL_SIDE_SLOT がある）なら、輪は枠0を使う（横の仕事に前置きを押し出させない）。"""
+    return {"id_slot": 0} if os.environ.get("KERNEL_SIDE_SLOT", "").isdigit() else {}
+
+
+def maekaki():
+    """輪の前置き（決まり文＋道具の説明）だけの文。どの頼みもこの文で始まる（前の会話があってもここまでは同じ）。"""
+    prompt = _post_to("/apply-template", {"messages": [{"role": "system", "content": _system()}, {"role": "user", "content": "x"}],
+                                          "tools": TOOLS, "chat_template_kwargs": {"enable_thinking": False}})["prompt"]
+    return prompt[:prompt.index("<|im_start|>user")] if "<|im_start|>user" in prompt else ""
+
+
+def atatameru():
+    """10/2: アプリが頭脳を起こした時に、前置きを先に読ませておく（最初の頼みで約80秒の読み直しをしない）。"""
+    prefix = maekaki()
+    if prefix:
+        _post_to("/completion", {"prompt": prefix, "n_predict": 1, "cache_prompt": True, "temperature": 0, **_main_slot()})
+    return len(prefix)
+
+
 class _Stopped(Exception):
     """画面の「止める」（gate.TOMERU）が立った。"""
 
@@ -610,7 +630,7 @@ def _ask_raw(payload):
     def complete(tools, stop):
         prompt = _post_to("/apply-template", {"messages": payload["messages"], "tools": tools,
                                               "chat_template_kwargs": payload.get("chat_template_kwargs", {})})["prompt"]
-        body = {"prompt": prompt, "n_predict": payload["max_tokens"], "cache_prompt": True, "stop": stop,
+        body = {"prompt": prompt, "n_predict": payload["max_tokens"], "cache_prompt": True, "stop": stop, **_main_slot(),
                 **{key: payload[key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty")
                    if key in payload}}
         return _post_to("/completion", body)

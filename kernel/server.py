@@ -69,6 +69,7 @@ def _make_title(cid):
                     "temperature": 0,
                     "max_tokens": 24,
                     "chat_template_kwargs": {"enable_thinking": False},
+                    **({"id_slot": int(os.environ["KERNEL_SIDE_SLOT"])} if os.environ.get("KERNEL_SIDE_SLOT", "").isdigit() else {}),
                 }, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST",
             )
@@ -269,7 +270,7 @@ MODERU = {
         #   書き出し（浅い文脈・2026-09-16）: ngram-simple 16 t/s ／ 投機なし 14 ／ -t 6・8・12 は差なし ／ KV q8_0 17.7（読み込みで大損）
         # ★ 2026-09-24 -c 8192 → 32768（dougu/hakaru_nagasa.py: 16GB で足りる・スワップ +0.5GB。浅い頼みの速さは同じ。
         #   深さ 2.3万で 読み 10.5・書き 1.8 t/s なので、協働の輪は 1.2万で要約する）
-        "opts": ["-t", "6", "-ngl", "0", "-dev", "none", "-c", "32768", "-np", "1", "-cb", "-ub", "256",
+        "opts": ["-t", "6", "-ngl", "0", "-dev", "none", "-c", "32768", "-np", "2", "-cb", "-ub", "256",
                  "--cache-reuse", "16", "-fa", "off", "--reasoning-format", "none"],
         # 先読みは _SPEC_OPTS（ngram-simple）。9/30 dougu/hayasa.py: MTP の先読みはこの Mac では逆に遅い（Qwen3.6 8.0→6.4 t/s）。
     },
@@ -294,6 +295,9 @@ MODERU["local:q36"] = {
     #   外れると巻き戻しに前置きの読み直しが要るらしく、26問では 1回の返事が 240 秒を超えて止まった（J19・J22）。
     "spec": "none",
 }
+# 10/2: 枠を2つにし（文脈は合わせて 32768 のまま、1枠 16384）、輪は枠0・題づけや振り返りなどの横の仕事は枠1。
+#   1枠を分け合うと、横の仕事のたびに輪の前置き（約1,750 トークン）が押し出され、次の頼みで約80秒の読み直しになっていた。
+os.environ.setdefault("KERNEL_SIDE_SLOT", "1")
 # 10/1: -ub 1024 は長い文を読むのが +25%（dougu/hayasa.py）だが、輪では続きの使い回しの印が粗くなり、
 #   大きな読み直しが 15 → 37 回、26問は 3,709 → 4,315 秒と遅くなった。Qwen3.6 も -ub 256 のまま。
 # 9/30 手元のおすすめ（local:main）を Qwen3.6 へ: 知識の試験 94.4/90.4%（30B 82.4/84.8%）、道具の11問 11/11 を3回。
@@ -370,6 +374,19 @@ def _sore_ga_notteru(key):
         return False
     n = _notteru()
     return bool(n) and n == os.path.basename(v["file"])
+
+
+def _atatameru():
+    """10/2: 頭脳が立ち上がったら、輪の前置き（決まり文＋道具の説明）を枠0で先に読ませる。
+    読み直しは約80秒かかり、開き直しや15分で畳んだ後の最初の頼みが毎回それだけ待っていた。"""
+    if not _matsu(300):
+        return
+    try:
+        import importlib
+        n = importlib.import_module("jiyuu").atatameru()
+        sys.stderr.write("手元のモデル: 輪の前置きを先に読みました（%d字）\n" % n)
+    except Exception as e:
+        sys.stderr.write("手元のモデル: 前置きを先に読めませんでした: %s\n" % e)
 
 
 def _matsu(byou=240):
@@ -514,6 +531,8 @@ def _temoto_okosu(key="local:main"):
             with open(os.path.join(_SUP, "llama.pid"), "w") as f:
                 f.write(str(pr.pid))
             _IMA["key"], _IMA["pid"] = key, pr.pid
+            if key == KYOUDOU_MODERU.get("kyoudou"):
+                threading.Thread(target=_atatameru, daemon=True).start()
         except Exception as e:
             return "立ち上げられません: %s" % e
     return "立ち上げました（%s） pid=%d" % (v["名"], pr.pid)

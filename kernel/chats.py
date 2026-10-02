@@ -713,6 +713,13 @@ def _seiri_llm_input(chats):
     return entries
 
 
+def _side_slot():
+    """10/2: アプリの頭脳は枠が2つ。輪は枠0、題づけ・振り返りなどの横の仕事は枠1（KERNEL_SIDE_SLOT）。
+    1つの枠を分け合うと、横の仕事のたびに輪の前置き（約1,750 トークン、読み直しに約80秒）が押し出されていた。"""
+    slot = os.environ.get("KERNEL_SIDE_SLOT", "")
+    return {"id_slot": int(slot)} if slot.isdigit() else {}
+
+
 def _ask_seiri_qwen(entries):
     """127.0.0.1 の Qwen だけを使う。利用不可・不正応答は None。"""
     import urllib.request
@@ -742,7 +749,7 @@ def _ask_seiri_qwen(entries):
         "http://127.0.0.1:8080/v1/chat/completions",
         data=json.dumps({
             "messages": [{"role": "user", "content": prompt}], "temperature": 0,
-            "max_tokens": 900, "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": 900, "chat_template_kwargs": {"enable_thinking": False}, **_side_slot(),
         }).encode("utf-8"),
         headers={"Content-Type": "application/json"}, method="POST",
     )

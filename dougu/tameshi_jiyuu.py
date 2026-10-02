@@ -1029,6 +1029,22 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         jiyuu.gate.TOMERU = saved_flag
     checks += 1
 
+    # 10/2: アプリの頭脳が枠2つの時は、輪は枠0（横の仕事に前置きを押し出させない）。前置きだけを先に読ませられる。
+    sent_bodies = []
+    def fake_template(path, payload):
+        if path == "/apply-template":
+            return {"prompt": "<|im_start|>system\n決まり文と道具<|im_end|>\n<|im_start|>user\nx<|im_end|>\n<|im_start|>assistant\n"}
+        sent_bodies.append((path, payload))
+        return {"content": "", "stop": True}
+    with mock.patch.object(jiyuu, "_post_to", side_effect=fake_template), mock.patch.dict(os.environ, {"KERNEL_SIDE_SLOT": "1"}):
+        assert jiyuu.maekaki() == "<|im_start|>system\n決まり文と道具<|im_end|>\n"
+        jiyuu.atatameru()
+        jiyuu._ask_raw({"messages": [], "tools": [], "max_tokens": 8, "temperature": 0})
+    assert [b.get("id_slot") for _, b in sent_bodies] == [0, 0] and sent_bodies[0][1]["prompt"].endswith("<|im_end|>\n")
+    with mock.patch.dict(os.environ, {"KERNEL_SIDE_SLOT": ""}):
+        assert jiyuu._main_slot() == {}
+    checks += 1
+
     # 10/2 J29: 失敗した手は、別の変更が成功した後ならやり直せる。成功した手の繰り返しは今までどおり止める。
     retry_src, retry_dst = home / "Documents" / "やり直し.txt", home / "Desktop" / "やり直し先" / "やり直し.txt"
     retry_move = call("move", src=str(retry_src), dst=str(retry_dst))

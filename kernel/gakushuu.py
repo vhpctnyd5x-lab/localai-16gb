@@ -146,7 +146,7 @@ def _local_memories(record):
               f"会話: {record.get('文', '')[:1600]}")
     payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 220, "stream": False, "temperature": 0,
-               "chat_template_kwargs": {"enable_thinking": False}}
+               "chat_template_kwargs": {"enable_thinking": False}, **_side_slot()}
     req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
                                  data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
@@ -662,7 +662,7 @@ def _local_reflect(record):
                   f"記録: {record.get('文', '')[:800]}")
         payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 300, "stream": True, "temperature": 0,
-                   "chat_template_kwargs": {"enable_thinking": False}}
+                   "chat_template_kwargs": {"enable_thinking": False}, **_side_slot()}
         req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
                                      data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
@@ -812,6 +812,13 @@ def _teian_evidence(request, *, search=None):
         return []
 
 
+def _side_slot():
+    """10/2: アプリの頭脳は枠が2つ。輪は枠0、題づけ・振り返りなどの横の仕事は枠1（KERNEL_SIDE_SLOT）。
+    1つの枠を分け合うと、横の仕事のたびに輪の前置き（約1,750 トークン、読み直しに約80秒）が押し出されていた。"""
+    slot = os.environ.get("KERNEL_SIDE_SLOT", "")
+    return {"id_slot": int(slot)} if slot.isdigit() else {}
+
+
 def _local_teian(record, evidence):
     if (folder() / "busy").exists():
         return None, True
@@ -823,7 +830,7 @@ def _local_teian(record, evidence):
               + record.get("題", "") + "\n根拠段落: " + json.dumps(evidence, ensure_ascii=False))
     payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 600, "stream": True, "temperature": 0,   # 10/1 Claude: 日本語のカード JSON は 300〜500 トークン。240 では切れて読めない
-               "chat_template_kwargs": {"enable_thinking": False}}
+               "chat_template_kwargs": {"enable_thinking": False}, **_side_slot()}
     try:
         if (folder() / "busy").exists():
             return None, True

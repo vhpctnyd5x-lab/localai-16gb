@@ -509,11 +509,20 @@ def _tomeru_ka():
         raise Tometa("止めた")
 
 
+def side_slot():
+    """10/2: 横の仕事（決める係など）は枠1（KERNEL_SIDE_SLOT）。輪の前置きを押し出さない。"""
+    slot = os.environ.get("KERNEL_SIDE_SLOT", "")
+    return {"id_slot": int(slot)} if slot.isdigit() else {}
+
+
 def _post(path: str, payload: dict, timeout: int):
     """手元の llama-server に JSON を投げて JSON を受け取る。失敗は例外で返す。"""
     _tomeru_ka()          # ★ 止めた後は、新しい要求を1つも送らない（送ると読み込みぶん CPU を食う）
     import json as _json
     import urllib.request
+    slot = os.environ.get("KERNEL_SIDE_SLOT", "")   # 10/2: 横の仕事は枠1（輪の前置きを押し出さない）
+    if slot.isdigit() and path in ("/completion", "/v1/chat/completions") and "id_slot" not in payload:
+        payload = {**payload, "id_slot": int(slot)}
     req = urllib.request.Request(
         LOCAL_URL.rstrip("/") + path,
         data=_json.dumps(payload).encode("utf-8"),

@@ -52,7 +52,7 @@ def tsugi(prompt: str, timeout: int = 180, n_predict: int = 1) -> dict:
     _T._tomeru_ka()
     t0 = time.monotonic()
     payload = {"prompt": prompt, "n_predict": n_predict, "n_probs": N_PROBS, "temperature": 0.0,
-               "cache_prompt": True, "stream": False}
+               "cache_prompt": True, "stream": False, **_T.side_slot()}
     req = urllib.request.Request(_T.LOCAL_URL.rstrip("/") + "/completion",
                                  data=_json.dumps(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
@@ -177,7 +177,7 @@ def namae(system: str, user: str, toi: str, names: list, timeout: int = 180, osh
     _T._tomeru_ka()
     t0 = time.monotonic()
     payload = {"prompt": prompt, "n_predict": max(len(_tokens(n)) for n in names) + 2, "n_probs": N_PROBS_NAMAE,
-               "temperature": 0.0, "cache_prompt": True, "stream": False, "grammar": _bunpou(names)}
+               "temperature": 0.0, "cache_prompt": True, "stream": False, **_T.side_slot(), "grammar": _bunpou(names)}
     req = urllib.request.Request(_T.LOCAL_URL.rstrip("/") + "/completion",
                                  data=_json.dumps(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
