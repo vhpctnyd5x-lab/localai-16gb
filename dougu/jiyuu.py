@@ -1501,7 +1501,7 @@ def _same_value(cell, value):
     return a == b or bool(re.search(r"\d", a)) and re.sub(r"\D", "", a) == re.sub(r"\D", "", b) != ""
 
 
-def _csv_problems(content, request, read_contents, found):
+def _csv_problems(content, request, read_contents, found, fixed=None):
     """10/2: 書いた CSV を、頼みの列の指定と読んだファイルの「項目: 値」に照らす（Sol の設計「照合は Python へ」）。
     J32 は列名の行を落とし、J14 は件数 4 を 1、J25 は 赤ペン・12 を 赤・10 と写した（hyou は選ばれなかった）。"""
     try:
@@ -1511,10 +1511,12 @@ def _csv_problems(content, request, read_contents, found):
     if not rows:
         return []
     problems = []
+    repair, sure = {}, True   # 直せる所（行, 列）→ 正しい値。どちらが正しいか分からない違いがあれば直した中身は出さない
     named = re.search(r"列は\s*([^\s、。]+(?:,[^\s、。]+)+)|([^\s、。「」]+(?:,[^\s、。「」]+)+)\s*の(?:順|列)", unicodedata.normalize("NFKC", request))
     wanted = (named.group(1) or named.group(2)).split(",") if named else []
     if wanted and rows[0] != wanted:
         problems.append("1行目が列名（" + ",".join(wanted) + "）になっていません")
+        sure = False
     header = rows[0] if not wanted or rows[0] == wanted else wanted
     seen = {}
     for text in read_contents:
@@ -1523,7 +1525,8 @@ def _csv_problems(content, request, read_contents, found):
     files = {}
     for raw in found:
         files.setdefault(Path(str(raw)).name, []).append(str(raw))
-    for row in rows[1:] if rows[0] == header else rows:
+    start = 1 if rows[0] == header else 0
+    for index, row in enumerate(rows[start:], start):
         own = {}
         for cell in row:
             paths = files.get(cell, [])
@@ -1534,12 +1537,87 @@ def _csv_problems(content, request, read_contents, found):
                         own = _fields(path.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     pass
-        for column, cell in zip(header, row):
+        for place, (column, cell) in enumerate(zip(header, row)):
             if column in own and not _same_value(cell, own[column]):
                 problems.append(f"{row[0]} の {column}「{cell}」（ファイルでは {own[column]}）")
+                repair[(index, place)] = re.sub(r"\D", "", own[column]) if re.fullmatch(r"\D*\d+\D*", own[column]) and re.fullmatch(r"\d+", cell) else own[column]
             elif column not in own and column in seen and not any(_same_value(cell, value) for value in seen[column]):
                 problems.append(f"{column}「{cell}」（読んだ値: {'・'.join(sorted(seen[column])[:4])}）")
+                sure = False
+    extra = []
+    for message, place, value in _csv_sums(rows[start:], request, read_contents):
+        problems.append(message)
+        if place is None:
+            extra.append(value)
+        else:
+            repair[(place[0] + start, place[1])] = value
+    if fixed is not None and problems and sure and (repair or extra):
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        for index, row in enumerate(rows):
+            writer.writerow([repair.get((index, place), cell) for place, cell in enumerate(row)])
+        for row in extra:
+            writer.writerow(row)
+        fixed.append(out.getvalue().rstrip("\n"))
     return problems
+
+
+def _csv_sums(rows, request, read_contents):
+    """10/2 J17: 「合算・合計」の CSV を、読んだ CSV から計算し直して照らす（暗算で 営業 2000 を 9400 にした）。
+    足す行は頼みの言葉で決める: 列の値が「〜だけ・〜のみ」なら それだけ、「〜は除き・以外」なら それを除く。
+    返すのは（知らせ, (行, 列) または None で足りない行, 正しい値）の並び。照らせない時は何も返さない。"""
+    plain = unicodedata.normalize("NFKC", str(request))
+    if not re.search(r"合算|合計|集計|総額|小計", plain) or not rows:
+        return []
+    numeric = [place for place in range(1, len(rows[0])) if all(len(r) > place and re.fullmatch(r"-?\d+(?:\.\d+)?", r[place].replace(",", "")) for r in rows)]
+    if not numeric:
+        return []
+    tables = {}
+    for text in read_contents:
+        lines = [line for line in str(text).splitlines() if "," in line]
+        if len(lines) < 2:
+            continue
+        try:
+            parsed = [[unicodedata.normalize("NFKC", c).strip() for c in r] for r in csv.reader(lines)]
+        except csv.Error:
+            continue
+        head = tuple(parsed[0])
+        tables.setdefault(head, []).extend(r for r in parsed[1:] if len(r) == len(head))
+    keys = [r[0] for r in rows]
+    for head, body in tables.items():
+        if not body:
+            continue
+        groups = [i for i in range(len(head)) if all(k in {b[i] for b in body} for k in keys)]
+        values = [i for i in range(len(head)) if i not in groups
+                  and all(re.fullmatch(r"-?\d+(?:\.\d+)?", b[i].replace(",", "")) for b in body)]
+        if not groups or not values:
+            continue
+        keep = []
+        for i in range(len(head)):
+            if i in groups or i in values:
+                continue
+            mentioned = {b[i] for b in body if b[i] and b[i] in plain}
+            only = {v for v in mentioned if re.search(re.escape(v) + r"(?:の行)?(?:だけ|のみ)", plain)}
+            out = {v for v in mentioned if re.search(re.escape(v) + r"[^。、]{0,12}(?:除|以外|含めない|入れない)", plain)}
+            if only or out:
+                keep.append((i, only, out))
+        value = next((i for i in values if head[i] in plain), values[0])
+        totals = {}
+        for b in body:
+            if all((b[i] in only) if only else (b[i] not in out) for i, only, out in keep):
+                totals[b[groups[0]]] = totals.get(b[groups[0]], 0) + float(b[value].replace(",", ""))
+        show = lambda x: str(int(x)) if float(x).is_integer() else str(x)
+        place = numeric[0]
+        found = []
+        for index, row in enumerate(rows):
+            want = totals.get(row[0], 0)
+            if float(row[place].replace(",", "")) != want:
+                found.append((f"{row[0]} の合計「{row[place]}」（読んだ CSV の{head[value]}を足すと {show(want)}）", (index, place), show(want)))
+        for key, total in totals.items():
+            if key not in keys:
+                found.append((f"{key} の行がありません（足すと {show(total)}）", None, [key] + [""] * (place - 1) + [show(total)]))
+        return found
+    return []
 
 
 def _copy_contents(src, dst):
@@ -1930,6 +2008,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     plan_nudged = False
     csv_open: dict[str, list[str]] = {}   # 10/2 J25: 書いた CSV で、照合が違うと知らせたのに直していないもの
     csv_nudged = False
+    csv_fixed: dict[str, str] = {}   # 照合で直した中身（同じ中身を書き直そうとした時に渡す）
     denied_label = ""
     try:
         _record(session, 0, "依頼", {"文": text, "モード": mode}, route)
@@ -1982,8 +2061,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 csv_nudged = True   # 1回だけ。照合の思い違いなら、そのままでよい理由を答えて終われる
                 pending = "／".join(problem for problems in csv_open.values() for problem in problems)[:400]
                 messages.append({"role": "assistant", "content": reply["content"][:1200]})
+                fix = next((text for path, text in csv_fixed.items() if text and csv_open.get(path)), "")
                 messages.append({"role": "user", "content": "書いた CSV に、確かめると違う所が残っています: " + pending
-                                 + "。直すなら write で書き直してください。そのままでよければ、理由を短く答えてください。"})
+                                 + ("。読んだ値で直すと次の中身です。write し直してください（照合の思い違いなら、理由を短く答えてください）:\n" + fix if fix else
+                                    "。直すなら write で書き直してください。そのままでよければ、理由を短く答えてください。")})
                 continue
             if not calls and not force and ledger:
                 unmet = _ledger_check(ledger, ledger_snapshots)
@@ -2077,6 +2158,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                                      "label": _label(name, args), "risk": risk})
                     if request_problem:
                         result = {"ok": False, "結果": request_problem}
+                    elif risk == "同じ手" and name == "write" and csv_fixed.get(str(_home_resolve(args.get("path", "~"))), ""):
+                        result = {"ok": False, "結果": "前と同じ中身です。確かめると違う所があったので、次の中身で write し直してください:\n"
+                                  + csv_fixed[str(_home_resolve(args.get("path", "~")))]}
                     elif risk == "同じ手":
                         result = {"ok": False, "結果": "同じ手をもう一度呼んでいます。前の結果を使って、道具を使わずに答えてください。"}
                         force = True
@@ -2130,9 +2214,15 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
                         result = _missing_hint(name, args, result, found, text, knowledge=bool(knowledge))
                         if name == "write" and result.get("ok") and str(args.get("path", "")).lower().endswith(".csv"):
-                            problems = _csv_problems(args.get("content", ""), text, context.read_contents, found)
+                            fixed = []
+                            problems = _csv_problems(args.get("content", ""), text, context.read_contents, found, fixed)
                             csv_open[str(_home_resolve(args["path"]))] = problems
-                            if problems:
+                            csv_fixed[str(_home_resolve(args["path"]))] = fixed[0] if fixed else ""
+                            if problems and fixed:
+                                # 10/2 J14: 違いを知らせても同じ中身を書き直し、「同じ手」で止まって終わった。直した中身を渡す。
+                                result["次"] = ("書きましたが、確かめると違う所があります: " + "／".join(problems[:4])
+                                               + "。読んだ値で直すと次の中身です。これで write し直してください:\n" + fixed[0])
+                            elif problems:
                                 result["次"] = ("書きましたが、確かめると違う所があります: " + "／".join(problems[:4])
                                                + "。直すなら write で書き直してください（hyou で作ると値をそのまま写せます）。")
                         if rewrite_note and result.get("ok"):

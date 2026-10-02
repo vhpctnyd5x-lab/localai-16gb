@@ -510,6 +510,19 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     (home / "Documents" / "伝票控え").mkdir(parents=True)
     hint = jiyuu._missing_hint("read", {"path": "~/Documents/伝票控え.txt"}, {"ok": False, "結果": "場所がありません: x"})
     assert "~/Documents/伝票控え はファイルではなくフォルダ" in hint["次"], hint
+    # 10/2 J17: 合算は読んだ CSV から計算し直して照らし、直した中身を渡す。J14: 件数をファイルの値で直す。
+    keihi = ["番号,部署,金額,状態\nA01,営業,1250,確定\nA03,営業,9000,取消\n", "番号,部署,金額,状態\nB01,営業,750,確定\nB03,開発,300,下書き\nB04,総務,640,確定\n"]
+    irai = "状態が確定の行だけ金額を部署別に合算して ~/Desktop/集計/部署別.csv を作って。列は 部署,合計。取消と下書きは除き"
+    fixed = []
+    assert jiyuu._csv_problems("部署,合計\n営業,11000\n総務,640", irai, keihi, [], fixed) == ["営業 の合計「11000」（読んだ CSV の金額を足すと 2000）"]
+    assert fixed == ["部署,合計\n営業,2000\n総務,640"], fixed
+    assert jiyuu._csv_problems("部署,合計\n営業,2000\n総務,640", irai, keihi, []) == []
+    tana = home / "Documents" / "週報控え"
+    tana.mkdir(parents=True)
+    (tana / "月曜.txt").write_text("件数: 4\n")
+    fixed = []
+    assert jiyuu._csv_problems("ファイル名,件数\n月曜.txt,1", "一覧.csv に ファイル名,件数 の列で", [], [str(tana / "月曜.txt")], fixed)
+    assert fixed == ["ファイル名,件数\n月曜.txt,4"], fixed
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 
