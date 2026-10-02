@@ -1824,6 +1824,12 @@ def _missing_hint(name, args, result, found=(), request="", knowledge=False):
         raw = args["paths"][0] if args["paths"] else ""
     filename = Path(str(raw).rstrip("/")).name
     known = _missing_candidates(raw, found, request)
+    stem = _home_resolve(str(raw).rstrip("/"))
+    if stem.suffix and name != "find" and stem.with_suffix("").is_dir():
+        # 10/2 J16: フォルダ「作業票」を「作業票.txt」と読みに行き、find でも見つからず諦めた。
+        result["次"] = (f"{str(raw).rstrip('/')[:-len(stem.suffix)]} はファイルではなくフォルダとしてあります。"
+                       "read でその中を見てから続けてください。")
+        return result
     if known and name != "find":
         result["次"] = (f"前に見つかった場所は {known[0]} です。この場所でもう一度{name}してください。" if len(known) == 1
                        else f"同じ名前の候補は {'、'.join(known)} です。どれか確かめてから{name}してください。")

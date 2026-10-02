@@ -507,6 +507,9 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     Path(seen_path).write_text("old")
     hint = jiyuu._missing_hint("trash", {"paths": [str(home / "old.tmp")]}, {"ok": False, "結果": "見つかりません: x"}, [seen_path])
     assert seen_path in hint["次"]
+    (home / "Documents" / "伝票控え").mkdir(parents=True)
+    hint = jiyuu._missing_hint("read", {"path": "~/Documents/伝票控え.txt"}, {"ok": False, "結果": "場所がありません: x"})
+    assert "~/Documents/伝票控え はファイルではなくフォルダ" in hint["次"], hint
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 

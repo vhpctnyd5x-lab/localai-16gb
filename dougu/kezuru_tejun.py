@@ -180,51 +180,77 @@ def hayasa(models):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--keep", type=int, nargs="+", default=[192, 160])
-    parser.add_argument("--kihon-j", default="g", help="比べる全41問（元のモデル）の名前 wa_q36_41_<名>")
+    parser.add_argument("--kihon-j", default="g2", help="比べる全41問（元のモデル）の名前 wa_q36_41_<名>")
+    parser.add_argument("--dan", choices=["kezuru", "zenmon", "matome"], default="kezuru",
+                        help="裏の上限（2時間）に収まる段: kezuru=imatrix・削る・一問・知識 / zenmon=全41問 / matome=元の知識・速さ")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     mitate = Jouchuu()
+    kiroku = OUT / "jouchuu.json"
+    if kiroku.exists():
+        mitate.kiroku = json.loads(kiroku.read_text(encoding="utf-8"))
     mitate.start()
     was_on = honban.gakushuu_yasumu()
-    lines = [f"# 専門家を減らす（{time.strftime('%m/%d %H:%M')}）", "",
+    lines = [f"# 専門家を減らす（{time.strftime('%m/%d %H:%M')}・段 {args.dan}）", "",
              "|版|大きさ|一問|知識25問|全41問|常駐（知識の間）|常駐（41問の間）|", "|---|---:|---|---:|---:|---|---|"]
     hayai = {"256": MODEL}
+    nashi = lambda path: not path.exists()
     try:
-        mitate.dan = "k256_chishiki"
-        sei, byou, n = chishiki(MODEL, "k256")
+        if args.dan == "matome" or not nashi(OUT / "chishiki_k256.jsonl"):
+            mitate.dan = "k256_chishiki"
+            sei, byou, n = chishiki(MODEL, "k256")
+            chi = f"{sei}/{n}（{byou}秒）"
+        else:
+            chi = "（matome で測る）"
         p, s, n41, ochi = zenmon(MODEL, args.kihon_j)
-        log(f"元: 知識 {sei}/{n}（{byou}秒）・全41問 {p}/{n41}（{s:.0f}秒）落ちた {ochi}")
-        lines.append(f"|元 256人|{ookisa(MODEL)}|—|{sei}/{n}（{byou}秒）|{p}/{n41}（{s:.0f}秒）"
-                     f"|{mitate.matome('k256_chishiki')}|—|")
-        mitate.dan = "imatrix"
-        im = imatrix()
+        lines.append(f"|元 256人|{ookisa(MODEL)}|—|{chi}|{p}/{n41}（{s:.0f}秒）|{mitate.matome('k256_chishiki')}|—|")
+        im = OUT / "imatrix.gguf"
+        if args.dan == "kezuru":
+            mitate.dan = "imatrix"
+            im = imatrix()
         for keep in args.keep:
-            model = kezuru(im, keep)
-            name = f"k{keep}"
-            mitate.dan = f"{name}_yomi"
-            answer = yomikomi(model)
-            log(f"{name}: {ookisa(model)}・一問「{answer[:60]}」")
+            name, model = f"k{keep}", OUT / f"q36_k{keep}.gguf"
+            if args.dan == "kezuru":
+                model = kezuru(im, keep)
+                mitate.dan = f"{name}_yomi"
+                answer = yomikomi(model)
+                (OUT / f"{name}_ichimon.txt").write_text(answer, encoding="utf-8")
+                log(f"{name}: {ookisa(model)}・一問「{answer[:60]}」")
+            if not model.exists():
+                continue
+            ichimon = OUT / f"{name}_ichimon.txt"
+            answer = ichimon.read_text(encoding="utf-8") if ichimon.exists() else ""
             if "東京" not in answer:
                 lines.append(f"|{keep}人|{ookisa(model)}|×「{answer[:30]}」|—|—|—|—|")
                 continue
-            mitate.dan = f"{name}_chishiki"
-            sei, byou, n = chishiki(model, name)
+            if args.dan == "kezuru":
+                mitate.dan = f"{name}_chishiki"
+            sei, byou, n = chishiki(model, name) if args.dan == "kezuru" or not nashi(OUT / f"chishiki_{name}.jsonl") else (0, 0, 0)
             log(f"{name}: 知識 {sei}/{n}（{byou}秒）")
-            if sei < 20:
+            if n and sei < 20:
                 lines.append(f"|{keep}人|{ookisa(model)}|○|{sei}/{n}（{byou}秒）|知識で大きく落ちたので測らない"
-                             f"|{mitate.matome(mitate.dan)}|—|")
+                             f"|{mitate.matome(f'{name}_chishiki')}|—|")
                 continue
-            mitate.dan = f"{name}_zenmon"
-            p, s, n41, ochi = zenmon(model, name)
-            log(f"{name}: 全41問 {p}/{n41}（{s:.0f}秒）落ちた {ochi}")
-            lines.append(f"|{keep}人|{ookisa(model)}|○|{sei}/{n}（{byou}秒）|{p}/{n41}（{s:.0f}秒）"
-                         f"|{mitate.matome(f'{name}_chishiki')}|{mitate.matome(mitate.dan)}|")
-            hayai[str(keep)] = model
-        mitate.dan = "hayasa"
-        text = hayasa(hayai)
-        lines += ["", "## 速さ（hayasa --wa）", "```", text.strip(), "```"]
+            md = honban.KEKKA / "kyoudou_0928" / f"wa_q36_41_{name}.md"
+            if args.dan == "zenmon" and nashi(md):
+                mitate.dan = f"{name}_zenmon"
+            if args.dan == "zenmon" or md.exists():
+                p, s, n41, ochi = zenmon(model, name)
+                log(f"{name}: 全41問 {p}/{n41}（{s:.0f}秒）落ちた {ochi}")
+                zen = f"{p}/{n41}（{s:.0f}秒）"
+                hayai[str(keep)] = model
+            else:
+                zen = "（zenmon で測る）"
+            lines.append(f"|{keep}人|{ookisa(model)}|○|{sei}/{n}（{byou}秒）|{zen}"
+                         f"|{mitate.matome(f'{name}_chishiki')}|{mitate.matome(f'{name}_zenmon')}|")
+        if args.dan == "matome":
+            mitate.dan = "hayasa"
+            text = hayasa(hayai)
+            lines += ["", "## 速さ（hayasa --wa）", "```", text.strip(), "```"]
     finally:
+        mitate.dan = ""
         honban.gakushuu_modosu(was_on)
+        kiroku.write_text(json.dumps(mitate.kiroku, ensure_ascii=False), encoding="utf-8")
         (OUT / "matome.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         print("\n".join(lines), flush=True)
 
