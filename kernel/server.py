@@ -376,7 +376,7 @@ def _sore_ga_notteru(key):
     return bool(n) and n == os.path.basename(v["file"])
 
 
-def _atatameru():
+def _wa_atatameru():
     """10/2: 頭脳が立ち上がったら、輪の前置き（決まり文＋道具の説明）を枠0で先に読ませる。
     読み直しは約80秒かかり、開き直しや15分で畳んだ後の最初の頼みが毎回それだけ待っていた。"""
     if not _matsu(300):
@@ -532,7 +532,8 @@ def _temoto_okosu(key="local:main"):
                 f.write(str(pr.pid))
             _IMA["key"], _IMA["pid"] = key, pr.pid
             if key == KYOUDOU_MODERU.get("kyoudou"):
-                threading.Thread(target=_atatameru, daemon=True).start()
+                # 名前は古い _atatameru（雑談の温め、下で定義）と分ける。同じ名だと後ろが勝ち、これが呼ばれない。
+                threading.Thread(target=_wa_atatameru, daemon=True).start()
         except Exception as e:
             return "立ち上げられません: %s" % e
     return "立ち上げました（%s） pid=%d" % (v["名"], pr.pid)
