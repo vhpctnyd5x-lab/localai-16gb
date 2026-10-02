@@ -609,5 +609,15 @@ with tempfile.TemporaryDirectory(prefix="tameshi_gakushuu_") as temporary:
                        [("live", 0, "user", "天体観測の始め方", 1), ("gone", 0, "user", "紅葉の名所", 1), ("test", 0, "user", "舞鶴の港", 1)])
     topics = gakushuu._recent_topics()
     check("天体観測" in topics and not any(w in topics for w in ("紅葉", "名所", "舞鶴")), "ゴミ箱・試験の会話の言葉では学ばない")
+    # 10/2: 見送った技（ゴミ箱へ）は覚えておき、振り返りが同じ頼みからもう一度提案しない。
+    rejected_name = "見送る試しの頼み"
+    (gakushuu.skills_folder() / (rejected_name + ".md")).write_text(
+        gakushuu._skill_text(rejected_name, "次に同じ頼みを進める手順", False, "カーネル", "手順"), encoding="utf-8")
+    gakushuu.change_skill({"動き": "ゴミ箱", "name": rejected_name})
+    check(rejected_name in gakushuu._state().get("見送った技", []), "見送った技を覚える")
+    gakushuu._write(gakushuu.folder() / "state.json", {**gakushuu._state(), "最後の提案時刻": 0, "最後の振り返り試行時刻": 0, "見た記録": []})
+    gakushuu._records = lambda: [{"題": rejected_name, "文": "x", "道具": ["sh"], "成否": "失敗", "識別": "rejected-again"}]
+    with mock.patch.object(gakushuu, "_local_reflect", side_effect=AssertionError("見送った技をもう一度振り返った")):
+        check(not gakushuu.reflect_once(cfg), "見送った技はもう一度提案しない")
 
 print("OK: 本文取得・本文取り直し・活動数・FTS5・振り返り・外の先生・busy・10分・API")

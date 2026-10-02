@@ -615,6 +615,11 @@ def change_skill(body):
         on = body.get("on", not original["on"]) if action == "切替" else False
         if not isinstance(on, bool):
             raise ValueError("on は真偽値にしてください")
+        if action == "ゴミ箱" and made_by == "カーネル":
+            # 10/2: 見送った技を覚え、振り返りが同じ頼みからもう一度提案しないようにする（ゴミ箱へ移した後に同じ技が戻ってきた）
+            state = _state()
+            stem = re.sub(r"-\d+$", "", name)
+            _write(folder() / "state.json", {**state, "見送った技": (list(state.get("見送った技", [])) + [stem])[-500:]})
         if action == "ゴミ箱" and user_path.exists():
             trash = Path(os.environ.get("KERNEL_TRASH_DIR", Path.home() / ".Trash"))
             trash.mkdir(parents=True, exist_ok=True)
@@ -978,6 +983,7 @@ def reflect_once(cfg, *, ask=None, network=None):
     seen = set(state.get("見た記録", []))
     # 9/30: 道具を使わなかった雑談（「ほんとに？」など）は技にならない。同じ頼みは1回だけ（-2・-3 が並んだ）。
     proposed = {re.sub(r"-\d+$", "", s["name"]) for s in skills() if s.get("made_by") == "カーネル"}
+    proposed |= set(state.get("見送った技", []))
     record = next((r for r in _records() if r["識別"] not in seen and r.get("道具")
                    and _stem(r.get("題", "")) not in proposed), None)
     if not record:
