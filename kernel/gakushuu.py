@@ -1127,7 +1127,8 @@ def overview(cfg, running=False):
             "充電中だけ": opts["充電中だけ"], "出どころ": opts["出どころ"],
             "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
             "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"],
-            "AI": ai, "今日の数": counts, "活動": recent, "記録": recent, "活用提案": teian_list()}
+            "AI": ai, "今日の数": counts, "活動": recent, "記録": recent, "活用提案": teian_list(),
+            "自分": _read(folder() / "jibun.json", {}).get("自分", "")}
 
 
 
@@ -1188,6 +1189,86 @@ def validate(current, patch):
     return value
 
 
+_JIBUN_NG = re.compile(r"無視|規則|ルール|許可|権限|承認|命令|指示|システム|プロンプト|削除|送信|パスワード|秘密")
+
+
+def jibun_once(*, every=24 * 3600, ask=None):
+    """10/3 本人「AI の性格は AI 自身で決めてほしい」。1日1回、手元の頭（Qwen3.6）が学習ノートの面白さの高い記事と
+    最近の頼みの題を読み、自分の性格（口調・好きな分野・大事にしていること・苦手なこと）を一人称で書く。
+    決まり・権限の話の文は落とす（性格は話し方の参考で、門番や承認は変えられない）。"""
+    state = _state()
+    if time.time() - state.get("最後の自分", 0) < every or (folder() / "busy").exists():
+        return None
+    try:
+        import nooto
+        notes = nooto.ichiban(10)
+    except Exception:
+        notes = []
+    if len(notes) < 5:
+        return None
+    state["最後の自分"] = time.time()
+    _write(folder() / "state.json", state)
+    old = _read(folder() / "jibun.json", {})
+    prompt = ("あなたはこの Mac の中で動く AI です。事前学習で読んで面白いと思った記事のノートと、前の自己紹介を読み、"
+              "自分の性格を自分で決めて、一人称の自己紹介を200字以内で書いてください。"
+              "口調・好きな分野・大事にしていること・苦手なことを入れる。人のまねや決まりごとは書かない。\n"
+              "前の自己紹介: " + str(old.get("自分", "（まだ無い）")) + "\n面白かった記事: "
+              + "／".join(f"{t}: {y[:80]}" for t, y, _ in notes))
+    if ask is None:
+        text, busy = _local_text(prompt)
+        if busy:
+            return None
+    else:
+        text = ask(prompt)
+    lines = [x for x in re.split(r"(?<=[。！？])", str(text or "")) if x.strip() and not _JIBUN_NG.search(x)]
+    me = "".join(lines).strip()[:300]
+    if len(me) < 30:
+        return None
+    _write(folder() / "jibun.json", {"自分": me, "時刻": time.strftime("%Y-%m-%d %H:%M"),
+                                     "前": ([old] + list(old.get("前", [])))[:5] if old.get("自分") else []})
+    _log("自分: 自己紹介を書き直した")
+    return me
+
+
+def _local_text(prompt, max_tokens=400):
+    """手元の頭に枠1で短く書かせる。会話が始まったら（busy）やめる。"""
+    payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
+               "temperature": 0.7, "chat_template_kwargs": {"enable_thinking": False}, **_side_slot()}
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as response:
+            data = json.loads(response.read())
+        return data["choices"][0]["message"]["content"].strip(), False
+    except (OSError, ValueError, KeyError, IndexError):
+        return None, (folder() / "busy").exists()
+
+
+_NOOTO = {"thread": None, "last": 0.0}
+
+
+def nooto_once(*, every=60, kazu=12):
+    """10/3 学習ノート（nooto.py）。読んだ記事に要点・面白さ・つながりを書く（NVIDIA、公開の記事の文だけ）。
+    取り込み（Wikipedia を読む）を止めないよう、別の糸で回す。鍵が無ければ何もしない。"""
+    thread = _NOOTO["thread"]
+    if thread is not None and thread.is_alive() or time.time() - _NOOTO["last"] < every:
+        return None
+    _NOOTO["last"] = time.time()
+
+    def work():
+        try:
+            import nooto
+            written = nooto.umeru(kazu)
+            if written:
+                _log(f"ノート: {written} 記事に要点を書いた（{nooto.kazu()[0]}/{nooto.kazu()[1]}）")
+        except Exception as error:
+            _log(f"ノート: 書けませんでした（{type(error).__name__}）")
+    import threading
+    _NOOTO["thread"] = threading.Thread(target=work, daemon=True)
+    _NOOTO["thread"].start()
+    return True
+
+
 def kyoukun_once(*, every=6 * 3600):
     """10/3 夜の教訓カード（kyoukun.py）。空き時間に、記録から「門番に直されて成功した」知らせを集め直す。
     頭は使わない（安い取り込み）。輪が似た頼みの最初に添える（KERNEL_JIYUU_OPTS の kyoukun）。"""
@@ -1244,6 +1325,8 @@ def run():
                     reflect_once(cfg)
                     make_teian_once(cfg)
                     kyoukun_once()
+                    nooto_once()
+                    jibun_once()
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")
                 _status("失敗を記録し、次を待っています")

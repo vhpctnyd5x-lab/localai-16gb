@@ -218,6 +218,8 @@ def j(args):
     # 10/3: アプリが立ったままだと、温め・横の仕事が同じ 8080 の試験の頭脳へ頼みを送り、
     #   キャッシュを追い出し合った（2つの会話が交互に伸び、1手ごとに全部読み直し・J15/J16 が10分切れ）。試験の間は閉じる。
     app_was_up = _shimau()
+    lock = Path.home() / "Library/Application Support/kernel-ai/shiken.lock"   # アプリはこれがある間、頭脳を立てない
+    lock.write_text(str(os.getpid()))
     subprocess.run(["pkill", "-x", "llama-server"])
     for _ in range(30):
         if subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode:
@@ -250,17 +252,21 @@ def j(args):
             except OSError:
                 time.sleep(2)
         env = dict(os.environ, **({"KERNEL_JIYUU_OPTS": args.opts} if args.opts else {}))
-        extra = ["--id", args.id] if args.id else []
+        extra = (["--id", args.id] if args.id else []) + (["--mondai", args.mondai] if args.mondai else [])
         subprocess.run([sys.executable, "dougu/tegoro.py", "--kata", "輪", "--wa", "jiyuu", *extra,
                         "--output", str(out_dir / f"{args.out}.md")], cwd=KOUKAI, env=env,
                        stdout=open(out_dir / f"{args.out}.log", "w"), stderr=subprocess.STDOUT)
     finally:
         server.terminate()
         server.wait()
+        lock.unlink(missing_ok=True)
         if app_was_up:
             kaiten(None)
         gakushuu_modosu(was_on)
-    rows = [r for r in (out_dir / f"{args.out}.md").read_text(encoding="utf-8").splitlines() if r.startswith("| J")]
+    rows = [r for r in (out_dir / f"{args.out}.md").read_text(encoding="utf-8").splitlines() if re.match(r"\| [JH]\d", r)]
+    if args.mondai:   # 秘密の問題集は点数だけ出す（中身を開発者に見せない）
+        print(f"{model.name}: PASS {sum('PASS' in r for r in rows)} / {len(rows)}")
+        return
     print(f"{model.name}: PASS {sum('PASS' in r for r in rows)} / {len(rows)}")
     for row in rows:
         print(row[:110])
@@ -275,6 +281,7 @@ def main():
     p = sub.add_parser("kiku"); p.add_argument("michi"); p.add_argument("text"); p.set_defaults(fn=kiku)
     p = sub.add_parser("gakushuu"); p.add_argument("on", choices=["on", "off"]); p.set_defaults(fn=gakushuu)
     p = sub.add_parser("j"); p.add_argument("--id"); p.add_argument("--model"); p.add_argument("--opts")
+    p.add_argument("--mondai", help="問題集（既定は monosashi/jiyuu.jsonl。秘密の問題集は dougu/kekka/himitsu/）")
     p.add_argument("--out", default="wa_honban"); p.add_argument("--args", default="", help="llama-server に足す引数")
     p.add_argument("--llama", default=str(LLAMA), help="llama-server（圧縮入りは ~/LocalAI_mirror/llama-koukai/llama-server）")
     p.set_defaults(fn=j)

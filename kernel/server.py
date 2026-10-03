@@ -490,6 +490,8 @@ def _temoto_okosu(key="local:main"):
     v = MODERU.get(key)
     if not v:
         return "知らないモデルです: %s" % key
+    if _shiken_chuu():
+        return "いま試験で頭脳を使っています。終わるまで少し待ってください"
     with _MODERU_LOCK:
         if _sore_ga_notteru(key):
             _IMA["key"] = key          # 記憶がずれていたら ここで直す
@@ -542,6 +544,17 @@ def _temoto_okosu(key="local:main"):
     return "立ち上げました（%s） pid=%d" % (v["名"], pr.pid)
 
 
+def _shiken_chuu():
+    """10/3: 試験（dougu/honban.py j）の間にアプリを開くと、同じ 8080 の試験の頭脳へ頼みが混ざり、両方が壊れた。
+    試験は shiken.lock に自分の pid を書く。その pid が生きている間は頭脳を立てず・使わない。"""
+    try:
+        with open(os.path.join(_SUP, "shiken.lock")) as f:
+            os.kill(int(f.read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def moderu_youi(key):
     """聞く前に、そのモデルが載っていることを確かめる。
     戻り値: (よいか, ひとこと)
@@ -561,6 +574,8 @@ def moderu_youi(key):
     """
     if key not in MODERU:
         return True, ""                     # local: 以外（groq など）は素通し
+    if _shiken_chuu():
+        return False, "いま試験で頭脳を使っています。終わるまで少し待ってください"
     with _MODERU_LOCK:
         if _sore_ga_notteru(key):
             _IMA["key"] = key          # 記憶がずれていたら ここで直す
@@ -812,7 +827,7 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                             else:
                                 import kyoudou as _kyoudou
                                 _kyoudou.TOMERU = tomeru
-                                print("  協働: 新しい輪で進めます")
+                                # 10/3: 「協働: 新しい輪で進めます」は開発用の印で、本人には意味が分からなかった（毎回出る）。出さない。
                                 try:
                                     mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
                                             else cfg.get("許可モード", "自動"))

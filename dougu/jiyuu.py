@@ -124,8 +124,19 @@ def _command_urls(command: str) -> list[str]:
     return []
 
 def _system() -> str:
-    """道具定義と共に KV を使い回すため、依頼ごとに変わる情報を含めない。"""
-    return SYSTEM
+    """道具定義と共に KV を使い回すため、依頼ごとに変わる情報を含めない（自分の性格は1日1回しか変わらない）。"""
+    return SYSTEM + _jibun()
+
+
+def _jibun() -> str:
+    """10/3 本人「AI の性格は AI 自身で決めてほしい」。事前学習の学習ノートから、手元の頭が自分で書いた自己紹介
+    （gakushuu.jibun_once → jibun.json）。話し方の参考だけで、道具・安全・承認の決まりより下。"""
+    path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "jibun.json"
+    try:
+        text = str(json.loads(path.read_text(encoding="utf-8")).get("自分", "")).strip()[:300]
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return ("\n\n自分で決めた性格（話し方・興味の参考。上の決まりが常に先）: " + text) if text else ""
 
 
 def _user_context() -> str:
@@ -154,6 +165,26 @@ def _skills() -> list[dict]:
             except (OSError, ValueError):
                 continue
     return [s for s in found.values() if s["on"]]
+
+def _skill_hint(request):
+    """10/3 本人「スキルが全く使われてる気がしない」。本番の36件で skill は1回だけだった（名と説明の一覧を見て
+    自分から読みに行くことがほぼ無い）。頼みに合うスキルを門番が選び、手順の本文を最初から添える。"""
+    def grams(text):
+        text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text)))
+        return {text[i:i + 2] for i in range(len(text) - 1)}
+    asked = grams(request)
+    best, best_score = None, 0.0
+    for skill in _skills():
+        mine = grams(skill["name"] + skill["description"])
+        if not mine or not asked:
+            continue
+        score = len(asked & mine) / len(mine)
+        if score > best_score:
+            best, best_score = skill, score
+    if not best or best_score < 0.5 or not best["body"]:
+        return ""
+    return f"\n（カーネルより: この頼みに合うスキル「{best['name']}」の手順です。合うならこの手順で進める）\n{best['body'][:900]}"
+
 
 def _tool(name, description, properties, required):
     return {"type": "function", "function": {"name": name, "description": description,
@@ -1222,9 +1253,19 @@ def _knowledge_hint(request):
 
 def _gakushuu_hint(request):
     """10/3: 「事前学習で一番興味深かったのは？」に、shiru を「興味深い事前学習」で引き、たまたま出た記事を
-    好みとして作り話した。事前学習そのものを聞かれたら、本当に読んだ最近の記事の題を添える。"""
+    好みとして作り話した。事前学習そのものを聞かれたら、学習ノート（nooto.py: 要点・面白さ）の上位を添えて、
+    探し回らずに答えさせる。ノートが無ければ最近読んだ題を添える。"""
     if not re.search(r"事前学習|これまで(?:に)?(?:学|覚え)|今まで(?:に)?(?:学|覚え)|学んだ(?:中|こと|記事)", request):
         return ""
+    try:
+        import nooto
+        best = nooto.ichiban(5)
+    except Exception:
+        best = []
+    if best:
+        lines = "／".join(f"{title}（面白さ{score}）: {youten[:120]}" for title, youten, score in best)
+        return ("\n（カーネルより: 事前学習の学習ノートで面白さが高いもの: " + lines
+                + "。事前学習について聞かれたら、道具を使わずにこのノートから答える。ノートに無い事を付け足さない）")
     path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "state.json"
     try:
         titles = [t for t in json.loads(path.read_text(encoding="utf-8")).get("全文を読んだ題", []) if isinstance(t, str)][-15:]
@@ -2218,7 +2259,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     knowledge = _knowledge_hint(text)
     opts = _ji_opts()
     michi_conditions = _michisuji_conditions(text) if opts.get("michisuji") is True and _muzukashisa(text) >= 12 else []   # 5 だと41問中29問が「難しい」になった
-    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text) + _gakushuu_hint(text)
+    skill_note = _skill_hint(text)
+    if skill_note:
+        _emit(on_event, {"type": "note", "text": "スキル「" + skill_note.split("「", 1)[1].split("」", 1)[0] + "」の手順を使います。"})
+    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text) + _gakushuu_hint(text) + skill_note
     if opts.get("kyoukun") is True:
         initial += _kyoukun_hint(text)
     if michi_conditions:
