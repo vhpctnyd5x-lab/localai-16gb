@@ -1283,6 +1283,17 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
     return title
 
 
+def yoru(opts=None, now=None):
+    """10/4 本人「Mac の消費電力をできるだけ抑えて」。夜（既定 0〜7時）は手元の頭脳（CPU を全部使う）を回さない。
+    記事を取る・NVIDIA にノートを書いてもらう・ほかの資料を足す、のネット越しの軽い仕事だけ続ける。"""
+    opts = opts or {}
+    if not opts.get("夜は省電力", True):
+        return False
+    start, end = opts.get("夜の時間", [0, 7])
+    hour = time.localtime(now).tm_hour if now else time.localtime().tm_hour
+    return start <= hour < end if start <= end else (hour >= start or hour < end)
+
+
 def _cfg_learning():
     try:
         import settings
@@ -1369,13 +1380,16 @@ def run():
                 else:
                     if opts.get("出どころ", {}).get("Wikipedia", True):
                         learn_once(cfg)
-                    reflect_once(cfg)
-                    make_teian_once(cfg)
+                    night = yoru(opts)
+                    if not night:   # 振り返り・技の提案・自己紹介は手元の頭脳を使うので、夜は休む
+                        reflect_once(cfg)
+                        make_teian_once(cfg)
                     kyoukun_once()
                     if opts.get("出どころ", {}).get("ほかの資料", True):
                         shiryou_once()
                     nooto_once()
-                    jibun_once()
+                    if not night:
+                        jibun_once()
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")
                 _status("失敗を記録し、次を待っています")

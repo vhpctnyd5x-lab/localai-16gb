@@ -66,3 +66,14 @@ class JibunTest(unittest.TestCase):
             self.assertIn("宇宙", me)
             self.assertNotIn("無視", me)
             self.assertIsNone(gakushuu.jibun_once(ask=lambda prompt: text))   # 1日1回
+
+
+class YoruTest(unittest.TestCase):
+    def test_night_window(self):
+        import gakushuu
+        at = lambda h: time.mktime((2026, 10, 4, h, 30, 0, 0, 0, -1))
+        self.assertTrue(gakushuu.yoru({}, at(3)))
+        self.assertFalse(gakushuu.yoru({}, at(9)))
+        self.assertFalse(gakushuu.yoru({"夜は省電力": False}, at(3)))
+        self.assertTrue(gakushuu.yoru({"夜の時間": [23, 6]}, at(23)))
+        self.assertFalse(gakushuu.yoru({"夜の時間": [23, 6]}, at(12)))
