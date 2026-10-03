@@ -4,7 +4,7 @@
 
 ## 手順
 
-1. `bash gcloud/chishiki/hajimeru.sh`。gcloudの既定プロジェクトを使用。e2-standard-8 Spot、32GiBメモリ、100GB pd-standard、us-central1-a、最大12時間。完了または失敗まで前で待つ。Spot中断を成功扱いにしない。
+1. `bash gcloud/chishiki/hajimeru.sh`（起動したら手を離す）→ `bash gcloud/chishiki/mimamoru.sh ~/.cache/chishiki-gcp/<RUN_ID>.env` を裏で（止めても何も消さない。呼び直せば続きから。終わりに SA・IAM を片付ける）。gcloudの既定プロジェクトを使用。e2-standard-8 Spot、32GiBメモリ、100GB pd-standard、us-central1-a、最大12時間。完了または失敗まで前で待つ。Spot中断を成功扱いにしない。
 2. 表示されたGCSの実行別フォルダから、承認後に `chishiki.sqlite3`・`chishiki.sha256`・`chishiki.json` を同じフォルダへ取得。`shasum -a 256 -c chishiki.sha256` をそのフォルダで実行。
 3. Python **3.11以上**の仮想環境で `pip install -r gcloud/chishiki/requirements.txt`。
 4. `python gcloud/chishiki/torikomu.py 保存先/chishiki.sqlite3 --dry-run`。

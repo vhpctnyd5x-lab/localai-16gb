@@ -133,6 +133,25 @@ gcloud compute instances create "$NAME" --project="$PROJECT" --zone="$ZONE" \
   --service-account="$SA" --scopes=cloud-platform \
   --metadata="chishiki-bucket=$BUCKET,chishiki-run=$RUN_ID,chishiki-bundle-sha256=$BUNDLE_SHA,chishiki-wiki-limit=$WIKI_LIMIT,chishiki-max-chars=$MAX_CHARS,chishiki-workers=$WORKERS" \
   --metadata-from-file="startup-script=$HERE/vm_startup.sh" --quiet
+# 10/3: 裏の仕事は2時間で切れる。切れると cleanup が VM を消すので、起動したら状態を書いて手を離す。
+#   見張りと後片付け（SA・IAM）は mimamoru.sh が何度でも引き継ぐ。
+STATE_DIR=${STATE_DIR:-$HOME/.cache/chishiki-gcp}
+mkdir -p "$STATE_DIR"
+cat >"$STATE_DIR/$RUN_ID.env" <<EOF
+PROJECT='$PROJECT'
+ZONE='$ZONE'
+NAME='$NAME'
+SA='$SA'
+ROLE='$ROLE'
+BUCKET='$BUCKET'
+PREFIX='$PREFIX'
+CONDITION="$CONDITION"
+STARTED=$(date +%s)
+MAX_HOURS=$MAX_HOURS
+EOF
+CREATING=0; SA_CREATED=0; BOUND=0; BUCKET_BOUND=0
+echo "起動した。見張り: bash $HERE/mimamoru.sh $STATE_DIR/$RUN_ID.env"
+exit 0
 started=$(date +%s)
 deadline=$(( started + MAX_HOURS * 3600 + 600 ))
 last=''
