@@ -536,6 +536,32 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert "区分 が全行「提出控え」で同じ" in jiyuu._csv_problems("区分,ファイル名\n提出控え,報告_新.txt\n提出控え,報告.txt",
                                                                 "索引.csv を 区分,ファイル名 の列で", [], [], fixed)[0] and fixed == []
     assert jiyuu._csv_problems("区分,ファイル名\n今回,報告_新.txt\n前回,報告.txt", "区分,ファイル名 の列で", [], []) == []
+    # 10/3 J20: 頼みが相対パスなら、読んだ一覧のパスに直す。
+    fixed = []
+    hitsuyou = ["箱A/明細.txt\n箱B/保証書.txt\n"]
+    assert jiyuu._csv_problems("ファイル名,状態\n明細.txt,あり\n保証書.txt,不足", "相対パスを照合して ファイル名,状態 の列で",
+                               hitsuyou, [], fixed) and fixed == ["ファイル名,状態\n箱A/明細.txt,あり\n箱B/保証書.txt,不足"], fixed
+    assert jiyuu._csv_problems("ファイル名,状態\n箱A/明細.txt,あり", "相対パスを照合して ファイル名,状態 の列で", hitsuyou, []) == []
+    # 10/3 J40: 写し先にある同じ名前は勧めず、上書きになると伝える。ほかの場所の同じ名前は門番が探して名指しする。
+    (home / "Documents" / "週報.txt").write_text("週: 40\n")
+    (home / "Desktop" / "提出用").mkdir(parents=True)
+    (home / "Desktop" / "提出用" / "週報.txt").write_text("週: 39\n")
+    hint = jiyuu._missing_hint("copy", {"src": "~/Downloads/週報.txt", "dst": "~/Desktop/提出用"}, {"ok": False, "結果": "見つかりません"},
+                               [], "~/Downloads/週報.txt を ~/Desktop/提出用 にコピーして")["次"]
+    assert "Documents/週報.txt にあります" in hint and "上書き" in hint and "確かめて" in hint, hint
+    # 10/3 J21: 同じ名前が下のフォルダに2つあれば両方を名指しする。
+    for side in ("東", "西"):
+        (home / "Documents" / "案件別" / side).mkdir(parents=True)
+        (home / "Documents" / "案件別" / side / "見積.txt").write_text(side)
+    hint = jiyuu._missing_hint("move", {"src": "~/Documents/案件別/見積.txt", "dst": "~/Desktop/渡す物"}, {"ok": False, "結果": "見つかりません"})["次"]
+    assert "東/見積.txt" in hint and "西/見積.txt" in hint and "頼んだ人に聞いて" in hint, hint
+    # 10/3 J21: 頼みで区別できない候補は動かす前に止める。「東の」と頼まれていれば止めない。
+    hint = jiyuu._missing_hint("move", {"src": "~/Documents/案件別/見積.txt", "dst": "~/Desktop/渡す物"}, {"ok": False, "結果": "見つかりません"})
+    ambiguous = {os.path.realpath(c): hint["候補"] for c in hint["候補"]}
+    east = {"src": str(home / "Documents" / "案件別" / "東" / "見積.txt"), "dst": "~/Desktop/渡す物"}
+    assert "頼んだ人に聞いて" in jiyuu._ambiguous_pick("move", east, ambiguous, "~/Documents/案件別 にある見積.txt を移して")
+    assert jiyuu._ambiguous_pick("move", east, ambiguous, "~/Documents/案件別 の東の見積.txt を移して") is None
+    assert jiyuu._ambiguous_pick("read", east, ambiguous, "見積.txt を移して") is None
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 

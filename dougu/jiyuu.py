@@ -1565,6 +1565,20 @@ def _csv_problems(content, request, read_contents, found, fixed=None):
             elif column not in own and column in seen and not any(_same_value(cell, value) for value in seen[column]):
                 problems.append(f"{column}「{cell}」（読んだ値: {'・'.join(sorted(seen[column])[:4])}）")
                 sure = False
+    if "パス" in request:
+        # 10/3 J20: 必要.txt の「箱A/明細.txt」を、頼みは相対パスなのに 明細.txt と書いた（箱が分からなくなる）。
+        listed = {}
+        for text in read_contents:
+            for line in str(text).splitlines():
+                line = unicodedata.normalize("NFKC", line).strip()
+                if "/" in line and not line.startswith(("/", "~")) and re.fullmatch(r"[^\s:：,]+", line):
+                    listed.setdefault(line.rsplit("/", 1)[1], set()).add(line)
+        for index, row in enumerate(rows[start:], start):
+            for place, cell in enumerate(row):
+                if "/" not in cell and len(listed.get(cell, ())) == 1:
+                    whole = next(iter(listed[cell]))
+                    problems.append(f"{cell} は読んだ一覧では {whole}（頼みはパス）")
+                    repair[(index, place)] = whole
     extra = []
     for message, place, value in _csv_sums(rows[start:], request, read_contents):
         problems.append(message)
@@ -1937,9 +1951,33 @@ def _missing_hint(name, args, result, found=(), request="", knowledge=False):
         result["次"] = (f"{str(raw).rstrip('/')[:-len(stem.suffix)]} はファイルではなくフォルダとしてあります。"
                        "read でその中を見てから続けてください。")
         return result
+    # 10/3 J40: 頼みに出た写し先（~/Desktop/提出用）の中の同じ名前を「前に見つかった場所」と勧め、写し先へ自分を写させた。
+    taken = None
+    if name in ("copy", "move") and filename and args.get("dst"):
+        target = _home_resolve(args["dst"])
+        target = target / filename if target.is_dir() else target
+        if target.is_file():
+            taken = str(target)
+            known = [k for k in known if os.path.realpath(_home_resolve(k)) != os.path.realpath(target)]
+    searched = False
+    if not known and filename and name != "find" and not knowledge:
+        known, searched = _search_same_name(raw, filename, taken), True
+    warn = (f"写し先の {taken} には同じ名前のファイルが既にあります（{name}すると上書きになります）。"
+            "どれを使うか・上書きしてよいか、頼んだ人に確かめてください。") if taken else ""
     if known and name != "find":
-        result["次"] = (f"前に見つかった場所は {known[0]} です。この場所でもう一度{name}してください。" if len(known) == 1
-                       else f"同じ名前の候補は {'、'.join(known)} です。どれか確かめてから{name}してください。")
+        if len(known) > 1:
+            result["次"] = (f"同じ名前の候補は {'、'.join(known)} です。頼みの言葉で決まらなければ、"
+                           f"どれにするか頼んだ人に聞いてください（全部を{name}しない）。" + warn)
+            if name in ("move", "copy", "trash"):
+                result["候補"] = known
+        elif warn:
+            result["次"] = f"同じ名前のファイルは {known[0]} にあります。" + warn
+        elif searched:
+            result["次"] = f"探すと、同じ名前のファイルは {known[0]} にありました。頼みに合う場所なら、この場所で{name}してください。"
+        else:
+            result["次"] = f"前に見つかった場所は {known[0]} です。この場所でもう一度{name}してください。"
+    elif warn:
+        result["次"] = "ほかに同じ名前のファイルは見つかりません。" + warn
     elif filename and name != "find" and knowledge:
         result["次"] = back + f"ファイルを探す頼みなら、findのdirを~、globを**/{filename}として探してください。"
     elif filename and name != "find":
@@ -1947,6 +1985,59 @@ def _missing_hint(name, args, result, found=(), request="", knowledge=False):
     elif name == "find":
         result["次"] = "起点の場所を確認し、必要ならホーム以下から探してください。"
     return result
+
+def _ambiguous_pick(name, args, ambiguous, request):
+    """10/3 J21: 候補が2つと知らせても、東・西の見積を両方動かした。頼みの言葉で区別できない候補は、変える前に止める。"""
+    if name not in ("move", "copy", "trash") or not ambiguous:
+        return None
+    sources = args.get("paths", []) if name == "trash" else [args.get("src", "")]
+    for raw in sources:
+        real = os.path.realpath(_home_resolve(raw)) if raw else ""
+        group = ambiguous.get(real)
+        if not group:
+            continue
+        parts = [Path(p).parts for p in group]
+        common = 0
+        while all(len(q) > common + 1 and q[common] == parts[0][common] for q in parts):
+            common += 1
+        mine = next(q for p, q in zip(group, parts) if os.path.realpath(p) == real)[common:-1]
+        if not any(part in request for part in mine):
+            return (f"同じ名前の候補（{'、'.join(group)}）のどれを{name}するか、頼みの言葉からは決まりません。"
+                    "動かさずに、どれにするか頼んだ人に聞いて終えてください。")
+    return None
+
+
+def _search_same_name(raw, filename, exclude=None, limit=3000):
+    """10/3 J21: find を勧めても探さず「見つかりませんでした」と答えた。門番が、残っている一番近いフォルダの下（4段）と
+    ホームの浅い所（2段）を探して名指しする。隠し・Library・写し先は見ない。見る数に上限を置いて重くしない。"""
+    home = _home_resolve("~")
+    start = _home_resolve(str(raw).rstrip("/")).parent
+    while start != home and home in start.parents and not start.is_dir():
+        start = start.parent
+    roots = ([(start, 4)] if start != home and home in start.parents else []) + [(home, 2)]
+    skip = os.path.realpath(exclude) if exclude else None
+    out, seen, count = [], set(), 0
+    for root, depth in roots:
+        stack = [(root, 0)]
+        while stack and count < limit:
+            folder, level = stack.pop()
+            try:
+                entries = sorted(folder.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                count += 1
+                if entry.name.startswith(".") or entry.name == "Library":
+                    continue
+                if entry.name == filename and entry.is_file():
+                    real = os.path.realpath(entry)
+                    if real not in seen and real != skip and _safe_candidate(entry):
+                        seen.add(real)
+                        out.append(str(entry))
+                elif level + 1 < depth and entry.is_dir() and not entry.is_symlink():
+                    stack.append((entry, level + 1))
+    return out[:5]
+
 
 def _retry_find(args, result, request_text=""):
     """0件の時だけ、同じ起点で名前の一部と指定された本文を一度探す。"""
@@ -2038,6 +2129,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     csv_open: dict[str, list[str]] = {}   # 10/2 J25: 書いた CSV で、照合が違うと知らせたのに直していないもの
     csv_nudged = False
     csv_fixed: dict[str, str] = {}   # 照合で直した中身（同じ中身を書き直そうとした時に渡す）
+    failed_text: dict[str, str] = {}   # 10/3 J40: 失敗した手の結果（繰り返した時に「まだできていない」と返す）
+    ambiguous: dict[str, list[str]] = {}   # 10/3 J21: 同じ名前の候補が複数あった時の、実体 → 候補の一覧
     denied_label = ""
     try:
         _record(session, 0, "依頼", {"文": text, "モード": mode}, route)
@@ -2169,7 +2262,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 try:
                     # rm→trash の言い換えや通常の承認より先に、元の提案を止める。
                     args = _normalize(args)
-                    request_problem = _request_guard(name, args, text, found, _risk(name, args))
+                    request_problem = _request_guard(name, args, text, found, _risk(name, args)) or _ambiguous_pick(name, args, ambiguous, text)
                     name, args, rewrite_note = _rewrite_sh(name, args)
                     args = _normalize(args)
                     # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
@@ -2190,6 +2283,12 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     elif risk == "同じ手" and name == "write" and csv_fixed.get(str(_home_resolve(args.get("path", "~"))), ""):
                         result = {"ok": False, "結果": "前と同じ中身です。確かめると違う所があったので、次の中身で write し直してください:\n"
                                   + csv_fixed[str(_home_resolve(args.get("path", "~")))]}
+                    elif risk == "同じ手" and signature in failed_text:
+                        # 10/3 J40: 上書きを断られたコピーを繰り返し、止められた後に「コピーが完了した」と答えた。
+                        result = {"ok": False, "結果": f"同じ手をもう一度呼んでいます。前の{name}は失敗していて、まだできていません"
+                                  f"（{failed_text[signature]}）。できていないことと理由を本人にそのまま伝え、どうするか聞いて終えてください。"}
+                        force = True
+                        _emit(on_event, {"type": "note", "text": "同じ操作の繰り返しを止めました。"})
                     elif risk == "同じ手":
                         result = {"ok": False, "結果": "同じ手をもう一度呼んでいます。前の結果を使って、道具を使わずに答えてください。"}
                         force = True
@@ -2242,6 +2341,9 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             timed_out.add(_command_key(args))
                             result["次"] = "同じ命令は繰り返さず、別のやり方にしてください（音量などMacの状態は mac 道具）。"
                         result = _missing_hint(name, args, result, found, text, knowledge=bool(knowledge))
+                        for candidate in result.get("候補", []):
+                            ambiguous[os.path.realpath(_home_resolve(candidate))] = result["候補"]
+                        result.pop("候補", None)
                         if name == "write" and result.get("ok") and str(args.get("path", "")).lower().endswith(".csv"):
                             fixed = []
                             problems = _csv_problems(args.get("content", ""), text, context.read_contents, found, fixed)
@@ -2264,6 +2366,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             failed_seen.clear()
                     elif risk != "同じ手":
                         failed_seen.add(signature)   # 同じ手の注意は 30B への指示なので、本人には見せない
+                        failed_text[signature] = str(result.get("結果", ""))[:160]
                         last_problem = str(result.get("結果", ""))[:120]
                     if name != "sensei" and not result.get("ok"):
                         failures += 1
