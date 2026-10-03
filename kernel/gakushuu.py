@@ -1244,6 +1244,51 @@ def _local_text(prompt, max_tokens=400):
         return None, (folder() / "busy").exists()
 
 
+SHIRYOU_JUN = ("wikibooks", "aozora", "egov", "wikisource", "arxiv:cs", "arxiv:stat", "arxiv:math")
+
+
+def shiryou_once(*, every=90, toru=None):
+    """10/3 本人「Wikipedia 以外の文学・書籍・論文・専門知識・プログラミング・法律・統計も学べるように」。
+    教科書（Wikibooks）・文学（青空文庫）・法令（e-Gov）・原典（Wikisource）・論文の要旨（arXiv）を順に1件ずつ足す
+    （dougu/shiryou.py。どれもライセンスの明らかな公開の文）。"""
+    state = _state()
+    if time.time() - state.get("最後のほかの資料", 0) < every:
+        return None
+    if toru is None:
+        try:
+            import shiryou
+            toru = shiryou.toru
+        except ImportError:
+            return None
+    turn = int(state.get("ほかの資料の順", 0))
+    name = SHIRYOU_JUN[turn % len(SHIRYOU_JUN)]
+    state["最後のほかの資料"], state["ほかの資料の順"] = time.time(), turn + 1
+    _write(folder() / "state.json", state)
+    item = toru(name)
+    if not item or not item.get("題") or len(str(item.get("本文", ""))) < 200:
+        return None
+    title, body, source = str(item["題"])[:120], str(item["本文"])[:8000], str(item.get("出どころ") or name)
+    if used_bytes() + len(body.encode("utf-8")) + 8192 > {**DEFAULT, **_cfg_learning()}.get("上限MB", 2048) * 1024 * 1024:
+        return None
+    with _db() as db:
+        if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (title,)).fetchone():
+            return None
+        cursor = db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
+                            (title, body, source, str(item.get("url", "")), time.strftime("%Y-%m-%d %H:%M:%S")))
+        _add_trigram(db, cursor.lastrowid, title, body, source)
+        _add_article_edges(db, title, body, item.get("ほかの候補", []) or [])
+    _log(f"{source}: {title}（{len(body)}字）")
+    return title
+
+
+def _cfg_learning():
+    try:
+        import settings
+        return settings.load().get("事前学習", {})
+    except Exception:
+        return {}
+
+
 _NOOTO = {"thread": None, "last": 0.0}
 
 
@@ -1325,6 +1370,8 @@ def run():
                     reflect_once(cfg)
                     make_teian_once(cfg)
                     kyoukun_once()
+                    if opts.get("出どころ", {}).get("ほかの資料", True):
+                        shiryou_once()
                     nooto_once()
                     jibun_once()
             except Exception as e:

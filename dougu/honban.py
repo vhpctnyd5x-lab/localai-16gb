@@ -39,7 +39,7 @@ LLAMA = HOME / "LocalAI_mirror" / "llama-latest" / "build" / "bin" / "llama-serv
 MODEL_MAIN = HOME / "LocalAI_mirror" / "models" / "Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf"   # 10/1: 30B は片付けた
 KEKKA = KOUKAI / "dougu" / "kekka"
 # koukai の写しの場所 → 本番の名前（dougu が正のもの）
-DOUGU_TO_KERNEL = {"jiyuu.py", "kyoudou.py", "hako.py", "kyoukun.py"}
+DOUGU_TO_KERNEL = {"jiyuu.py", "kyoudou.py", "hako.py", "kyoukun.py", "shiryou.py"}
 
 
 def split_env(text):

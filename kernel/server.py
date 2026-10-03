@@ -33,6 +33,86 @@ import feedback
 TOKEN = secrets.token_urlsafe(24)
 
 
+def _ugoki_summary(event, learning=False):
+    """記録の本文・引数・依頼は出さず、段階と既知の道具名だけを返す。"""
+    if learning:
+        message = str(event.get("文", ""))
+        for prefix, kind, text in (
+            ("Wikipedia:", "事前学習", "Wikipedia の記事を学習しました"),
+            ("本文を取り直し:", "事前学習", "記事の本文を取り直しました"),
+            ("ノート:", "学習ノート", "読んだ記事に要点を書きました"),
+            ("ja.wikibooks:", "事前学習", "教科書（Wikibooks）を学習しました"),
+            ("ja.wikisource:", "事前学習", "原典（Wikisource）を学習しました"),
+            ("青空文庫:", "事前学習", "文学（青空文庫）を学習しました"),
+            ("e-Gov法令検索:", "事前学習", "法令を学習しました"),
+            ("arXiv (", "事前学習", "論文の要旨を学習しました"),
+            ("自分:", "自分", "自己紹介を書き直しました"),
+            ("本文を取れず:", "事前学習", "記事の本文を取得できませんでした"),
+            ("記事なし:", "事前学習", "記事が見つかりませんでした"),
+            ("振り返り:", "振り返り", "会話の記録を振り返っています"),
+            ("先生に聞いた:", "振り返り", "外の先生に確かめました"),
+            ("教訓:", "教訓", "記録から教訓をまとめました"),
+            ("覚え書き:", "教訓", "覚え書きを更新しました"),
+            ("活用カード:", "教訓", "活用カードを作りました"),
+            ("先生の確かめ:", "教訓", "先生が活用カードを確かめました"),
+            ("例外:", "事前学習", "学習中にエラーがありました"),
+        ):
+            if message.startswith(prefix):
+                # 10/3: 記事の題は公開の Wikipedia の題なので見せる（何を学んでいるか分かるように）
+                if prefix in ("Wikipedia:", "本文を取り直し:", "ノート:", "ja.wikibooks:", "ja.wikisource:", "青空文庫:", "e-Gov法令検索:"):
+                    text += "（" + message[len(prefix):].strip()[:60] + "）"   # 下で gate._redact を通す
+                return kind, text
+        return "事前学習", "事前学習の記録"
+    content = event.get("内容")
+    content = content if isinstance(content, dict) else {}
+    phase = event.get("段階")
+    text = {"依頼": "輪を開始しました", "開始": "輪を開始しました",
+            "提案": "道具の実行を提案しました", "結果": "結果を記録しました",
+            "近道": "近道で答えました", "形の誤り": "道具の指定を見直しています",
+            "無効な出力": "出力を見直しています"}.get(str(phase), "輪の進み具合")
+    if phase == "提案":
+        name = content.get("道具")
+        if name in ("sh", "read", "write", "edit", "find", "hyou", "trash", "mac",
+                    "move", "copy", "web", "skill", "shiru", "sensei", "chrome"):
+            text += ": " + name
+    elif phase == "結果":
+        if "答え" in content:
+            text = "返事をまとめました"
+        elif content.get("ok") is True:
+            text = "実行できました"
+        elif content.get("ok") is False:
+            text = "実行できませんでした"
+    return "会話の輪", text
+
+
+def _ugoki(n=200):
+    """保存済みの記録を読むだけ。起動・学習・頭脳の呼び出しはしない。"""
+    from datetime import datetime
+    import kyoudou as gate
+    n = max(1, min(500, n))
+    paths = [(p, False) for p in gate.KIROKU_DIR.glob("*.jsonl")]
+    paths += [(gakushuu.folder() / name, True) for name in ("log.jsonl", "log.jsonl.1")]
+    rows = []
+    for path, learning in paths:
+        try:
+            lines = gakushuu._tail_lines(path, n)
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    continue
+                when = datetime.fromisoformat(str(event.get("時刻", ""))).astimezone()
+                kind, text = _ugoki_summary(event, learning)
+                rows.append((when.timestamp(), {"時刻": when.isoformat(timespec="seconds"),
+                            "種類": kind, "文": gate._redact(text)[:120]}))
+            except (ValueError, TypeError, OverflowError):
+                continue
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [row for _, row in rows[:n]]
+
+
 def _make_title(cid):
     """返答を待たせず、最初のやりとりの後に短い題名を作る（10/1 本人: 音声入力の長い発言がそのまま題名になる）。
     まず規則で付け、頭脳が空いていれば付け直す。頭脳は読む 15〜30 トークン/秒なので、他の頼みを書いている間は割り込まない。"""
@@ -1159,6 +1239,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/ugoki":
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                n = int(query.get("n", ["200"])[0])
+            except ValueError:
+                return self._json({"error": "n は整数にしてください"}, 400)
+            return self._json({"動き": _ugoki(n)})
         if path in ("/skills", "/gakushuu", "/gakushuu/teian"):
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)

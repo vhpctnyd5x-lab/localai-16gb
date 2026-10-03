@@ -22,6 +22,7 @@ jobs:
         run: |
           python3 dougu/tameshi_jiyuu.py
           python3 dougu/tameshi_kyoukun.py
+          python3 dougu/tameshi_shiryou.py
       - name: カーネルの試験
         working-directory: kernel
         run: python3 -m unittest discover -s tests -p "test_*.py"
