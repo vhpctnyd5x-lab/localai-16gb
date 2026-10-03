@@ -531,6 +531,11 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         fixed = []
         assert jiyuu._csv_problems(kaita, "補充.csv に 品名,必要数 の列で", yonda, [str(tana / "赤.txt"), str(tana / "黒.txt")], fixed)
         assert fixed == ["品名,必要数\n赤ペン,12"], (kaita, fixed)
+    # 10/3 J19: 区分が全行同じ（置き場の名前）なら読み直しを促す。違えば黙る。直した中身は出さない。
+    fixed = []
+    assert "区分 が全行「提出控え」で同じ" in jiyuu._csv_problems("区分,ファイル名\n提出控え,報告_新.txt\n提出控え,報告.txt",
+                                                                "索引.csv を 区分,ファイル名 の列で", [], [], fixed)[0] and fixed == []
+    assert jiyuu._csv_problems("区分,ファイル名\n今回,報告_新.txt\n前回,報告.txt", "区分,ファイル名 の列で", [], []) == []
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 

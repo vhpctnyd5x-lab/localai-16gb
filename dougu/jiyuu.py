@@ -1572,6 +1572,14 @@ def _csv_problems(content, request, read_contents, found, fixed=None):
             extra.append(value)
         else:
             repair[(place[0] + start, place[1])] = value
+    # 10/3 J19: 区分を全行「提出控え」（置き場の名前）と書き、読まずに終えた。分ける列が全部同じなら役に立っていない。
+    body = rows[start:]
+    for place, column in enumerate(header):
+        values = {row[place] for row in body if place < len(row)}
+        if len(body) >= 2 and len(values) == 1 and "" not in values and re.search(r"区分|種類|分類|種別|カテゴリ|状態|扱い", column):
+            problems.append(f"{column} が全行「{values.pop()}」で同じです。行を分ける列なので、"
+                            "それぞれのファイルを read して、中身や頼みの言葉から行ごとの違いを書いてください")
+            sure = False
     if fixed is not None and problems and sure and (repair or extra):
         out = io.StringIO()
         writer = csv.writer(out, lineterminator="\n")
