@@ -1173,6 +1173,24 @@ def validate(current, patch):
     return value
 
 
+def kyoukun_once(*, every=6 * 3600):
+    """10/3 夜の教訓カード（kyoukun.py）。空き時間に、記録から「門番に直されて成功した」知らせを集め直す。
+    頭は使わない（安い取り込み）。輪が似た頼みの最初に添える（KERNEL_JIYUU_OPTS の kyoukun）。"""
+    state = _state()
+    if time.time() - state.get("最後の教訓", 0) < every:
+        return None
+    try:
+        import kyoukun
+    except ImportError:
+        return None
+    state["最後の教訓"] = time.time()
+    _write(folder() / "state.json", state)
+    cards = kyoukun._combine([], kyoukun.atsumeru([str(d) for d in _record_dirs() if d.is_dir()]))
+    _write(kyoukun.DEFAULT_PATH if not os.environ.get("KERNEL_KYOUKUN_PATH") else Path(os.environ["KERNEL_KYOUKUN_PATH"]), cards)
+    _log(f"教訓: 記録から {len(cards)} 枚")
+    return len(cards)
+
+
 def run():
     directory = folder()
     directory.mkdir(parents=True, exist_ok=True)
@@ -1210,6 +1228,7 @@ def run():
                         learn_once(cfg)
                     reflect_once(cfg)
                     make_teian_once(cfg)
+                    kyoukun_once()
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")
                 _status("失敗を記録し、次を待っています")

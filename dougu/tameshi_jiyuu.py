@@ -121,6 +121,46 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
             assert jiyuu.kotaeru("試験", mode=mode) == "完了"
         return seen
 
+    # B/C: 追加旗は既定OFF。難度は条件印・場所・文数のみで数え、一覧化も機械的。
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("KERNEL_JIYUU_OPTS", None)
+        assert jiyuu._ji_opts().get("michisuji") is not True and jiyuu._ji_opts().get("kioku") is not True
+        assert jiyuu._muzukashisa("メモして") == 0
+        complex_request = "~/Documents/a.txt を確認して、古い方は上書きしないで。~/Desktop/b.txt に列だけ書く"
+        assert jiyuu._muzukashisa(complex_request) >= 5
+        assert len(jiyuu._michisuji_conditions(complex_request)) >= 3
+    checks += 1
+    # 旗OFFでは追加の条件一覧・促しがなく、通常の一回答のまま。
+    off_prompts = []
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": "{}"}), \
+         mock.patch.object(jiyuu, "_ask", side_effect=lambda messages, **kw: off_prompts.append(json.loads(json.dumps(messages))) or {"content": "完了"}):
+        assert jiyuu.kotaeru(complex_request) == "完了"
+    assert len(off_prompts) == 1 and "頼みの条件:" not in off_prompts[0][-1]["content"]
+    checks += 1
+    # B: 難しい依頼は初回に一覧と順序指示、回答前に一覧確認を一度だけ添える。
+    b_prompts = []
+    b_replies = iter([{"content": "作業しました"}, {"content": "完了"}])
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"michisuji": true}'}), \
+         mock.patch.object(jiyuu, "_ask", side_effect=lambda messages, **kw: b_prompts.append(json.loads(json.dumps(messages))) or next(b_replies)):
+        assert jiyuu.kotaeru(complex_request) == "完了"
+    assert "頼みの条件:" in b_prompts[0][-1]["content"] and "2〜4行" in b_prompts[0][-1]["content"]
+    assert any("満たしていない条件があれば直して" in str(m.get("content", "")) for m in b_prompts[1])
+    checks += 1
+    # C: 成功・失敗した変更を終端促しに載せ、済みでない物を済みと言わせない。
+    c_prompts = []
+    c_replies = iter([{"content": "", "tool_calls": [call("write", path="~/Documents/a.txt", content="x"),
+                                                       call("edit", path="~/Documents/b.txt", old="a", new="b")]},
+                      {"content": "完了しました"}, {"content": "完了しました"}])
+    with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"kioku": true}'}), \
+         mock.patch.object(jiyuu, "_ask", side_effect=lambda messages, **kw: c_prompts.append(json.loads(json.dumps(messages))) or next(c_replies)), \
+         mock.patch.object(jiyuu, "_run", side_effect=[{"ok": True, "結果": "書きました"},
+                                                        {"ok": False, "結果": "対象がありません"}]):
+        assert jiyuu.kotaeru("~/Documents/a.txt に書いて", mode="バイパス") == "完了しました"
+    assert any("済み: write ~/Documents/a.txt" in str(m.get("content", "")) for m in c_prompts[-1])
+    assert any("できていない: edit ~/Documents/b.txt 対象がありません" in str(m.get("content", "")) for m in c_prompts[-1])
+    assert any("済みでない物を済んだと言わない" in str(m.get("content", "")) for m in c_prompts[-1])
+    checks += 1
+
     # 一時 HOME と個人スキルが変わっても、system と道具の接頭辞は同じ。
     snapshots = []
     def capture_prompt(messages, **_kwargs):
@@ -562,6 +602,11 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert "頼んだ人に聞いて" in jiyuu._ambiguous_pick("move", east, ambiguous, "~/Documents/案件別 にある見積.txt を移して")
     assert jiyuu._ambiguous_pick("move", east, ambiguous, "~/Documents/案件別 の東の見積.txt を移して") is None
     assert jiyuu._ambiguous_pick("read", east, ambiguous, "見積.txt を移して") is None
+    # 10/3 J15: ホームを落とした絶対の場所（まだ無いフォルダ）へは書かせず、ホームの中の同じ場所を示す。
+    stray = str(home.parent / "Desktop" / "九月分" / "a.txt")
+    assert "~/Desktop/九月分/a.txt" in jiyuu._outside_home("move", {"src": "~/x.txt", "dst": stray})
+    assert jiyuu._outside_home("move", {"src": "~/x.txt", "dst": "~/Desktop/九月分/a.txt"}) is None
+    assert jiyuu._outside_home("write", {"path": str(home / "Desktop" / "b.txt")}) is None
     assert jiyuu._command_key({"command": "defaults read com.apple.x -key V"}) == "defaults read"
     checks += 1
 

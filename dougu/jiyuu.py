@@ -43,6 +43,40 @@ _REQUEST_OPTS = threading.local()
 _REQUEST_TEXT = threading.local()   # 10/1: shiru が本人の頼みの語も使うため
 
 
+def _ji_opts():
+    """輪の追加旗は既存の KERNEL_JIYUU_OPTS JSON から読む。"""
+    try:
+        value = json.loads(os.environ.get("KERNEL_JIYUU_OPTS") or "{}")
+    except (TypeError, ValueError):
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+
+_CONDITION_MARKS = ("しないで", "せず", "まま", "だけ", "のみ", "以外", "上書き", "確認", "照合",
+                    "列", "合計", "ずつ", "古い", "新しい")
+
+
+def _muzukashisa(request):
+    """条件語・場所・文の数だけで頼みの複雑さを見積もる。"""
+    marks = sum(request.count(mark) for mark in _CONDITION_MARKS)
+    places = len(re.findall(r"(?:~/|(?:^|[\s、,])(?:Documents|Desktop|Downloads)/)", request))
+    sentences = max(1, len(re.findall(r"[。！？!?\n]+", request)) + (not bool(re.search(r"[。！？!?\n]\s*$", request))))
+    return marks + 2 * places + 2 * max(0, sentences - 1)
+
+
+def _michisuji_conditions(request):
+    """文・読点・条件印で機械的に頼みを切る（意味推論はしない）。"""
+    chunks = re.split(r"[。！？!?\n、，,；;]+", request)
+    conditions, seen = [], set()
+    for chunk in chunks:
+        item = chunk.strip(" \t・-")
+        if len(item) < 2 or item in seen:
+            continue
+        seen.add(item)
+        conditions.append(item[:100])
+    return conditions[:12]
+
+
 def _outbound():
     if not hasattr(_OUTBOUND, "request"):
         _OUTBOUND.request = ""
@@ -494,7 +528,7 @@ def _short(result, session, step, limit=1200):
     half = max(0, (limit - len(marker)) // 2)
     return body[:half] + marker + body[-(limit - len(marker) - half):]
 
-def _compact(messages, hard=False):
+def _compact(messages, hard=False, kioku=None):
     """文脈を 8192 の6割に保つ。30B が返した本当のトークン数で測る（日本語は1字≒1トークンで、字数の見積もりは甘かった）。"""
     used = _LAST_USAGE.get("prompt_tokens") or 0
     if not hard and used <= _CTX * 0.6 and len(json.dumps(messages, ensure_ascii=False)) <= _CTX * 0.6:
@@ -507,6 +541,48 @@ def _compact(messages, hard=False):
         for m in messages[1:-2]:
             if m.get("role") == "assistant" and len(str(m.get("content") or "")) > 200:
                 m["content"] = str(m["content"])[:200]
+    if kioku:
+        marker = "[kioku変更一覧]"
+        note = marker + "\n" + _kioku_text(kioku)
+        old = next((m for m in messages if m.get("role") == "user" and str(m.get("content", "")).startswith(marker)), None)
+        if old:
+            old["content"] = note
+        else:
+            messages.append({"role": "user", "content": note})
+
+
+def _kyoukun_hint(text):
+    """10/3 夜の教訓カード（dougu/kyoukun.py）。門番に直されて成功した知らせを、似た頼みの最初に添える。"""
+    try:
+        import kyoukun
+        hint = kyoukun.soeru(text)
+    except Exception:
+        return ""
+    return "\n" + hint if hint else ""
+
+
+def _kioku_place(name, args):
+    if name in ("move", "copy"):
+        return f"{args.get('src', '')} → {args.get('dst', '')}"
+    if name == "trash":
+        return "、".join(map(str, args.get("paths", [])))
+    return str(args.get("path", "")) if name in ("write", "edit") else str(args.get("command", ""))[:100]
+
+
+def _kioku_text(kioku):
+    lines = [f"{state}: {tool} {place}" + (f" {reason}" if reason else "")
+             for state, tool, place, reason in kioku]
+    return "\n".join(lines) if lines else "変更操作の記録なし"
+
+
+def _final_check_note(conditions, kioku):
+    lines = []
+    if conditions:
+        lines.extend(("頼みの条件一覧: " + "／".join(f"{i}) {item}" for i, item in enumerate(conditions, 1)),
+                     "満たしていない条件があれば直してから答えてください。"))
+    if kioku:
+        lines.extend(("変更記録:\n" + _kioku_text(kioku), "済みでない物を済んだと言わないでください。"))
+    return "\n".join(lines)
 
 _CTX = 8192
 _LAST_USAGE: dict = {}
@@ -1986,6 +2062,30 @@ def _missing_hint(name, args, result, found=(), request="", knowledge=False):
         result["次"] = "起点の場所を確認し、必要ならホーム以下から探してください。"
     return result
 
+_HOME_FOLDERS = ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Movies")
+
+
+def _outside_home(name, args):
+    """10/3 J15: 頼みは ~/Desktop/九月分 なのに、ホームの部分を落とした絶対の場所（…/J15/Desktop/九月分）へ移し、
+    ホームの外に Desktop を作った。ホームの外の、まだ無いフォルダへ書く手は止めて、ホームの中の同じ場所を示す。"""
+    raws = [args.get("dst")] if name in ("move", "copy") else [args.get("path")] if name in ("write", "edit") else []
+    home = Path(os.path.realpath(Path.home()))
+    for raw in raws:
+        if not raw or not os.path.isabs(os.path.expanduser(str(raw))):
+            continue
+        path = _home_resolve(raw)
+        real = Path(os.path.realpath(path))
+        if real == home or home in real.parents or path.parent.exists():
+            continue
+        parts = path.parts
+        for index, part in enumerate(parts):
+            if part in _HOME_FOLDERS:
+                inside = "~/" + "/".join(parts[index:])
+                return (f"{raw} はホームの外で、そのフォルダもまだありません。頼みの場所が {inside} なら、"
+                        f"その場所で{name}し直してください。")
+    return None
+
+
 def _ambiguous_pick(name, args, ambiguous, request):
     """10/3 J21: 候補が2つと知らせても、東・西の見積を両方動かした。頼みの言葉で区別できない候補は、変える前に止める。"""
     if name not in ("move", "copy", "trash") or not ambiguous:
@@ -2100,7 +2200,15 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
         if row.get("role") in ("user", "assistant"):
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
     knowledge = _knowledge_hint(text)
-    messages.append({"role": "user", "content": _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text)})
+    opts = _ji_opts()
+    michi_conditions = _michisuji_conditions(text) if opts.get("michisuji") is True and _muzukashisa(text) >= 5 else []
+    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text)
+    if opts.get("kyoukun") is True:
+        initial += _kyoukun_hint(text)
+    if michi_conditions:
+        initial += "\n頼みの条件: " + "。 ".join(f"{i}) {item}" for i, item in enumerate(michi_conditions, 1))
+        initial += "。道具を使う前に、どの順で満たすか2〜4行で書いてから始めてください。"
+    messages.append({"role": "user", "content": initial})
     ledger = _ledger_extract(text) if os.environ.get("KERNEL_LEDGER") == "1" else []   # 10/2: 既定は切（下の説明）
     ledger_snapshots = _ledger_start(ledger)
     ledger_nudged = False
@@ -2129,6 +2237,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     csv_open: dict[str, list[str]] = {}   # 10/2 J25: 書いた CSV で、照合が違うと知らせたのに直していないもの
     csv_nudged = False
     csv_fixed: dict[str, str] = {}   # 照合で直した中身（同じ中身を書き直そうとした時に渡す）
+    kioku = []
+    kioku_enabled = opts.get("kioku") is True
+    michi_nudged = False
+    kioku_nudged = False
     failed_text: dict[str, str] = {}   # 10/3 J40: 失敗した手の結果（繰り返した時に「まだできていない」と返す）
     ambiguous: dict[str, list[str]] = {}   # 10/3 J21: 同じ名前の候補が複数あった時の、実体 → 候補の一覧
     denied_label = ""
@@ -2145,7 +2257,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 _record(session, step, "結果", {"ok": False, "結果": "停止されました"}, route)
                 return "停止されました。"
             except _ContextFull:
-                _compact(messages, hard=True)
+                _compact(messages, hard=True, kioku=kioku if kioku_enabled else None)
                 reply = _ask(messages, final=True)
             except urllib.error.URLError as error:
                 _record(session, step, "結果", {"ok": False, "結果": f"30B の返事を読めませんでした: {error}"}, route)
@@ -2181,12 +2293,16 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 continue
             if not calls and not force and not csv_nudged and any(csv_open.values()):
                 csv_nudged = True   # 1回だけ。照合の思い違いなら、そのままでよい理由を答えて終われる
+                check_note = _final_check_note(michi_conditions if not michi_nudged else (), kioku if kioku_enabled and not kioku_nudged else [])
+                michi_nudged = michi_nudged or bool(michi_conditions)
+                kioku_nudged = kioku_nudged or bool(kioku_enabled and kioku)
                 pending = "／".join(problem for problems in csv_open.values() for problem in problems)[:400]
                 messages.append({"role": "assistant", "content": reply["content"][:1200]})
                 fix = next((text for path, text in csv_fixed.items() if text and csv_open.get(path)), "")
                 messages.append({"role": "user", "content": "書いた CSV に、確かめると違う所が残っています: " + pending
                                  + ("。読んだ値で直すと次の中身です。write し直してください（照合の思い違いなら、理由を短く答えてください）:\n" + fix if fix else
-                                    "。直すなら write で書き直してください。そのままでよければ、理由を短く答えてください。")})
+                                    "。直すなら write で書き直してください。そのままでよければ、理由を短く答えてください。")
+                                 + ("\n" + check_note if check_note else "")})
                 continue
             if not calls and not force and ledger:
                 unmet = _ledger_check(ledger, ledger_snapshots)
@@ -2194,10 +2310,23 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     prompt, should_nudge = _ledger_finish("", unmet, ledger_nudged)
                     if should_nudge:
                         ledger_nudged = should_nudge
+                        check_note = _final_check_note(michi_conditions if not michi_nudged else (), kioku if kioku_enabled and not kioku_nudged else [])
+                        michi_nudged = michi_nudged or bool(michi_conditions)
+                        kioku_nudged = kioku_nudged or bool(kioku_enabled and kioku)
                         messages.append({"role": "assistant", "content": reply["content"][:1200]})
-                        messages.append({"role": "user", "content": prompt + "\n未達の条件を満たしてから、道具なしで短く答えてください。"})
+                        messages.append({"role": "user", "content": prompt + "\n未達の条件を満たしてから、道具なしで短く答えてください。"
+                                         + ("\n" + check_note if check_note else "")})
                         continue
                     reply["content"] = _ledger_finish(reply["content"], unmet, ledger_nudged)[0]
+            if not calls and (michi_conditions and not michi_nudged or kioku_enabled and kioku and not kioku_nudged) and (not force or used):
+                check_conditions = michi_conditions if not michi_nudged else ()
+                check_kioku = kioku if kioku_enabled and not kioku_nudged else []
+                michi_nudged = michi_nudged or bool(michi_conditions)
+                kioku_nudged = kioku_nudged or bool(kioku_enabled and kioku)
+                messages.append({"role": "assistant", "content": (reply.get("content") or "")[:1200]})
+                messages.append({"role": "user", "content": _final_check_note(check_conditions, check_kioku)
+                                 + "\n既存の確認があればまとめ、道具なしで答えてください。"})
+                continue
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 # 9/29: 道具が1つも成功していないのに「完了しました」とは言わない（返事が空・壊れた時）。
@@ -2225,7 +2354,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                     return "20手の上限に達しました。"
                 used += 1
                 ident = call.get("id") if isinstance(call, dict) else "call_" + uuid.uuid4().hex[:8]
-                name, args, as_read, rewrite_note = None, None, False, ""
+                name, args, as_read, rewrite_note, base_risk = None, None, False, "", None
                 request_problem = ""
                 try:
                     name, args = _valid(call)
@@ -2262,7 +2391,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 try:
                     # rm→trash の言い換えや通常の承認より先に、元の提案を止める。
                     args = _normalize(args)
-                    request_problem = _request_guard(name, args, text, found, _risk(name, args)) or _ambiguous_pick(name, args, ambiguous, text)
+                    request_problem = (_request_guard(name, args, text, found, _risk(name, args)) or _ambiguous_pick(name, args, ambiguous, text)
+                                       or _outside_home(name, args))
                     name, args, rewrite_note = _rewrite_sh(name, args)
                     args = _normalize(args)
                     # 9/29: 頼まれていない open は、断らずに開かずに読む（本人の Chrome にタブを増やさず、断って1手むだにしない）。
@@ -2360,11 +2490,17 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                             result["次"] = rewrite_note
                     if result.get("ok"):
                         succeeded += 1
+                        if kioku_enabled and (name in ("write", "edit", "move", "copy", "trash") or name == "sh" and args.get("command") and base_risk != "見る"):
+                            place = _kioku_place(name, args)
+                            kioku.append(("済み", name, gate._redact(place)[:180], ""))
                         if name in ("write", "edit", "move", "copy", "trash") or name == "sh" and args.get("command") and base_risk != "見る":
                             seen.difference_update(read_seen | failed_seen)
                             read_seen.clear()
                             failed_seen.clear()
                     elif risk != "同じ手":
+                        if kioku_enabled and (name in ("write", "edit", "move", "copy", "trash") or name == "sh" and args.get("command") and base_risk != "見る"):
+                            place = _kioku_place(name, args)
+                            kioku.append(("できていない", name, gate._redact(place)[:180], gate._redact(str(result.get("結果", "失敗")))[:100]))
                         failed_seen.add(signature)   # 同じ手の注意は 30B への指示なので、本人には見せない
                         failed_text[signature] = str(result.get("結果", ""))[:160]
                         last_problem = str(result.get("結果", ""))[:120]
@@ -2372,6 +2508,10 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                         failures += 1
                 except Exception as error:
                     result = {"ok": False, "結果": gate._redact(error)}
+                    if kioku_enabled and (name in ("write", "edit", "move", "copy", "trash") or
+                                          name == "sh" and args.get("command") and base_risk != "見る"):
+                        place = _kioku_place(name, args)
+                        kioku.append(("できていない", name, gate._redact(place)[:180], gate._redact(str(error))[:100]))
                     if name != "sensei":
                         failures += 1
                 if as_read and result.get("ok"):
@@ -2389,7 +2529,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
             if used >= 16:
                 force = True   # 手数の予算。ここからは答えさせる
                 _emit(on_event, {"type": "note", "text": "操作の上限が近いため、ここで答えをまとめます。"})
-            _compact(messages)
+            _compact(messages, kioku=kioku if kioku_enabled else None)
         _emit(on_event, {"type": "note", "text": "20手の上限に達しました。"})
         return "20手の上限に達しました。"
     finally:
