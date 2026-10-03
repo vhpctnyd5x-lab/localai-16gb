@@ -31,10 +31,25 @@ def plan(site, status):
     raise ValueError(f'{site}: latest に完成済みの articlesdump がありません。途中版は使いません')
 
 
-def download(site, directory):
-    with request(f'{BASE}/{site}/latest/dumpstatus.json') as response:
-        status = json.load(response)
-    files = plan(site, status)
+def latest_done(site, tries=3):
+    """10/3: latest/ に dumpstatus.json は無い（404）。日付のフォルダを新しい順に見て、記事が完成した最初の回を使う。"""
+    with request(f'{BASE}/{site}/') as response:
+        dates = sorted(set(re.findall(r'href="(\d{8})/"', response.read().decode())), reverse=True)
+    for date in dates[:tries]:
+        try:
+            with request(f'{BASE}/{site}/{date}/dumpstatus.json') as response:
+                status = json.load(response)
+            status.setdefault('date', date)
+            return status, plan(site, status)
+        except Exception as e:
+            print(f'{site}/{date}: 使わない（{e}）', flush=True)
+    raise ValueError(f'{site}: 新しい{tries}回に完成済みの記事ダンプがありません')
+
+
+def download(site, directory, dry=False):
+    status, files = latest_done(site)
+    if dry:
+        return [(name, info.get('size')) for name, info in files]
     paths = []
     for name, info in files:
         path = directory / name
@@ -96,12 +111,17 @@ def main():
     p.add_argument('--directory', type=Path)
     p.add_argument('--site', choices=('jawiki', 'jawikibooks', 'jawikisource'), action='append')
     p.add_argument('--self-delete', action='store_true')
+    p.add_argument('--dry', action='store_true', help='一覧だけ見る（取らない）')
     a = p.parse_args()
     if a.self_delete:
         self_delete()
         return
     if not a.directory or not a.site:
         p.error('--directory と --site が必要')
+    if a.dry:
+        for site in a.site:
+            print(site, download(site, a.directory, dry=True))
+        return
     a.directory.mkdir(parents=True, exist_ok=True)
     result = {site: download(site, a.directory) for site in a.site}
     (a.directory / 'inputs.json').write_text(json.dumps(result, indent=2) + '\n')
