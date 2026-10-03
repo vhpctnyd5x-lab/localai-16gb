@@ -1,0 +1,29 @@
+name: shiken
+# main への push と PR ごとに、モデル無しで回る試験を走らせる（ChatGPT の指摘 8: 試験はあるのに自動で回していなかった）。
+# macOS で回す（sandbox-exec・パスの扱いが目当ての機械に近い。ただし Apple Silicon で、Intel の実機ではない）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  shiken:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: 文法
+        run: python3 -m py_compile kernel/*.py dougu/*.py
+      - name: 輪と門番の自己試験
+        run: |
+          python3 dougu/tameshi_jiyuu.py
+          python3 dougu/tameshi_kyoukun.py
+      - name: カーネルの試験
+        working-directory: kernel
+        run: python3 -m unittest discover -s tests -p "test_*.py"
+      - name: 隔離（sandbox-exec）の試験
+        run: python3 kernel/hako.py shiken

@@ -155,14 +155,17 @@ def _gone(pattern):
     return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode != 0
 
 
-def kaiten(_args):
+def _shimau():
+    """窓とサーバー（server.py）を止める。止めたら True。"""
     old = _url_line()
+    was_up = False
     if old:
         port = urllib.parse.urlsplit(old).port
         pids = subprocess.run(["lsof", "-nP", f"-tiTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout.split()
         for pid in pids:
             if "server.py" in subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout:
                 os.kill(int(pid), signal.SIGTERM)
+                was_up = True
     # 窓（kernel-window＝アプリ本体）が生きていると open -a は前に出すだけで、開き直さない。
     for pid in subprocess.run(["pgrep", "-f", "[k]ernel-window"], capture_output=True, text=True).stdout.split():
         os.kill(int(pid), signal.SIGTERM)
@@ -170,6 +173,12 @@ def kaiten(_args):
         if _gone("[k]ernel-window") and _gone("[s]erver.py"):
             break
         time.sleep(0.5)
+    return was_up
+
+
+def kaiten(_args):
+    old = _url_line()
+    _shimau()
     subprocess.run(["open", "-a", "カーネル"], check=True)
     line = base(old)
     print("開き直した", urllib.parse.urlsplit(line).netloc, "｜モデル", loaded_model())
@@ -206,6 +215,9 @@ def gakushuu(args):
 def j(args):
     """アプリの 30B と試験のモデルは同時に載らない（16GB）。事前学習を止めて 11問、元に戻す。"""
     was_on = gakushuu_yasumu()
+    # 10/3: アプリが立ったままだと、温め・横の仕事が同じ 8080 の試験の頭脳へ頼みを送り、
+    #   キャッシュを追い出し合った（2つの会話が交互に伸び、1手ごとに全部読み直し・J15/J16 が10分切れ）。試験の間は閉じる。
+    app_was_up = _shimau()
     subprocess.run(["pkill", "-x", "llama-server"])
     for _ in range(30):
         if subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode:
@@ -218,10 +230,18 @@ def j(args):
     # 例: --args "KOUKAI_EXPERT_P=0.70 --spec-type none"（頭の KOUKAI_…=値 は環境。先読みを変える時は既定の ngram を外す）
     extra, env = split_env(args.args)
     spec = [] if "--spec-type" in extra else ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-m", "16"]
-    server = subprocess.Popen([str(Path(args.llama).expanduser()), "-m", str(model), "--port", "8080", "-t", "6",
-                               "-ngl", "0", "-c", "8192", "-np", "1", "-cb", "-ub", "256", "--cache-reuse", "16",
-                               "-fa", "off", "--reasoning-format", "none", *spec, *extra],
-                              stdout=log, stderr=log, env=env)
+    command = [str(Path(args.llama).expanduser()), "-m", str(model), "--port", "8080", "-t", "6",
+               "-ngl", "0", "-c", "8192", "-np", "1", "-cb", "-ub", "256", "--cache-reuse", "16",
+               "-fa", "off", "--reasoning-format", "none", *spec, *extra]
+    # 10/3: 開き直した直後のアプリは温めのために頭脳を立て直し、8080 を取り返した（試験の頭脳は bind できず 0/3）。
+    #   取れなかったら、もう一度止めて立て直す。
+    for _ in range(5):
+        server = subprocess.Popen(command, stdout=log, stderr=log, env=env)
+        time.sleep(8)
+        if server.poll() is None:
+            break
+        subprocess.run(["pkill", "-x", "llama-server"])
+        time.sleep(5)
     try:
         for _ in range(150):
             try:
@@ -237,6 +257,8 @@ def j(args):
     finally:
         server.terminate()
         server.wait()
+        if app_was_up:
+            kaiten(None)
         gakushuu_modosu(was_on)
     rows = [r for r in (out_dir / f"{args.out}.md").read_text(encoding="utf-8").splitlines() if r.startswith("| J")]
     print(f"{model.name}: PASS {sum('PASS' in r for r in rows)} / {len(rows)}")

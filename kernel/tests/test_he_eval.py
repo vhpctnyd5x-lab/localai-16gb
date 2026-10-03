@@ -6,9 +6,13 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "LocalAI改良/tools/ops/humaneval"))
-import he_eval
+try:
+    import he_eval   # リポジトリの外（LocalAI改良/tools/ops/humaneval）にある。無い所では飛ばす
+except ImportError:
+    he_eval = None
 
 
+@unittest.skipIf(he_eval is None, "he_eval がこの機械に無い")
 class HumanEvalTests(unittest.TestCase):
     def _problem(self, task_id="HumanEval/0"):
         return {

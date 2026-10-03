@@ -408,6 +408,17 @@ def _valid_title(title):
             and not re.search(r"\d{3,4}年", title) and "/" not in title)
 
 
+def _too_close(candidate, near):
+    """10/3: 題の言葉で検索した「ほかの候補」を辿ると、前田裕二→前田亘輝→前田たかひろ、ムシウタ→ムシウタbug のように
+    名前の似た記事ばかりになった（本人「途中から変」）。今の題・最近の10題と頭の2字が同じか、含み合う題は辿らない。"""
+    c = str(candidate).strip()
+    for other in near:
+        t = str(other or "").strip()
+        if len(t) >= 2 and (c in t or t in c or c[:2] == t[:2]):
+            return True
+    return False
+
+
 def _topic_entry(state, known, use_conversation=False):
     state = _version_state(state)
     seen = set(state.get("見た題", []))
@@ -423,6 +434,8 @@ def _topic_entry(state, known, use_conversation=False):
         # 種は選んで置いた題なので「(」を含んでもよい（例 ファイル (コンピュータ)）。絞るのはリンクから来た題だけ。
         if _valid_title(title) or (depth == 0 and isinstance(title, str) and len(title.strip()) >= 2):
             title = title.strip()[:80]
+            if depth > 0 and _too_close(title, state.get("見た題", [])[-10:]):
+                continue   # 前から並んでいた名前の似た題も飛ばす
             if title not in known and title not in seen:
                 return title, depth
     return None
@@ -497,7 +510,8 @@ def learn_once(cfg, *, wiki_module=None):
         additions = []
         for candidate in article.get("ほかの候補", []):
             if (_valid_title(candidate) and candidate not in known and candidate not in queued
-                    and candidate not in state.get("見た題", [])):
+                    and candidate not in state.get("見た題", [])
+                    and not _too_close(candidate, [item["題"]] + state.get("見た題", [])[-10:])):
                 additions.append({"題": candidate.strip()[:80], "深さ": int(item.get("深さ", 1)) + 1})
                 queued.add(candidate)
                 if len(additions) == 5:
@@ -536,7 +550,8 @@ def learn_once(cfg, *, wiki_module=None):
         queued = {x.get("題") if isinstance(x, dict) else x for x in remaining}
         for candidate in article.get("ほかの候補", []):
             if (not _valid_title(candidate) or candidate in known or candidate in queued
-                    or candidate in state.get("見た題", [])):
+                    or candidate in state.get("見た題", [])
+                    or _too_close(candidate, [title, actual] + state.get("見た題", [])[-10:])):
                 continue
             additions.append({"題": candidate.strip()[:80], "深さ": depth + 1})
             queued.add(candidate)

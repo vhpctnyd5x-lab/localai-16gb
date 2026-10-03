@@ -926,7 +926,7 @@ document.addEventListener("keydown", e => {
    Chrome の窓だったときは動いていたので、窓を替えたときに死んでいた。
    prompt() も同じで、こちらは常に null になる。
    → ブラウザの標準ダイアログを一切使わず、自前のシートで聞く。 */
-// ★ 道具が「押す・打つ」の前に聞いてくる札。答えは する／この仕事は全部する／やめる（180秒黙ると「やめる」になる）
+// ★ 道具が「押す・打つ」の前に聞いてくる札。答えは する／この仕事は同じ程度まで全部する（10分・戻せない操作は毎回）／やめる（180秒黙ると「やめる」になる）
 function shouninSheet(sh, node){
   const box = document.createElement("div");
   box.className = "approval-card";
@@ -940,7 +940,7 @@ function shouninSheet(sh, node){
   box.innerHTML = `<h4>操作の確認</h4><p>何を・どこに: ${esc(String(sh.文 || "操作"))}</p>
     <p>戻せるか: ${esc(undo)}</p>
     <div class="actions"><button data-answer="する" class="primary">許可する</button>
-    <button data-answer="やめる">やめる</button><button data-answer="全部">この仕事は全部する</button></div>`;
+    <button data-answer="やめる">やめる</button><button data-answer="全部" title="同じ程度までの操作を10分だけ。戻せない操作は毎回聞きます">この仕事は同じ程度まで全部する</button></div>`;
   (node || log).appendChild(box);
   log.scrollTop = log.scrollHeight;
   let sunda = false;

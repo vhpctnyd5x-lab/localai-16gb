@@ -1220,6 +1220,22 @@ def _knowledge_hint(request):
             + json.dumps(picked, ensure_ascii=False)) if picked else ""
 
 
+def _gakushuu_hint(request):
+    """10/3: 「事前学習で一番興味深かったのは？」に、shiru を「興味深い事前学習」で引き、たまたま出た記事を
+    好みとして作り話した。事前学習そのものを聞かれたら、本当に読んだ最近の記事の題を添える。"""
+    if not re.search(r"事前学習|これまで(?:に)?(?:学|覚え)|今まで(?:に)?(?:学|覚え)|学んだ(?:中|こと|記事)", request):
+        return ""
+    path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "state.json"
+    try:
+        titles = [t for t in json.loads(path.read_text(encoding="utf-8")).get("全文を読んだ題", []) if isinstance(t, str)][-15:]
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if not titles:
+        return ""
+    return ("\n（カーネルより: 事前学習で最近読んだ記事は " + "、".join(reversed(titles))
+            + "。事前学習について答えるならこの中から選び、本文は shiru で確かめる。読んでいない事を付け足さない）")
+
+
 def _memory_hint(request):
     try:
         path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "oboe.sqlite3"
@@ -2201,8 +2217,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
             messages.append({"role": row["role"], "content": str(row.get("content", row.get("text", "")))[:1200]})
     knowledge = _knowledge_hint(text)
     opts = _ji_opts()
-    michi_conditions = _michisuji_conditions(text) if opts.get("michisuji") is True and _muzukashisa(text) >= 5 else []
-    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text)
+    michi_conditions = _michisuji_conditions(text) if opts.get("michisuji") is True and _muzukashisa(text) >= 12 else []   # 5 だと41問中29問が「難しい」になった
+    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text) + _gakushuu_hint(text)
     if opts.get("kyoukun") is True:
         initial += _kyoukun_hint(text)
     if michi_conditions:
@@ -2318,15 +2334,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                                          + ("\n" + check_note if check_note else "")})
                         continue
                     reply["content"] = _ledger_finish(reply["content"], unmet, ledger_nudged)[0]
-            if not calls and (michi_conditions and not michi_nudged or kioku_enabled and kioku and not kioku_nudged) and (not force or used):
-                check_conditions = michi_conditions if not michi_nudged else ()
-                check_kioku = kioku if kioku_enabled and not kioku_nudged else []
-                michi_nudged = michi_nudged or bool(michi_conditions)
-                kioku_nudged = kioku_nudged or bool(kioku_enabled and kioku)
-                messages.append({"role": "assistant", "content": (reply.get("content") or "")[:1200]})
-                messages.append({"role": "user", "content": _final_check_note(check_conditions, check_kioku)
-                                 + "\n既存の確認があればまとめ、道具なしで答えてください。"})
-                continue
+            # 10/3: 答えの前に確かめの1手を足すと、J27〜41 が 1,206 → 3,038 秒（正解は同じ 14/15）。足さず、既存の促しに相乗りするだけ。
             messages.append({"role": "assistant", "content": reply.get("content") or "", **({"tool_calls": calls} if calls else {})})
             if not calls:
                 # 9/29: 道具が1つも成功していないのに「完了しました」とは言わない（返事が空・壊れた時）。

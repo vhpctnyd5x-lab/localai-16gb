@@ -43,8 +43,8 @@ def _volume_matches_answer(answer: str) -> bool:
 
 
 
-def _jiyuu_rows(ids: str = "") -> list[dict]:
-    rows = [json.loads(line) for line in JIYUU_DATA.read_text(encoding="utf-8").splitlines() if line.strip()]
+def _jiyuu_rows(ids: str = "", mondai: Path = JIYUU_DATA) -> list[dict]:
+    rows = [json.loads(line) for line in mondai.read_text(encoding="utf-8").splitlines() if line.strip()]
     # J11は従来どおり。追加分より前に置き、既存の実行順も維持する。
     rows.insert(10, {"id": "J11", "toi": "パイソンでファイルを作って",
                      "check": {"type": "python_file_or_question"}})
@@ -197,7 +197,7 @@ def _run_jiyuu(args) -> int:
     """一時HOMEのJ系問題を新しい輪へ渡す。実行時だけモデルが必要。"""
     import jiyuu
     import kyoudou
-    rows = _jiyuu_rows(args.id)
+    rows = _jiyuu_rows(args.id, Path(args.mondai))
     results = []
     saved = {key: os.environ.get(key) for key in ("HOME", "PATH", "JIYUU_OPEN_LOG", "KERNEL_KIROKU_DIR", "KERNEL_HIKAE_DIR", "KERNEL_TSUIKA_DIR", "KERNEL_WAZA_DIR", "KERNEL_JIYUU_ROUTE")}
     old_kiroku = kyoudou.KIROKU_DIR
@@ -510,6 +510,8 @@ def _run(argv: list[str] | None = None) -> int:
     parser.add_argument("--wa", choices=("kyoudou", "jiyuu"), default="kyoudou")
     parser.add_argument("--kata", choices=("全部", "近道", "輪"), default="全部")
     parser.add_argument("--id", default="", help="実行するIDをカンマ区切りで指定")
+    parser.add_argument("--mondai", type=Path, default=JIYUU_DATA,
+                        help="jiyuu問題JSONL（既定: 公開問題集）")
     parser.add_argument("--output", default=str(DEFAULT_REPORT))
     args = parser.parse_args(argv)
     if args.wa == "jiyuu":

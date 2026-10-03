@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         assert jiyuu._ji_opts().get("michisuji") is not True and jiyuu._ji_opts().get("kioku") is not True
         assert jiyuu._muzukashisa("メモして") == 0
         complex_request = "~/Documents/a.txt を確認して、古い方は上書きしないで。~/Desktop/b.txt に列だけ書く"
-        assert jiyuu._muzukashisa(complex_request) >= 5
+        assert jiyuu._muzukashisa(complex_request) >= 12
         assert len(jiyuu._michisuji_conditions(complex_request)) >= 3
     checks += 1
     # 旗OFFでは追加の条件一覧・促しがなく、通常の一回答のまま。
@@ -137,14 +137,14 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
         assert jiyuu.kotaeru(complex_request) == "完了"
     assert len(off_prompts) == 1 and "頼みの条件:" not in off_prompts[0][-1]["content"]
     checks += 1
-    # B: 難しい依頼は初回に一覧と順序指示、回答前に一覧確認を一度だけ添える。
+    # B: 難しい依頼は初回に一覧と順序指示を添える。10/3: 答えの前の確かめの1手は足さない（遅くなるだけだった）。
     b_prompts = []
-    b_replies = iter([{"content": "作業しました"}, {"content": "完了"}])
+    b_replies = iter([{"content": "完了"}])
     with mock.patch.dict(os.environ, {"KERNEL_JIYUU_OPTS": '{"michisuji": true}'}), \
          mock.patch.object(jiyuu, "_ask", side_effect=lambda messages, **kw: b_prompts.append(json.loads(json.dumps(messages))) or next(b_replies)):
         assert jiyuu.kotaeru(complex_request) == "完了"
     assert "頼みの条件:" in b_prompts[0][-1]["content"] and "2〜4行" in b_prompts[0][-1]["content"]
-    assert any("満たしていない条件があれば直して" in str(m.get("content", "")) for m in b_prompts[1])
+    assert len(b_prompts) == 1
     checks += 1
     # C: 成功・失敗した変更を終端促しに載せ、済みでない物を済みと言わせない。
     c_prompts = []
@@ -156,9 +156,10 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
          mock.patch.object(jiyuu, "_run", side_effect=[{"ok": True, "結果": "書きました"},
                                                         {"ok": False, "結果": "対象がありません"}]):
         assert jiyuu.kotaeru("~/Documents/a.txt に書いて", mode="バイパス") == "完了しました"
-    assert any("済み: write ~/Documents/a.txt" in str(m.get("content", "")) for m in c_prompts[-1])
-    assert any("できていない: edit ~/Documents/b.txt 対象がありません" in str(m.get("content", "")) for m in c_prompts[-1])
-    assert any("済みでない物を済んだと言わない" in str(m.get("content", "")) for m in c_prompts[-1])
+    assert len(c_prompts) == 2   # 確かめの1手は足さない
+    squeezed = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    jiyuu._compact(squeezed, hard=True, kioku=[("済み", "write", "~/Documents/a.txt", ""), ("できていない", "edit", "~/b.txt", "無い")])
+    assert "済み: write ~/Documents/a.txt" in squeezed[-1]["content"] and "できていない: edit" in squeezed[-1]["content"]
     checks += 1
 
     # 一時 HOME と個人スキルが変わっても、system と道具の接頭辞は同じ。

@@ -1,10 +1,11 @@
 # カーネル（ローカル LLM の手下）
 
-16GB・GPU なしの Mac で、ローカル LLM（Qwen3-30B-A3B、Q2_K 11.3GB、llama.cpp）を **早く・安く・賢く** 使うための仕組み。
+16GB・GPU なしの Mac で、ローカル LLM（Qwen3.6-35B-A3B を専門家 256→160 に削った 7.7GiB 版。[../MODEL.md](../MODEL.md)）を **早く・安く・賢く** 使うための仕組み。
+（9月までは Qwen3-30B-A3B。古い説明は [../docs/archive/](../docs/archive/)）
 頭（ローカル LLM）が考え、カーネルが手を動かして確かめる。ネットに出さずに動く。
 
 ## 役割
-| | 頭（Qwen3-30B-A3B） | カーネル |
+| | 頭（Qwen3.6-35B-A3B） | カーネル |
 |---|---|---|
 | すること | 頼みを読み、手順を考え、1手ずつ道具を選ぶ | 決まった用件はすぐ自分で実行／頭の 1手を実行して結果を確かめる／危ない手を止める |
 | 強み | 言葉の理解 | 速さ・正確さ・安全（計算は Python の電卓、操作は決まった関数） |
@@ -12,7 +13,10 @@
 ## 主なファイル
 | ファイル | 中身 |
 |---|---|
-| `server.py` | 窓口（HTTP）。llama-server の起動指定もここ |
+| `server.py` | 窓口（HTTP）。llama-server の起動指定（`-np 2 -kvu -cram 512` など）と立ち上げ時の温めもここ |
+| `jiyuu.py` | いまの輪。頭が道具（read・write・move・copy・find・sh など）を呼び、門番が照合（CSV の値・合計・パス）・場所探し・上書きの確かめを Python で代わりにやる。写しの元は `../dougu/jiyuu.py` |
+| `gakushuu.py` | 事前学習（空き時間に Wikipedia を読んで知識の箱へ）・振り返り・教訓カード集め |
+| `hako.py` | 命令を `sandbox-exec` で隔離して実行する。隔離できない時は実行しない |
 | `main.py` | 頼みの振り分け（用件・道具・ターミナル・画面操作・会話） |
 | `machine.py` / `kikai.py` / `kikai_tsuika.py` | 決まった用件（予定・電池・音量・天気・Wi-Fi 等、約70）。言い方の正規表現と実行の関数 |
 | `kazoeru.py` | 閉じた電卓。頭は決まった書式で書き出すだけ、計算は Python（数え上げ・時刻・並べ方・選び方・速さ）。AST で許した記号だけ |
@@ -28,4 +32,5 @@
 
 ## 測り方
 物差し（自作テスト・GSM8K）と比べる台本は、この repo の `monosashi/` と `dougu/`。GitHub Actions（`.github/workflows/`）で無料で測り、結果は枝 `kekka` に積む。
-このフォルダは `dougu/kernel_kouhai.sh` が本体から **コードだけ** を写したもの（記録・データは入れない）。
+このフォルダは本番（git の外）の **コードだけ** の写し（記録・データは入れない）。本番へは `../dougu/honban.py ireru` で入れる。
+自動試験は `.github/workflows/shiken.yml`（main への push ごとに文法・自己試験・カーネルの試験・隔離の試験）。
