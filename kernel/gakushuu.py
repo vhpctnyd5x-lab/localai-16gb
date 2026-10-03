@@ -1247,7 +1247,7 @@ def _local_text(prompt, max_tokens=400):
 SHIRYOU_JUN = ("wikibooks", "aozora", "egov", "wikisource", "arxiv:cs", "arxiv:stat", "arxiv:math")
 
 
-def shiryou_once(*, every=90, toru=None):
+def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シュバババと学習」）
     """10/3 本人「Wikipedia 以外の文学・書籍・論文・専門知識・プログラミング・法律・統計も学べるように」。
     教科書（Wikibooks）・文学（青空文庫）・法令（e-Gov）・原典（Wikisource）・論文の要旨（arXiv）を順に1件ずつ足す
     （dougu/shiryou.py。どれもライセンスの明らかな公開の文）。"""
@@ -1272,7 +1272,9 @@ def shiryou_once(*, every=90, toru=None):
         return None
     with _db() as db:
         if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (title,)).fetchone():
-            return None
+            title = f"{title}（{source}）"   # Wikipedia と同じ題の教科書・法令も別の本として持つ
+            if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (title,)).fetchone():
+                return None
         cursor = db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
                             (title, body, source, str(item.get("url", "")), time.strftime("%Y-%m-%d %H:%M:%S")))
         _add_trigram(db, cursor.lastrowid, title, body, source)

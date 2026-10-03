@@ -62,7 +62,13 @@ def _wiki(name, title):
     source = "ja." + name
     license_name = ("CC BY-SA 4.0（ページ個別の表示・例外を確認）" if name == "wikibooks"
                     else "各ページの権利表示に従う（PD・CC BY-SA 等）")
-    query = title or {"wikibooks": "プログラミング", "wikisource": "著作権の切れた作品"}[name]
+    if not title:   # 10/3: 題が無い時は毎回同じ1冊になり、重複で捨てられ続けた。ランダムな1ページにする
+        # 1件だと条文1つの短いページが多い。20件取って一番長いページを読む
+        rnd = json.loads(_get(_url(api, {"action": "query", "generator": "random", "grnnamespace": 0, "grnlimit": 20,
+                                         "prop": "info", "format": "json", "utf8": 1})).decode("utf-8"))
+        pages = sorted(rnd.get("query", {}).get("pages", {}).values(), key=lambda x: -int(x.get("length", 0)))
+        title = (pages[0].get("title") if pages else "") or "プログラミング"
+    query = title
     hits = json.loads(_get(_url(api, {"action": "query", "list": "search", "srsearch": query,
                                       "srlimit": 8, "format": "json", "utf8": 1})).decode("utf-8"))
     titles = [x.get("title", "") for x in hits.get("query", {}).get("search", [])]
@@ -147,8 +153,13 @@ def _egov_laws(query):
 
 
 def _egov(title):
-    query = title or "日本国憲法"
-    laws = _egov_laws(query)
+    query = title or ""
+    if title:
+        laws = _egov_laws(title)
+    else:   # 10/3: いつも日本国憲法だった。約9600の法令からランダムに1つ
+        data = json.loads(_get(_url(EGOV_API + "/laws", {"limit": 1, "offset": random.randrange(9500),
+                                                          "response_format": "json"})).decode("utf-8"))
+        laws = data.get("laws", [])
     if not laws:
         return None
     def val(d, *keys):

@@ -1030,6 +1030,10 @@ function setView(view){
   VIEW = view;
   document.body.classList.toggle("view-skills",view === "skills");
   document.body.classList.toggle("view-gakushuu",view === "gakushuu");
+  if(view === "kernel"){   // 10/3 本人: チャットに戻ったら右上の流れの欄を必ず出す
+    document.body.classList.remove("no-term");
+    document.getElementById("term-toggle").hidden = false;
+  }
   document.querySelectorAll(".tabs .tab").forEach(b=>{
     const on = b.dataset.view === (view === "gakushuu" ? "gakushuu" : "kernel");
     b.classList.toggle("on",on);
@@ -2133,13 +2137,9 @@ document.getElementById("term-clear").onclick = () => {
 };
 const toggleTerm = () => {
   document.body.classList.toggle("no-term");
-  try{ localStorage.setItem("kt-term",
-        document.body.classList.contains("no-term") ? "0" : "1"); }catch(e){}
 };
 document.getElementById("term-hide").onclick = toggleTerm;
 document.getElementById("term-toggle").onclick = toggleTerm;
-try{ if (localStorage.getItem("kt-term") === "0")
-       document.body.classList.add("no-term"); }catch(e){}
 
 function fillBot(node, res){
   const body = (res.出力 || "（何も返ってきませんでした）").trim();
@@ -2539,10 +2539,7 @@ async function refresh(){
 
     // 左のボタンは絞ったので、札は「有れば書く」だけにする
   const bg = s.裏の係 || {};
-    if (!document.querySelector(".tool-summary") && !bg.動作中){
-      document.getElementById("term-toggle").hidden = true;
-      document.body.classList.add("no-term");
-    }else document.getElementById("term-toggle").hidden = false;
+    document.getElementById("term-toggle").hidden = false;   // 10/3: 会話が無くても隠さない（数秒ごとに隠していた）
     const fuda = (id, v) => { const e = document.getElementById(id);
                               if (e) e.textContent = v; };
     fuda("b-bg", bg.動作中 ? (bg.調べた||0).toLocaleString() : "停止");
@@ -2859,7 +2856,8 @@ async function startUI(){
   try{savedTheme=localStorage.getItem("kernel-theme")||"system";savedSize=localStorage.getItem("kernel-font-size")||"15";}catch(e){}
   setTheme(VIEW_QUERY.get("theme") || savedTheme,!VIEW_QUERY.has("theme"));
   setFontSize(savedSize);
-  document.body.classList.add("no-term");
+  document.body.classList.remove("no-term");
+  document.getElementById("term-toggle").hidden = false;
   await refresh();
   if(DEMO){
     COMMANDS=demoAPI("/commands");
