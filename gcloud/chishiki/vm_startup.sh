@@ -54,6 +54,8 @@ venv/bin/python code/fetch.py --directory dumps --site jawiki --site jawikibooks
 git clone --depth 1 --single-branch https://github.com/aozorahack/aozorabunko_text.git aozora
 git -C aozora rev-parse HEAD >aozora-commit.txt
 NOTE=本文変換と索引作成; write_status
+# 10/4: 中の進み具合が見えなかった。変換中は10分ごとに記録をGCSへ写す（見張りが末尾を出す）。
+( while sleep 600; do gcloud storage cp --quiet startup.log "$PREFIX/startup.log" >/dev/null 2>&1; done ) &
 # 分割ダンプでも1回の変換に渡す。文字列の eval はしない。
 venv/bin/python - "$WIKI_LIMIT" "$MAX_CHARS" "$WORKERS" <<'PY'
 import json, subprocess, sys

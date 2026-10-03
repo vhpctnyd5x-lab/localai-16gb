@@ -103,14 +103,22 @@ def converted(path, site, args):
             yield from pool.map(wiki_plain, batch, chunksize=8)
 
 
+AOZORA_SKIPPED = [0]
+
+
 def aozora_articles(folder, max_chars):
     for path in sorted(Path(folder).rglob('*.txt')):
         raw = path.read_bytes()
         # aozorahack は基本 Shift_JIS。置換文字で壊さず、UTF-8 見本も受ける。
+        # 10/4: どちらでも読めない1冊で5時間ぶんの変換が止まった。読めない本は数えて飛ばす。
         try:
             text = raw.decode('utf-8-sig')
         except UnicodeDecodeError:
-            text = raw.decode('cp932')
+            try:
+                text = raw.decode('cp932')
+            except UnicodeDecodeError:
+                AOZORA_SKIPPED[0] += 1
+                continue
         lines = [x.strip() for x in text.splitlines()]
         head = [x for x in lines if x][:2]
         if len(head) < 2:
@@ -172,7 +180,8 @@ def build(args):
             cursor = stage.execute('INSERT OR IGNORE INTO articles(title,text,source,url,links) VALUES(?,?,?,?,?)', item)
             n += cursor.rowcount
         stage.commit()
-        stats['aozora'] = {'inserted': n}
+        stats['aozora'] = {'inserted': n, 'skipped_undecodable': AOZORA_SKIPPED[0]}
+        log(f'青空文庫: {n:,}件・読めず飛ばした {AOZORA_SKIPPED[0]}件')
     log('FTS5・trigram の箱を作成')
     db = sqlite3.connect(partial)
     db.execute('PRAGMA synchronous=FULL')

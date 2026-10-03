@@ -29,6 +29,9 @@ while (( $(date +%s) < end )); do
     state=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$TMP/s.json")
     note=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["note"])' "$TMP/s.json")
   fi
+  if (( $(date +%s) % 1800 < 60 )); then   # 30分に1回、VM の作業記録の最後の進み具合
+    gcloud storage cat "$PREFIX/startup.log" 2>/dev/null | grep -E '件|作成' | tail -1 | sed "s/^/[$(date +%T)] 進み: /"
+  fi
   [ "$state $note" != "$last" ] && { echo "[$(date +%T)] $state $note（$(( ($(date +%s)-STARTED)/60 ))分）"; last="$state $note"; }
   if [ "$state" = complete ]; then gcloud storage cat "$PREFIX/chishiki.json"; echo; echo "完成: $PREFIX"; katazuke; exit 0; fi
   if [ "$state" = failed ]; then gcloud storage cat "$PREFIX/startup.log" 2>/dev/null | tail -30; katazuke; exit 1; fi
